@@ -6,9 +6,9 @@ Two autopilots are supported via the `PX4_SIM` environment variable:
 | Autopilot | Bridge | Transport | Commander | Status |
 |-----------|--------|-----------|-----------|--------|
 | **PX4** (`PX4_SIM=1`) | `px4_sim_bridge.py` | MAVLink HIL, TCP 4560 | `px4_commander.py` | **Full mission ready** — phases 1–5 complete; position-hold gate passed (<0.3 m drift); waypoint nav 90 m AGL / 699 m leg implemented |
-| **ArduPilot** (default) | `sitl_bridge.py` | JSON FDM, UDP 9002 | `flight_commander.py` | Takeoff + 90 m alt OK; **horizontal WP nav has an unresolved `AC_PosControl` direction inversion** |
+| **ArduPilot** (default) | `sitl_bridge.py` | JSON FDM, UDP 9002 | `ardupilot_commander.py` | Re-implemented 2026-06-19 — root cause of original WP nav inversion identified and fixed; full survey mission ported from `px4_commander.py` (pending test) |
 
-The PX4 migration was started because ArduPilot's position controller inversion defied exhaustive investigation (EKF/velocity/yaw all verified correct; only direct velocity commands tracked correctly — position setpoints and AUTO mode flew the mirror direction).
+Root cause of original ArduPilot failure: `flight_commander.py` sent NED coordinates to `setpoint_raw/local`; MAVROS2 always applies ENU→NED regardless of the frame flag, swapping axes before forwarding to ArduPilot. `ardupilot_commander.py` sends ENU (identical to `px4_commander.py`) and the inversion is resolved. `flight_commander.py` is kept as a reference archive.
 
 ---
 
@@ -50,9 +50,18 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - `TAKEOFF_ALT=<m>`: override cruise altitude (default 65 m)
 - In-air restart: detects AGL > 5 m at startup and skips takeoff
 
-**`flight_commander.py`** — ArduPilot/MAVROS2 commander (reference; WP nav unresolved).
-- STABILIZE → arm → GUIDED → EKF origin → NAV_TAKEOFF → velocity-carrot WP → RTL
-- `HOLDTEST=1`, `CALIBRATE=1` diagnostic modes
+**`ardupilot_commander.py`** — ArduPilot/MAVROS2 full mission commander (ported from `px4_commander.py`).
+- STABILIZE → arm → GUIDED → EKF origin → `EKF_POS_HORIZ_ABS` wait → NAV_TAKEOFF → 7-strip E-W survey 12 m/s → LAND
+- ENU setpoints (identical to `px4_commander.py`); MAVROS converts to NED for ArduPilot
+- Two-phase VPE: Phase 1 (AGL < 50 m) = kinematic truth, Phase 2 (≥ 50 m) = AnyLoc
+- Force-arm fallback via `CommandLong(400, param2=21196)` for SITL pre-arm bypass
+- `HOLDTEST=1`: 3 m hold gate (ArduPilot Phase-3 regression test)
+- Survey mission, YOLO detection callback, CSV logging — identical to `px4_commander.py`
+
+**`flight_commander.py`** — ArduPilot/MAVROS2 commander (reference archive; superseded by `ardupilot_commander.py`).
+- Original WP nav bug: sent NED coordinates to MAVROS2, causing ENU→NED double-conversion (axis swap)
+- Velocity-based `go_to_ned()` happened to work directionally; position setpoints were broken
+- Kept for historical reference; do not use for new flights
 
 ### Parameters
 
@@ -77,7 +86,8 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 | `launch_commander_px4.sh` | Run `px4_commander.py` (sources ROS2) |
 | `launch_sitl.sh` | ArduPilot SITL via MAVProxy (`--wipe` flag) |
 | `launch_mavros.sh` | MAVROS2 → ArduPilot (UDP 14550) |
-| `launch_commander.sh` | Run `flight_commander.py` |
+| `launch_commander_ardupilot.sh` | Run `ardupilot_commander.py` (sources ROS2, `PYTHONUNBUFFERED=1`) |
+| `launch_commander.sh` | Run `flight_commander.py` (legacy reference) |
 
 ### Test / diagnostics
 
@@ -151,15 +161,69 @@ The script tries (in order): MAVLink `MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN` (if MAV
 
 ---
 
-## ArduPilot Takeoff Sequence (reference)
+## ArduPilot Launch Sequence (ardupilot_commander.py)
+
+```bash
+bash run.sh --tmux                                    # headless (drone_sim.py)
+bash run.sh --tmux --isaac                            # Isaac Sim
+bash run.sh --tmux --isaac --anyloc --detection       # full pipeline
+```
+
+Or via the top-level launcher:
+```bash
+bash run.sh --tmux --wipe                             # first run (wipe EEPROM)
+```
+
+Manual steps:
+```bash
+# 1. Bridge (must own UDP 9002 before ArduPilot starts)
+python3 control/drone_sim.py        # headless
+# or: bash simulator/run_chiayi.sh  # Isaac Sim (no --px4 flag)
+
+# 2. ArduPilot SITL via MAVProxy
+bash control/launch_sitl.sh [--wipe]
+
+# 3. MAVROS2
+bash control/launch_mavros.sh
+
+# 4. Commander
+bash control/launch_commander_ardupilot.sh
+# or: HOLDTEST=1 python3 control/ardupilot_commander.py
+```
+
+## ArduPilot Takeoff Sequence (ardupilot_commander.py)
 
 1. Start VPE thread (Phase 1: kinematic stub at 20 Hz)
-2. Set EKF global origin — block up to 60 s
-3. Arm in STABILIZE (bypasses GPS pre-arm checks)
-4. Switch to GUIDED
-5. Wait for `EKF_POS_HORIZ_ABS` flag (VPE accepted)
-6. `MAV_CMD_NAV_TAKEOFF` — monitor `/drone/state` AGL
-7. Hold 5 s, then velocity-carrot waypoint navigation
+2. STABILIZE mode, then arm (force-arm fallback via `CommandLong` if needed)
+3. GUIDED mode
+4. Publish EKF global origin to `/mavros/global_position/set_gp_origin` (retry 10× / 5 s)
+5. Wait for `EKF_POS_HORIZ_ABS` flag (bit 4) via raw MAVLink on `/uas1/mavlink_source`
+6. `MAV_CMD_NAV_TAKEOFF` — ArduPilot climbs autonomously; commander monitors `_agl()`
+7. Hold 5 s at cruise altitude
+8. Velocity-carrot survey navigation (ENU setpoints, identical to `px4_commander.py`)
+
+## ArduPilot Phase Status
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| AP-1 | Pending test | SITL + drone_sim.py + EKF origin + arm in GUIDED |
+| AP-2 | Pending test | HOLDTEST: EKF_POS_HORIZ_ABS set; NAV_TAKEOFF; 3 m hold < 0.5 m drift |
+| AP-3 | Pending test | Single-WP nav: ENU setpoint fix verified (no mirror-direction) |
+| AP-4 | Pending test | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight |
+| AP-5 | Pending test | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey |
+| AP-6 | Pending test | AnyLoc + detection: `run.sh --tmux --isaac --anyloc --detection` |
+
+## Hard-won ArduPilot notes
+
+- **ENU setpoints** — MAVROS2 always converts ENU→NED regardless of `FRAME_LOCAL_NED` flag. Send `x=East, y=North, z=Up(AGL)` (same as PX4). The original `flight_commander.py` bug: it sent NED (`x=north, y=east`) which MAVROS treated as ENU — axis-swapping the target.
+- **EKF origin required** — ArduPilot (unlike PX4) requires explicit `/mavros/global_position/set_gp_origin` publication. PX4 auto-sets from the first EV pose.
+- **EKF_POS_HORIZ_ABS** — wait for bit 4 (0x010) of `EKF_STATUS_REPORT` (MAVLink msg 193) via `/uas1/mavlink_source`. Not `local_pos.z < 5 m` as in PX4.
+- **Force-arm fallback** — `CommandLong(command=400, param1=1.0, param2=21196.0)` bypasses all pre-arm checks for SITL.
+- **NAV_TAKEOFF** — ArduPilot climbs autonomously to the requested AGL; commander only monitors. PX4 needs continuous position setpoints during climb.
+- **LAND not AUTO.LAND** — ArduPilot's land mode string is `"LAND"`; `"AUTO.LAND"` is PX4-specific.
+- **RTL unsafe** — same as PX4: RTL needs a GPS-derived home. Use explicit `go_to_ned(0,0,alt)` + `LAND`.
+- **MAVROS stdout buffering** — launch with `PYTHONUNBUFFERED=1` (already set in `launch_commander_ardupilot.sh`).
+- **MAVProxy in the path** — `launch_sitl.sh` starts MAVProxy; MAVROS connects to UDP 14550. PX4 has no MAVProxy.
 
 ---
 

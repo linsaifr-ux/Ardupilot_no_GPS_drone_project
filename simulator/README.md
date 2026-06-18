@@ -20,11 +20,13 @@ cd simulator && ./run_chiayi.sh --px4
 
 Or via the top-level launcher:
 ```bash
-bash run.sh --tmux                          # ArduPilot
+bash run.sh --tmux --isaac                  # ArduPilot with Isaac Sim (--isaac flag)
 bash run.sh --tmux --px4                    # PX4 (windowed)
 bash run.sh --tmux --px4 --no-window        # PX4 headless (no display window, full camera)
 bash run.sh --tmux --px4 --no-window --rasterize  # + FullRasterization renderer (experimental)
 ```
+
+> ArduPilot's `run.sh --tmux` (without `--isaac`) uses `drone_sim.py` instead of Isaac Sim for fast headless testing. Pass `--isaac` to launch `run_chiayi.sh` (no `--px4` flag) in window 0.
 
 ---
 

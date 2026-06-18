@@ -1,7 +1,7 @@
 # ArduPilot Migration Plan — Based on Working PX4 Process
 
 **Date:** 2026-06-19  
-**Status:** Planning  
+**Status:** Implemented ✓  
 **Goal:** Port the working PX4 survey pipeline back to ArduPilot, fixing the root cause of the original AC_PosControl inversion bug.
 
 ---

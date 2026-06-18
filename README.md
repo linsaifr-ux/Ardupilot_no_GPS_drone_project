@@ -3,12 +3,13 @@
 Autonomous drone that localises itself and detects objects without GPS, validated in Isaac Sim before deployment to real hardware.
 
 **Location:** Chiayi, Taiwan — 23.4509°N, 120.2861°E  
-**Stack:** Isaac Sim 6.0.0 · AnyLoc (DINOv2 ViT-S/14 + VLAD) · YOLO11s · **PX4 SITL** · ROS2 Jazzy · MAVROS2
+**Stack:** Isaac Sim 6.0.0 · AnyLoc (DINOv2 ViT-S/14 + VLAD) · YOLO11s · **PX4 SITL** · **ArduPilot SITL** · ROS2 Jazzy · MAVROS2
 
-> **Autopilot:** migrated from ArduPilot → **PX4** (2026-06). ArduPilot's horizontal position
-> controller (`AC_PosControl`) inverted its output with verified-correct EKF inputs. PX4
-> position-hold gate is validated (<0.3 m drift, 40 s); full waypoint nav (65 m AGL, 699 m leg) is
-> implemented. Toggle with `PX4_SIM=1`; physics, Cesium, and AnyLoc are unchanged.
+> **Autopilot:** PX4 (primary, fully validated) + ArduPilot (re-implemented 2026-06-19). Root cause
+> of original ArduPilot WP nav inversion identified: old `flight_commander.py` sent NED coordinates
+> to MAVROS2, which always applies ENU→NED — axis-swapping the target. `ardupilot_commander.py`
+> ports the working PX4 ENU setpoint convention. Toggle with `PX4_SIM` env var; physics, Cesium,
+> and AnyLoc are unchanged.
 
 ---
 
@@ -36,7 +37,7 @@ DINOv2+VLAD localisation  YOLOv8 detection
  ── ArduPilot path ────────────────────────────────────────────────────
  MAVProxy (TCP 5760) → UDP 14550 → MAVROS2
  /mavros/vision_pose/pose_cov → EKF3 (ExternalNav)
- flight_commander.py: STABILIZE→arm→GUIDED→NAV_TAKEOFF→WP→RTL
+ ardupilot_commander.py: STABILIZE→arm→GUIDED→NAV_TAKEOFF→7-strip E-W survey 12m/s→LAND
 
  ── PX4 path (active) ─────────────────────────────────────────────────
  PX4 SITL (TCP 4560 HIL) → UDP 14540/14580 → MAVROS2
@@ -61,9 +62,10 @@ no_GPS_drone_project/
 │   ├── px4_sim_bridge.py         # PX4 HIL bridge (TCP 4560, pymavlink)
 │   ├── sitl_bridge.py            # ArduPilot SIM_JSON bridge (UDP 9002)
 │   ├── px4_commander.py          # PX4 survey: OFFBOARD→65m→7-strip E-W 12m/s lawnmower (91.7m spacing, 33m overlap, ~10.2 min); YOLO logs via yaw-corrected pixel projection→fly home→AUTO.LAND
-│   ├── flight_commander.py       # ArduPilot mission (reference; WP nav unsolved)
+│   ├── ardupilot_commander.py    # ArduPilot survey: GUIDED→NAV_TAKEOFF→65m→7-strip E-W 12m/s lawnmower→LAND (ported from px4_commander.py; ENU setpoint fix)
+│   ├── flight_commander.py       # ArduPilot mission (reference archive; superseded by ardupilot_commander.py)
 │   ├── px4_no_gps.params         # PX4: EKF2_EV_CTRL=15, GPS off, no RC
-│   ├── no_gps.parm               # ArduPilot: EK3 ExternalNav, GPS off
+│   ├── no_gps.parm               # ArduPilot: EK3 ExternalNav, GPS off, WPNAV_SPEED=1200 cm/s
 │   ├── launch_px4_sitl.sh        # start PX4 SITL; saves PID → /tmp/px4_sitl.pid; overwrites /tmp/px4_sitl.log
 │   ├── stop_px4_sitl.sh          # stop PX4 SITL (MAVLink shutdown → SIGTERM → SIGKILL)
 │   ├── launch_mavros_px4.sh      # MAVROS2 → PX4 (UDP 14540)
@@ -71,7 +73,8 @@ no_GPS_drone_project/
 │   ├── apply_px4_params.sh       # set + save PX4 params, auto-reboot
 │   ├── launch_sitl.sh            # ArduPilot SITL via MAVProxy
 │   ├── launch_mavros.sh          # MAVROS2 → ArduPilot (UDP 14550)
-│   └── launch_commander.sh       # run flight_commander.py
+│   ├── launch_commander.sh       # run flight_commander.py (legacy)
+│   └── launch_commander_ardupilot.sh  # run ardupilot_commander.py
 ├── anyloc/                       # visual localisation
 │   ├── build_database.py         # build VLAD database (--model vitb14|vits14; ~2 820 entries)
 │   ├── localizer.py              # AnyLocLocalizer (DINOv2 ViT-S/14 + VLAD + FAISS)
@@ -106,7 +109,7 @@ no_GPS_drone_project/
 | 6a | ArduPilot SITL + Isaac Sim physics bridge (JSON FDM) | Done |
 | 6b | GPS-denied EKF (EK3 ExternalNav) + VPE from AnyLoc | Done |
 | 6c–n | ROS2/MAVROS2 migration, VPE tuning, takeoff, 90 m altitude | Done |
-| 6m-wp | **ArduPilot WP nav** — takeoff+90 m OK; horizontal nav inverts (AC_PosControl) | Blocked |
+| 6m-wp | **ArduPilot WP nav** — root cause identified (MAVROS ENU→NED on NED input); fix in `ardupilot_commander.py` | Root cause fixed |
 | PX4-1 | PX4 SITL ↔ HIL bridge validated (27k+ frames, EKF2 level) | Done |
 | PX4-2 | Vision + MAVROS↔PX4 link established | Done |
 | PX4-3 | **Position-hold gate passed** (<0.3 m drift, 40 s) | Done |
@@ -117,6 +120,12 @@ no_GPS_drone_project/
 | PX4-8 | Survey mission plan: lawnmower + car detection response | Done ✓ |
 | PX4-9 | Survey commander: 12 m/s, 7-strip E-W lawnmower (91.7 m spacing, 33 m overlap, ~10.2 min), YOLO log-in-flight (no divert) | Done ✓ |
 | PX4-10 | Jetson distributed sim (Jetson = commander+AnyLoc+YOLO; PC = Isaac+PX4) | TODO |
+| AP-1 | ArduPilot SITL + drone_sim.py + EKF origin + arm in GUIDED | Pending test |
+| AP-2 | HOLDTEST: EKF_POS_HORIZ_ABS set; NAV_TAKEOFF; 3 m hold < 0.5 m drift | Pending test |
+| AP-3 | Single-WP nav: ENU setpoint fix verified (no mirror-direction) | Pending test |
+| AP-4 | Full survey: 7-strip E-W lawnmower, YOLO log-in-flight | Pending test |
+| AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending test |
+| AP-6 | AnyLoc + detection: `run.sh --tmux --isaac --anyloc --detection` | Pending test |
 | 8 | Deploy to real hardware | TODO |
 
 ---
@@ -251,20 +260,32 @@ HOLDTEST=1 python3 control/px4_commander.py
 
 ---
 
-## Quick Start — ArduPilot (reference)
+## Quick Start — ArduPilot
 
 ```bash
-# tmux launcher
+# Headless (drone_sim.py physics, no Isaac Sim window):
 bash run.sh --tmux          # normal run
 bash run.sh --tmux --wipe   # first run (wipe EEPROM)
 
-# or manual:
-bash control/launch_sitl.sh   # T1
-bash control/launch_mavros.sh # T2
-bash control/launch_commander.sh  # T3
+# With Isaac Sim:
+bash run.sh --tmux --isaac                            # Isaac Sim + full survey
+bash run.sh --tmux --isaac --anyloc                   # + AnyLoc Phase-2 VPE
+bash run.sh --tmux --isaac --anyloc --detection       # + YOLO detection log
+bash run.sh --tmux --wipe --isaac                     # first run (Isaac Sim)
 ```
 
-> First run: type `reboot` in MAVProxy after params load. Drop `--wipe` subsequently.
+tmux windows: **0 Bridge/Isaac** · **1 SITL** · **2 MAVROS** · **3 Commander** · **4 AnyLoc** · **5 Detection**
+
+> **First run:** type `reboot` in the MAVProxy console after params load. Drop `--wipe` subsequently.
+
+```bash
+# Manual steps (without run.sh):
+bash control/launch_sitl.sh [--wipe]          # T1: ArduPilot SITL via MAVProxy
+bash control/launch_mavros.sh                 # T2: MAVROS2 → UDP 14550
+source /opt/ros/jazzy/setup.bash
+python3 control/ardupilot_commander.py        # T3: mission commander
+# or: HOLDTEST=1 python3 control/ardupilot_commander.py
+```
 
 ---
 

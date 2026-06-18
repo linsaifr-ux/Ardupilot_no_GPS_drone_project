@@ -44,11 +44,13 @@ no_GPS_drone_project/
 │   ├── drone_sim.py              # Headless-only fallback: kinematic physics + bridge (PX4_SIM=0/1)
 │   │                             #   publishes /drone/state; NOT used when Isaac Sim runs
 │   ├── sitl_bridge.py            # ArduPilot UDP :9002 server — binary servo in → JSON physics out
-│   ├── flight_commander.py       # [REFERENCE] ArduPilot mission (WP nav abandoned — AC_PosControl inversion)
+│   ├── ardupilot_commander.py    # [ACTIVE AP] ArduPilot survey mission commander — ported from px4_commander.py; ENU setpoint fix; GUIDED/NAV_TAKEOFF/LAND
+│   ├── flight_commander.py       # [REFERENCE] ArduPilot mission archive (WP nav had axis-swap bug — fixed in ardupilot_commander.py)
 │   ├── launch_mavros.sh          # MAVROS2 on UDP 14550 (ArduPilot)
 │   ├── launch_sitl.sh            # ArduPilot SITL via MAVProxy
-│   ├── launch_commander.sh       # Run flight_commander.py
-│   └── no_gps.parm               # ArduPilot: GPS_TYPE=0, EK3_SRC1_POSXY=6, VISO_TYPE=1
+│   ├── launch_commander.sh       # Run flight_commander.py (legacy)
+│   ├── launch_commander_ardupilot.sh  # Run ardupilot_commander.py
+│   └── no_gps.parm               # ArduPilot: GPS_TYPE=0, EK3_SRC1_POSXY=6, VISO_TYPE=1, WPNAV_SPEED=1200
 └── yolov8l_visdrone.pt           # YOLOv8l fine-tuned on VisDrone (active)
 ```
 
@@ -79,13 +81,22 @@ PX4 SITL
                       └── /mavros/setpoint_raw/local → SET_POSITION_TARGET_LOCAL_NED
 ```
 
-### ArduPilot path (reference / legacy)
+### ArduPilot path (re-implemented 2026-06-19)
 
 ```
-cesium_scene.py  UDP 9002 ◄──PWM──► ArduPilot SITL
+cesium_scene.py (or drone_sim.py headless)
+  UDP 9002 ◄──PWM──► ArduPilot SITL
   ─TCP 5760──► MAVProxy ─UDP 14550──► MAVROS2
-                          ◄── /mavros/vision_pose/pose_cov (EKF3 VPE)
-                          ◄── /mavros/setpoint_raw/local
+                          ◄── /mavros/vision_pose/pose_cov (EKF3 VPE, ENU→NED)
+                          ◄── /mavros/global_position/set_gp_origin (EKF origin)
+                          ◄── /mavros/setpoint_raw/local (ENU, MAVROS→NED)
+
+ardupilot_commander.py
+  VPE: Phase1 kinematic → Phase2 AnyLoc (identical to px4_commander.py)
+  → /mavros/vision_pose/pose_cov   (EKF3 VPE fusion)
+  → /mavros/setpoint_raw/local     (ENU velocity carrot)
+  ← /yolo/detections               (log via yaw-corrected GSD, no divert)
+  Sequence: STABILIZE→arm→GUIDED→EKF origin→wait EKF_POS_HORIZ_ABS→NAV_TAKEOFF→survey→LAND
 ```
 
 ### Coordinate conventions
@@ -204,27 +215,36 @@ ROS2 node. MAVROS2 + PX4 OFFBOARD mode via `setpoint_raw/local` (position target
 | `EKF2_BARO_CTRL` | 0 | disable baro |
 | `COM_RC_IN_MODE` | 4 | no RC required |
 
-### 5b. Flight Control — ArduPilot path (`control/flight_commander.py`) **[REFERENCE]**
+### 5b. Flight Control — ArduPilot path (`control/ardupilot_commander.py`) **[RE-IMPLEMENTED]**
 
-**Status:** Takeoff working ✓; waypoint direction and altitude bugs fixed; horizontal WP nav inverts in `AC_PosControl` → **migrated to PX4**
+**Status:** Implemented 2026-06-19 — pending test (AP-1 through AP-6)
 
-ROS2 node. No pymavlink — uses MAVROS2 raw MAVLink exclusively.
+ROS2 node. Ported from `px4_commander.py` with ArduPilot-specific additions (EKF origin, EKF_POS_HORIZ_ABS wait, NAV_TAKEOFF, LAND mode, force-arm fallback).
+
+**Root cause of original ArduPilot WP nav failure (flight_commander.py):**  
+`flight_commander.py` sent NED coordinates (`x=north, y=east`) to `setpoint_raw/local`. MAVROS2 always applies ENU→NED regardless of the `FRAME_LOCAL_NED` flag, so it treated `x=north_m` as "East" and swapped axes — ArduPilot received mirror-direction targets. The velocity-based `go_to_ned()` happened to work (it sent ENU-correct velocities). The fix in `ardupilot_commander.py`: send ENU (`x=East, y=North, z=Up`) identical to `px4_commander.py`.
 
 **Full arming and flight sequence:**
 
-1. Start VPE thread — Phase 1 (below 50 m AGL): kinematic XY truth from `/drone/state` at 0.1 m² cov (tracks actual position so EKF/controller frame stays consistent with reality); Phase 2 (above 50 m AGL): AnyLoc estimate
-2. Wait for MAVROS2 connection (`/mavros/state.connected`)
-3. Publish EKF origin to `/mavros/global_position/set_gp_origin`; block up to 60 s waiting for GPS_GLOBAL_ORIGIN (msg 49) echo; abort if unconfirmed
-4. Arm in STABILIZE (bypasses GPS/VisOdom pre-arm; only needs IMU attitude)
-5. Switch to GUIDED
-6. Wait for `EKF_POS_HORIZ_ABS` (bit 4) from EKF_STATUS_REPORT (msg 193) on `/uas1/mavlink_source`
-7. Send `MAV_CMD_NAV_TAKEOFF` — ArduPilot's own altitude controller climbs to 90 m AGL. Monitor `/drone/state` AGL; abort if still on ground after 30 s.
-8. Hold 5 s at takeoff altitude (send current-position setpoints in NED to maintain altitude through the transition)
-9. Send waypoint position setpoints in NED; wait until within 5 m radius
-10. RTL on Ctrl-C
+1. Write stub estimate JSON; start VPE thread (Phase 1 kinematic 20 Hz)
+2. Wait for MAVROS2 connection (60 s)
+3. Spin to populate `/drone/state`; detect in-air restart
+4. STABILIZE mode → arm (force-arm `CommandLong(400, param2=21196)` if needed)
+5. GUIDED mode
+6. Publish EKF origin to `/mavros/global_position/set_gp_origin` (10× / 5 s)
+7. Wait for `EKF_POS_HORIZ_ABS` (bit 4) from EKF_STATUS_REPORT (msg 193) on `/uas1/mavlink_source`
+8. `MAV_CMD_NAV_TAKEOFF` — ArduPilot climbs autonomously; monitor `_agl()` until AGL ≥ target − 2 m
+9. Hold 5 s at cruise altitude; then 7-strip E-W boustrophedon survey at 12 m/s
+10. Survey complete: fly home `go_to_ned(0,0,TAKEOFF_ALT)` → `LAND`
 
-**MAVROS2 setpoint coordinate — final fix:**  
-`setpoint_position/local` (`PoseStamped`) showed ambiguous behaviour in MAVROS2 Jazzy even after confirming NED passthrough. Switched to `setpoint_raw/local` with `PositionTarget` and `coordinate_frame = FRAME_LOCAL_NED` (= 1). This is an unambiguous direct passthrough — MAVROS passes `x=north, y=east, z=down` directly to `SET_POSITION_TARGET_LOCAL_NED` with no coordinate conversion. `z` is NED down; negative = altitude above origin.
+**MAVROS2 setpoint coordinate (corrected):**  
+Send ENU (`x=East, y=North, z=Up(AGL)`) to `setpoint_raw/local`. MAVROS always applies ENU→NED — this is the correct convention. The old `flight_commander.py` incorrectly sent NED, causing MAVROS to double-convert and swap axes.
+
+### 5b-archive. `flight_commander.py` **[REFERENCE ARCHIVE]**
+
+**Status:** Superseded by `ardupilot_commander.py` — kept for historical reference only.
+
+Original ArduPilot commander with the axis-swap bug. Velocity-based `go_to_ned()` worked correctly; position setpoints were broken due to NED→MAVROS→NED double-conversion.
 
 **VPE covariance design:**
 - `frame_id = "map"` (ENU): x = East, y = North, z = Up — the `vision_pose` plugin converts correctly to NED
@@ -291,33 +311,43 @@ python3 control/px4_commander.py
 # or: HOLDTEST=1 python3 control/px4_commander.py  (Phase 3 regression)
 ```
 
-### ArduPilot — with Isaac Sim (reference / legacy)
+### ArduPilot — headless (active path)
 
 ```bash
-# Quickest: use the top-level tmux launcher
-bash run.sh --tmux          # normal run
-bash run.sh --tmux --wipe   # first run or parameter change (auto-sends reboot)
+bash run.sh --tmux          # normal run (drone_sim.py physics)
+bash run.sh --tmux --wipe   # first run (wipe EEPROM)
+```
 
-# Or manually:
+### ArduPilot — with Isaac Sim
 
-# T1 — Isaac Sim (physics + visualiser; start FIRST — must open UDP 9002 before SITL)
-cd simulator && ./run_chiayi.sh
+```bash
+bash run.sh --tmux --isaac                            # Isaac Sim + full survey
+bash run.sh --tmux --isaac --anyloc                   # + AnyLoc Phase-2 VPE
+bash run.sh --tmux --isaac --anyloc --detection       # + YOLO detection log
+bash run.sh --tmux --wipe --isaac                     # first run (Isaac Sim)
+```
 
-# T2 — ArduPilot SITL
-bash control/launch_sitl.sh
+tmux windows: 0=Bridge/Isaac, 1=SITL, 2=MAVROS, 3=Commander, 4=AnyLoc, 5=Detection.
+
+```bash
+# Manual steps:
+# T1 — bridge (must own UDP 9002 before SITL)
+python3 control/drone_sim.py        # headless
+# or: cd simulator && ./run_chiayi.sh  # Isaac Sim (no --px4 flag)
+
+# T2 — ArduPilot SITL via MAVProxy
+bash control/launch_sitl.sh [--wipe]
 
 # T3 — MAVROS2
 bash control/launch_mavros.sh
 
-# T4 — AnyLoc (startup ~20 min; use python3 -u for unbuffered output)
-./anyloc/run_ros2_localizer.sh
-
-# T5 — Flight commander
-bash control/launch_commander.sh
+# T4 — Commander
+bash control/launch_commander_ardupilot.sh
+# or: HOLDTEST=1 python3 control/ardupilot_commander.py
 ```
 
-> Do **not** run `drone_sim.py` alongside `cesium_scene.py` — both bind the bridge port.
-> Start `cesium_scene.py` (or `drone_sim.py`) **before** the autopilot SITL.
+> Do **not** run `drone_sim.py` alongside `cesium_scene.py` — both bind UDP 9002.
+> Start the bridge **before** ArduPilot SITL.
 
 ---
 
@@ -347,7 +377,7 @@ bash control/launch_commander.sh
 | 6l | Integrate kinematic physics into cesium_scene.py (100 Hz thread); eliminate drone_sim.py | Done ✓ |
 | 6m | Fix crash-detect disarm at ~80 m AGL (FS_CRASH_CHECK=0, ATC I-terms=0) | Done ✓ |
 | 6n | database.pt truncation fix (_safe_save + split files); setpoint_raw/local FRAME_LOCAL_NED; launch scripts | Done ✓ |
-| 6m-wp | ArduPilot WP nav — `AC_PosControl` position→velocity inversion unresolved; migrated to PX4 | Abandoned |
+| 6m-wp | ArduPilot WP nav — root cause identified (MAVROS ENU→NED applied to NED input = axis swap); fix in `ardupilot_commander.py` | Root cause fixed |
 | PX4-1 | PX4 SITL HIL bridge (TCP 4560) + EKF2 no-GPS validated | Done ✓ |
 | PX4-2 | Vision + MAVROS↔PX4 link; EKF tracks truth | Done ✓ |
 | PX4-3 | Position-hold gate: 3 m AGL, 40 s, <0.3 m drift | Done ✓ |
@@ -358,6 +388,12 @@ bash control/launch_commander.sh
 | PX4-8 | Survey mission plan: lawnmower + car detection response | Done ✓ |
 | PX4-9 | Implement survey commander: 12 m/s, 7-strip E-W lawnmower (91.7 m spacing, 33 m overlap, ~10.2 min), YOLO log-in-flight (no divert) | Done ✓ |
 | PX4-10 | Jetson distributed sim: Jetson runs commander+AnyLoc+YOLO, PC runs Isaac+PX4 | TODO |
+| AP-1 | ArduPilot SITL + drone_sim.py: EKF origin + arm in GUIDED | Pending test |
+| AP-2 | HOLDTEST: EKF_POS_HORIZ_ABS set; NAV_TAKEOFF; 3 m hold < 0.5 m drift | Pending test |
+| AP-3 | Single-WP nav: ENU setpoint fix verified (no mirror-direction) | Pending test |
+| AP-4 | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight | Pending test |
+| AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending test |
+| AP-6 | Full pipeline: `run.sh --tmux --isaac --anyloc --detection` | Pending test |
 | 6c | HIGHRES_IMU from ArduPilot → localization pipeline | TODO |
 | 6d | IMU fusion: AnyLoc anchor validator + VO quality gate | TODO |
 | 7 | Full pipeline: AnyLoc + VO + detection → PX4 commands | TODO |

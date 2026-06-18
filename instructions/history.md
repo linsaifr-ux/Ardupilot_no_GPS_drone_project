@@ -1,5 +1,43 @@
 # Project History
 
+## 2026-06-19 — ArduPilot migration: ardupilot_commander.py (root cause fix)
+
+**Root cause identified** for the ArduPilot WP nav inversion that led to the PX4 migration.
+`flight_commander.py` sent NED coordinates (`x=north, y=east`) to `setpoint_raw/local`.
+MAVROS2 always applies ENU→NED regardless of the `FRAME_LOCAL_NED` flag — so it treated
+`x=north_m` as "East" and swapped axes before forwarding to ArduPilot. This is the exact
+mirror-direction inversion observed. AC_PosControl was computing correctly; it received the
+wrong target. The velocity-based `go_to_ned()` in `flight_commander.py` happened to work
+because it already sent ENU-correct velocities.
+
+**Fix:** send ENU (`x=East, y=North, z=Up`) to MAVROS — identical to `px4_commander.py`.
+
+**Files created/modified:**
+
+- `control/ardupilot_commander.py` — new ~850-line ArduPilot commander ported from
+  `px4_commander.py`. Key additions vs PX4: EKF origin publication, EKF_POS_HORIZ_ABS wait
+  via raw MAVLink on `/uas1/mavlink_source`, `CommandTOL` NAV_TAKEOFF, force-arm fallback
+  via `CommandLong(400, param2=21196)`, `"LAND"` mode (not `"AUTO.LAND"`). Survey mission,
+  YOLO detection callback, VPE two-phase — all identical to `px4_commander.py`.
+
+- `control/launch_commander_ardupilot.sh` — launch script mirroring `launch_commander_px4.sh`;
+  sets `PYTHONUNBUFFERED=1`.
+
+- `control/no_gps.parm` — `WPNAV_SPEED` changed from 100 → 1200 cm/s (12 m/s, matches
+  `SURVEY_SPEED` in `ardupilot_commander.py`).
+
+- `run.sh` — ArduPilot section overhauled: added `--isaac` flag (window 0 = Isaac Sim or
+  `drone_sim.py` depending on flag), window 3 = `launch_commander_ardupilot.sh`, windows 4/5
+  = AnyLoc/Detection (when `--anyloc`/`--detection` passed). Updated pkill pattern and help.
+
+- `instructions/ardupilot_migration_plan.md` — implementation plan documenting the root cause,
+  change comparison table, detailed spec, 6-phase test plan.
+
+**Status after this session:** Implementation complete; all syntax checks passed. Testing
+(AP-1 through AP-6) not yet run.
+
+---
+
 ## 2026-06-12 — Dedup radius 30 m → 5 m; live_trace detection crop text enlarged
 
 `DEDUP_RADIUS` in `control/px4_commander.py` reduced from 30 m to 5 m. The 30 m radius was
