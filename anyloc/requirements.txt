@@ -1,0 +1,16 @@
+# AnyLoc dependencies
+# These packages must be available in the isaac_sim_test conda environment.
+#
+# torch and torchvision are already installed by Isaac Sim.
+# cv2 (opencv) is already installed by Isaac Sim.
+# faiss-cpu can be installed with:
+#   conda install -n isaac_sim_test -c conda-forge faiss-cpu
+#
+# scikit-learn is NOT used — VLAD codebook uses faiss.Kmeans instead.
+
+torch>=2.0
+torchvision>=0.15
+pillow>=9.0
+numpy>=1.24
+faiss-cpu>=1.7      # conda: conda-forge::faiss-cpu
+opencv-python>=4.7  # already in isaac_sim_test as cv2

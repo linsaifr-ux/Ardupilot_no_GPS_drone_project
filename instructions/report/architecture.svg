@@ -1,0 +1,1100 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 980 640"
+   width="980"
+   height="640"
+   version="1.1"
+   id="svg259"
+   sodipodi:docname="architecture.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview261"
+     pagecolor="#ffffff"
+     bordercolor="#999999"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="1.475"
+     inkscape:cx="476.61017"
+     inkscape:cy="271.18644"
+     inkscape:window-width="1920"
+     inkscape:window-height="1120"
+     inkscape:window-x="0"
+     inkscape:window-y="28"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg259" />
+  <defs
+     id="defs25">
+    <style
+       id="style2">
+    text { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    .mono { font-family: 'Courier New', Courier, monospace; }
+    .bold { font-weight: 700; }
+    .italic { font-style: italic; }
+  </style>
+    <marker
+       id="arr"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0,8 3,0 6"
+         fill="#374151"
+         id="polygon4" />
+    </marker>
+    <marker
+       id="arr-r"
+       markerWidth="8"
+       markerHeight="6"
+       refX="1"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="8 0,0 3,8 6"
+         fill="#374151"
+         id="polygon7" />
+    </marker>
+    <marker
+       id="arr-grn"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0,8 3,0 6"
+         fill="#15803d"
+         id="polygon10" />
+    </marker>
+    <marker
+       id="arr-grn-r"
+       markerWidth="8"
+       markerHeight="6"
+       refX="1"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="8 0,0 3,8 6"
+         fill="#15803d"
+         id="polygon13" />
+    </marker>
+    <marker
+       id="arr-amb"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0,8 3,0 6"
+         fill="#b45309"
+         id="polygon16" />
+    </marker>
+    <marker
+       id="arr-pur"
+       markerWidth="8"
+       markerHeight="6"
+       refX="7"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="0 0,8 3,0 6"
+         fill="#6d28d9"
+         id="polygon19" />
+    </marker>
+    <marker
+       id="arr-pur-r"
+       markerWidth="8"
+       markerHeight="6"
+       refX="1"
+       refY="3"
+       orient="auto">
+      <polygon
+         points="8 0,0 3,8 6"
+         fill="#6d28d9"
+         id="polygon22" />
+    </marker>
+  </defs>
+  <!-- Canvas -->
+  <rect
+     width="980"
+     height="640"
+     fill="#f8fafc"
+     rx="10"
+     id="rect27" />
+  <rect
+     x="10"
+     y="10"
+     width="960"
+     height="620"
+     fill="white"
+     stroke="#e2e8f0"
+     stroke-width="1.5"
+     rx="8"
+     id="rect29" />
+  <!-- Title -->
+  <text
+     x="490"
+     y="36"
+     text-anchor="middle"
+     font-size="14"
+     class="bold"
+     fill="#0f172a"
+     id="text31">No-GPS Drone — System Architecture</text>
+  <text
+     x="490"
+     y="51"
+     text-anchor="middle"
+     font-size="10"
+     class="italic"
+     fill="#6b7280"
+     id="text33">Updated 2026-06-01 · ROS2 Jazzy + MAVROS2 + ArduPilot SITL · Milestone 6j</text>
+  <!-- ── Layer backgrounds ─────────────────────────────────────────── -->
+  <rect
+     x="16"
+     y="60"
+     width="948"
+     height="132"
+     rx="6"
+     fill="#f5f3ff"
+     stroke="#7c3aed"
+     stroke-width="1"
+     stroke-dasharray="6,3"
+     id="rect35" />
+  <text
+     x="21.288136"
+     y="55.983051"
+     font-size="10px"
+     class="bold"
+     fill="#5b21b6"
+     id="text37">Physics Simulation</text>
+  <rect
+     x="16"
+     y="250"
+     width="556"
+     height="168"
+     rx="6"
+     fill="#fefce8"
+     stroke="#a16207"
+     stroke-width="1"
+     stroke-dasharray="6,3"
+     id="rect39" />
+  <text
+     x="22.644068"
+     y="248.69492"
+     font-size="10px"
+     class="bold"
+     fill="#78350f"
+     id="text41">Flight Control</text>
+  <rect
+     x="583.97278"
+     y="249.97276"
+     width="380.05447"
+     height="330.73245"
+     rx="6.0008602"
+     fill="#f0fdf4"
+     stroke="#15803d"
+     stroke-width="0.945516"
+     stroke-dasharray="6, 3"
+     id="rect43" />
+  <text
+     x="592"
+     y="243.94916"
+     font-size="10px"
+     class="bold"
+     fill="#14532d"
+     id="text45">Perception (optional †)</text>
+  <!-- ═══════════════════ ROW 1 BOXES ═══════════════════ -->
+  <!-- 1. ArduPilot SITL -->
+  <rect
+     x="22.677967"
+     y="66.322029"
+     width="202"
+     height="118"
+     rx="6"
+     fill="#ede9fe"
+     stroke="#6d28d9"
+     stroke-width="2"
+     id="rect47" />
+  <text
+     x="123"
+     y="87"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#4c1d95"
+     id="text49">ArduPilot SITL</text>
+  <text
+     x="123"
+     y="102"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#5b21b6"
+     id="text51">EKF3 ExtNav XYZ</text>
+  <text
+     x="123"
+     y="115"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#5b21b6"
+     id="text53">GPS_TYPE=0</text>
+  <text
+     x="123"
+     y="128"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#5b21b6"
+     id="text55">EK3_SRC1_POSXY=6</text>
+  <text
+     x="123"
+     y="141"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#5b21b6"
+     id="text57">EK3_SRC1_POSZ=6</text>
+  <text
+     x="123"
+     y="154"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#5b21b6"
+     id="text59">SCHED_LOOP=50 Hz</text>
+  <text
+     x="123"
+     y="167"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#5b21b6"
+     id="text61">DISARM_DELAY=0</text>
+  <!-- 2. drone_sim.py -->
+  <rect
+     x="290"
+     y="67"
+     width="240"
+     height="118"
+     rx="6"
+     fill="#dcfce7"
+     stroke="#16a34a"
+     stroke-width="2"
+     id="rect63" />
+  <text
+     x="410"
+     y="87"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#14532d"
+     id="text65">drone_sim.py</text>
+  <text
+     x="410"
+     y="102"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text67">6-DOF kinematic physics</text>
+  <text
+     x="410"
+     y="115"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text69">SITLBridge UDP :9002</text>
+  <text
+     x="410"
+     y="128"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text71">pub /drone/state @ 100 Hz</text>
+  <text
+     x="410"
+     y="141"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text73">ch1=FR  ch2=RL</text>
+  <text
+     x="410"
+     y="154"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text75">ch3=RR  ch4=FL</text>
+  <text
+     x="410"
+     y="167"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text77">roll=(ch2+ch4)−(ch1+ch3)</text>
+  <!-- 3. cesium_scene.py (optional) -->
+  <rect
+     x="596"
+     y="67"
+     width="368"
+     height="118"
+     rx="6"
+     fill="#eff6ff"
+     stroke="#3b82f6"
+     stroke-width="2"
+     stroke-dasharray="7,4"
+     id="rect79" />
+  <text
+     x="780"
+     y="85"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#1e40af"
+     id="text81">cesium_scene.py  †</text>
+  <text
+     x="780"
+     y="100"
+     text-anchor="middle"
+     font-size="9"
+     class="italic"
+     fill="#1d4ed8"
+     id="text83">optional — Isaac Sim 6.0 visualiser</text>
+  <text
+     x="780"
+     y="113"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#1e40af"
+     id="text85">sub /drone/state → USD mesh</text>
+  <text
+     x="780"
+     y="126"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#1e40af"
+     id="text87">pub /drone/camera/image_raw</text>
+  <text
+     x="780"
+     y="139"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#1e40af"
+     id="text89">pub /drone/pose  /drone/agl</text>
+  <text
+     x="780"
+     y="152"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#1e40af"
+     id="text91">writes home_elevation.json</text>
+  <!-- ═══════════════════ ROW 2 BOXES ═══════════════════ -->
+  <!-- 4. MAVROS2 -->
+  <rect
+     x="19.288137"
+     y="261.38983"
+     width="202"
+     height="152"
+     rx="6"
+     fill="#fef9c3"
+     stroke="#ca8a04"
+     stroke-width="2"
+     id="rect93" />
+  <text
+     x="123"
+     y="277"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#713f12"
+     id="text95">MAVROS2</text>
+  <text
+     x="123"
+     y="292"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text97">fcu_url udp://:14550@</text>
+  <text
+     x="123"
+     y="305"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text99">/vision_pose/pose → VPE</text>
+  <text
+     x="123"
+     y="318"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text101">/vision_pose/pose_cov → VPE</text>
+  <text
+     x="123"
+     y="331"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text103">VPE → EKF3 (VISION_POS_EST)</text>
+  <text
+     x="123"
+     y="344"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text105">pub /uas1/mavlink_source</text>
+  <text
+     x="123"
+     y="357"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text107">pub /mavros/state</text>
+  <text
+     x="123"
+     y="370"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text109">pub /local_position/pose</text>
+  <text
+     x="123"
+     y="398"
+     text-anchor="middle"
+     font-size="8"
+     fill="#b45309"
+     font-style="italic"
+     id="text111">⚠ both VPE topics active when</text>
+  <text
+     x="123"
+     y="410"
+     text-anchor="middle"
+     font-size="8"
+     fill="#b45309"
+     font-style="italic"
+     id="text113">anyloc + flight_commander run together</text>
+  <!-- 5. flight_commander.py -->
+  <rect
+     x="290"
+     y="254.77966"
+     width="240"
+     height="162"
+     rx="6"
+     fill="#fef3c7"
+     stroke="#b45309"
+     stroke-width="2"
+     id="rect115" />
+  <text
+     x="410"
+     y="267"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#78350f"
+     id="text117">flight_commander.py</text>
+  <text
+     x="410"
+     y="282"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text119">arm→NAV_TAKEOFF→WPs→RTL</text>
+  <text
+     x="410"
+     y="295"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text121">VPE XY: home(Ph1)/AnyLoc(Ph2)</text>
+  <text
+     x="410"
+     y="308"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text123">VPE Z: kinematic AGL cov=0.25m²</text>
+  <text
+     x="410"
+     y="321"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text125">EK3_SRC1_POSZ=6 ExternalNav</text>
+  <text
+     x="410"
+     y="334"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text127">sub /drone/state (AGL truth)</text>
+  <text
+     x="410"
+     y="347"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text129">pub /vision_pose/pose_cov</text>
+  <text
+     x="410"
+     y="360"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text131">pub setpoint_position/local</text>
+  <text
+     x="410"
+     y="373"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text133">pub set_gp_origin</text>
+  <text
+     x="410"
+     y="386"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text135">sub /uas1/mavlink_source</text>
+  <text
+     x="410"
+     y="399"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#92400e"
+     id="text137">sub /mavros/state</text>
+  <!-- 6. anyloc/ros2_node.py (optional) -->
+  <rect
+     x="591.25421"
+     y="261.38983"
+     width="368"
+     height="155"
+     rx="6"
+     fill="#dcfce7"
+     stroke="#15803d"
+     stroke-width="2"
+     stroke-dasharray="7, 4"
+     id="rect139" />
+  <text
+     x="780"
+     y="277"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#14532d"
+     id="text141">anyloc/ros2_node.py  †</text>
+  <text
+     x="780"
+     y="293"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text143">DINOv2 + VLAD + FAISS</text>
+  <text
+     x="780"
+     y="306"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text145">AnyLoc + VO refinement</text>
+  <text
+     x="780"
+     y="319"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text147">2821-entry DB · ~15–20 m error</text>
+  <text
+     x="780"
+     y="332"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text149">sub /drone/camera/image_raw</text>
+  <text
+     x="780"
+     y="345"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text151">sub /drone/pose  /drone/agl</text>
+  <text
+     x="780"
+     y="358"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text153">pub /mavros/vision_pose/pose</text>
+  <text
+     x="780"
+     y="371"
+     text-anchor="middle"
+     font-size="8"
+     fill="#b45309"
+     class="italic"
+     id="text155">← PoseStamped (no cov); ENU x=E y=N z=↑</text>
+  <text
+     x="780"
+     y="384"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text157">pub /anyloc/pose_estimate</text>
+  <text
+     x="780"
+     y="397"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#166534"
+     id="text159">writes latest_estimate.json</text>
+  <!-- 7. detection/ros2_node.py (optional) -->
+  <rect
+     x="596"
+     y="478"
+     width="368"
+     height="90"
+     rx="6"
+     fill="#fef2f2"
+     stroke="#dc2626"
+     stroke-width="2"
+     stroke-dasharray="7,4"
+     id="rect161" />
+  <text
+     x="780"
+     y="497"
+     text-anchor="middle"
+     font-size="11"
+     class="bold"
+     fill="#7f1d1d"
+     id="text163">detection/ros2_node.py  †</text>
+  <text
+     x="780"
+     y="512"
+     text-anchor="middle"
+     font-size="9"
+     class="italic"
+     fill="#991b1b"
+     id="text165">optional — requires Isaac Sim</text>
+  <text
+     x="780"
+     y="526"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#7f1d1d"
+     id="text167">YOLOv8l VisDrone · conf=0.30</text>
+  <text
+     x="780"
+     y="539"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#7f1d1d"
+     id="text169">sub /drone/camera/image_raw</text>
+  <text
+     x="780"
+     y="552"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#7f1d1d"
+     id="text171">sub /drone/pose</text>
+  <text
+     x="780"
+     y="565"
+     text-anchor="middle"
+     font-size="9"
+     class="mono"
+     fill="#7f1d1d"
+     id="text173">pub /yolo/detections (TODO: mission)</text>
+  <!-- ═══════════════════ CONNECTIONS ═══════════════════ -->
+  <!-- A: ArduPilot SITL ↔ drone_sim.py (UDP 9002, bidirectional) -->
+  <line
+     x1="224"
+     y1="110"
+     x2="290"
+     y2="110"
+     stroke="#6d28d9"
+     stroke-width="2"
+     marker-start="url(#arr-pur-r)"
+     marker-end="url(#arr-pur)"
+     id="line175" />
+  <text
+     x="257"
+     y="103"
+     text-anchor="middle"
+     font-size="9"
+     class="bold"
+     fill="#5b21b6"
+     id="text177">UDP 9002</text>
+  <text
+     x="257"
+     y="127"
+     text-anchor="middle"
+     font-size="8"
+     fill="#7c3aed"
+     id="text179">servo PWM ↔ JSON physics</text>
+  <!-- B: ArduPilot SITL ↔ MAVROS2 (UDP 14550, vertical, bidirectional) -->
+  <line
+     x1="123"
+     y1="185"
+     x2="123"
+     y2="258"
+     stroke="#6d28d9"
+     stroke-width="2"
+     marker-start="url(#arr-pur-r)"
+     marker-end="url(#arr-pur)"
+     id="line181" />
+  <rect
+     x="30"
+     y="208"
+     width="75"
+     height="26"
+     rx="3"
+     fill="white"
+     stroke="#7c3aed"
+     stroke-width="1"
+     id="rect183" />
+  <text
+     x="67"
+     y="220"
+     text-anchor="middle"
+     font-size="8"
+     class="bold"
+     fill="#5b21b6"
+     id="text185">UDP 14550</text>
+  <text
+     x="67"
+     y="230"
+     text-anchor="middle"
+     font-size="8"
+     fill="#6d28d9"
+     id="text187">MAVLink</text>
+  <!-- C: drone_sim.py → cesium_scene.py (/drone/state) -->
+  <line
+     x1="530"
+     y1="110"
+     x2="596"
+     y2="110"
+     stroke="#15803d"
+     stroke-width="1.5"
+     marker-end="url(#arr-grn)"
+     id="line189" />
+  <text
+     x="563"
+     y="102"
+     text-anchor="middle"
+     font-size="9"
+     fill="#166534"
+     id="text191">/drone/state</text>
+  <!-- D: drone_sim.py → flight_commander.py (kinematic AGL → VPE z), dashed -->
+  <line
+     x1="410"
+     y1="185"
+     x2="410"
+     y2="252.63539"
+     stroke="#16a34a"
+     stroke-width="1.5542"
+     marker-end="url(#arr-grn)"
+     stroke-dasharray="5, 3"
+     id="line193" />
+  <rect
+     x="420"
+     y="207"
+     width="125"
+     height="26"
+     rx="3"
+     fill="white"
+     stroke="#16a34a"
+     stroke-width="1"
+     id="rect195" />
+  <text
+     x="440.64404"
+     y="217.64407"
+     font-size="8px"
+     fill="#166534"
+     id="text197">/drone/state</text>
+  <text
+     x="441.32202"
+     y="229.35593"
+     font-size="8px"
+     fill="#166534"
+     id="text199">kinematic AGL → VPE z</text>
+  <!-- E: cesium_scene.py → anyloc (camera + pose + agl) -->
+  <line
+     x1="740"
+     y1="185"
+     x2="740"
+     y2="258"
+     stroke="#374151"
+     stroke-width="1.5"
+     marker-end="url(#arr)"
+     id="line201" />
+  <text
+     x="752"
+     y="205"
+     font-size="8"
+     fill="#374151"
+     id="text203">/drone/camera/image_raw</text>
+  <text
+     x="752"
+     y="216"
+     font-size="8"
+     fill="#374151"
+     id="text205">/drone/pose  /drone/agl</text>
+  <!-- E2: cesium_scene.py → detection (dashed, right edge) -->
+  <line
+     x1="958"
+     y1="185"
+     x2="958"
+     y2="478"
+     stroke="#2563eb"
+     stroke-width="1.5"
+     marker-end="url(#arr)"
+     stroke-dasharray="5,3"
+     id="line207" />
+  <text
+     x="966"
+     y="330"
+     font-size="8"
+     fill="#2563eb"
+     transform="rotate(90,966,330)"
+     id="text209">/drone/camera/image_raw  /drone/pose</text>
+  <!-- F: anyloc → flight_commander (latest_estimate.json → Phase 2 XY), dashed -->
+  <line
+     x1="596"
+     y1="348.81357"
+     x2="530"
+     y2="342.81357"
+     stroke="#15803d"
+     stroke-width="1.5"
+     marker-end="url(#arr-grn)"
+     stroke-dasharray="5, 3"
+     id="line211" />
+  <text
+     x="563"
+     y="326"
+     text-anchor="middle"
+     font-size="8"
+     fill="#15803d"
+     id="text213">latest_estimate.json</text>
+  <text
+     x="563"
+     y="336"
+     text-anchor="middle"
+     font-size="8"
+     fill="#15803d"
+     id="text215">(Phase 2 XY)</text>
+  <!-- G: flight_commander → MAVROS2 (VPE pose_cov + setpoints + gp_origin) -->
+  <line
+     x1="290"
+     y1="340"
+     x2="224"
+     y2="335"
+     stroke="#b45309"
+     stroke-width="1.5"
+     marker-end="url(#arr-amb)"
+     id="line217" />
+  <text
+     x="256.32202"
+     y="317.11865"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#92400e"
+     id="text219">VPE pose_cov + setpoints</text>
+  <text
+     x="257.67798"
+     y="330.50848"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#92400e"
+     id="text221">+ gp_origin</text>
+  <!-- H: MAVROS2 → flight_commander (status topics) -->
+  <line
+     x1="224"
+     y1="356"
+     x2="290"
+     y2="351"
+     stroke="#ca8a04"
+     stroke-width="1.5"
+     marker-end="url(#arr)"
+     id="line223" />
+  <text
+     x="257"
+     y="368"
+     text-anchor="middle"
+     font-size="8"
+     fill="#92400e"
+     id="text225">/mavros/state</text>
+  <text
+     x="257"
+     y="378"
+     text-anchor="middle"
+     font-size="8"
+     fill="#92400e"
+     id="text227">/uas1/mavlink_source</text>
+  <!-- J: anyloc → MAVROS2 directly via /vision_pose/pose (dashed route below row2) -->
+  <path
+     d="m 595.87273,370.01402 h -35.98081 v 79.53129 H 123.12487 V 418.2148"
+     stroke="#15803d"
+     stroke-width="1.64616"
+     fill="none"
+     marker-end="url(#arr-grn)"
+     stroke-dasharray="5, 3"
+     id="path229" />
+  <text
+     x="329.15256"
+     y="441.52542"
+     text-anchor="middle"
+     font-size="8px"
+     fill="#15803d"
+     id="text231">/mavros/vision_pose/pose (PoseStamped, ENU)</text>
+  <!-- I: anyloc → detection (camera shared topic) -->
+  <line
+     x1="780"
+     y1="413"
+     x2="780"
+     y2="478"
+     stroke="#15803d"
+     stroke-width="1.5"
+     marker-end="url(#arr-grn)"
+     stroke-dasharray="5,3"
+     id="line233" />
+  <text
+     x="790"
+     y="450"
+     font-size="8"
+     fill="#374151"
+     id="text235">/drone/camera</text>
+  <!-- ═══════════════════ LEGEND ════════════════════════ -->
+  <rect
+     x="19.951679"
+     y="589.4093"
+     width="940.09662"
+     height="32.639011"
+     rx="4.000411"
+     fill="#f1f5f9"
+     stroke="#e2e8f0"
+     stroke-width="0.90336"
+     id="rect237" />
+  <line
+     x1="27.542374"
+     y1="606.06781"
+     x2="57.542374"
+     y2="606.06781"
+     stroke="#374151"
+     stroke-width="2"
+     marker-start="url(#arr-r)"
+     marker-end="url(#arr)"
+     id="line239" />
+  <text
+     x="65.932205"
+     y="608.71185"
+     font-size="9px"
+     fill="#374151"
+     id="text241">bidirectional</text>
+  <line
+     x1="140.30508"
+     y1="606.06781"
+     x2="170.30508"
+     y2="606.06781"
+     stroke="#374151"
+     stroke-width="1.5"
+     marker-end="url(#arr)"
+     id="line243" />
+  <text
+     x="178.69492"
+     y="610.06781"
+     font-size="9px"
+     fill="#374151"
+     id="text245">ROS2 topic</text>
+  <line
+     x1="244.23729"
+     y1="608.10168"
+     x2="274.23727"
+     y2="608.10168"
+     stroke="#374151"
+     stroke-width="1.5"
+     marker-end="url(#arr)"
+     stroke-dasharray="5, 3"
+     id="line247" />
+  <text
+     x="282.62711"
+     y="610.74579"
+     font-size="9px"
+     fill="#374151"
+     id="text249">optional / file</text>
+  <rect
+     x="353.10168"
+     y="602.10168"
+     width="11"
+     height="11"
+     rx="2"
+     fill="#eff6ff"
+     stroke="#3b82f6"
+     stroke-width="1.5"
+     stroke-dasharray="4, 2"
+     id="rect251" />
+  <text
+     x="371.81357"
+     y="611.06781"
+     font-size="9px"
+     fill="#374151"
+     id="text253">dashed border = optional module (†)</text>
+  <text
+     x="549.32208"
+     y="602.71185"
+     font-size="9px"
+     fill="#b45309"
+     id="text255">⚠ VPE conflict: anyloc uses /vision_pose/pose (no cov)</text>
+  <text
+     x="551.35596"
+     y="616.71185"
+     font-size="9px"
+     fill="#b45309"
+     id="text257">flight_commander uses /vision_pose/pose_cov — both reach MAVROS2 when full pipeline runs</text>
+</svg>

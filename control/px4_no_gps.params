@@ -1,0 +1,36 @@
+# PX4 SITL no-GPS + external-vision parameters (apply via `param set` in pxh,
+# or `param load`).  Replaces the ArduPilot no_gps.parm.  Values from the PX4
+# external-vision (VIO/mocap) docs.  Tuning (PSC/MC gains) added after Phase 3.
+#
+# ── GPS off ──────────────────────────────────────────────────────────────────
+param set SYS_HAS_GPS 0
+param set EKF2_GPS_CTRL 0
+param set COM_ARM_WO_GPS 1
+#
+# ── External vision: fuse pos + height + velocity + yaw ───────────────────────
+# EKF2_EV_CTRL bitmask: 1=horiz pos, 2=vert pos, 4=velocity, 8=yaw  → 15 = all
+param set EKF2_EV_CTRL 15
+param set EKF2_HGT_REF 3        # height reference = Vision
+param set EKF2_EV_DELAY 0
+param set EKF2_EV_POS_X 0
+param set EKF2_EV_POS_Y 0
+param set EKF2_EV_POS_Z 0
+param set EKF2_BARO_CTRL 0      # height from EV, not baro
+#
+# ── Mag: we DO send a synthetic mag in HIL_SENSOR, but yaw comes from EV ──────
+param set EKF2_MAG_TYPE 0       # auto; EV yaw dominates. Set 5(None) if it fights.
+param set EKF2_MAG_CHECK 0
+#
+# ── Arming / failsafes for headless SITL ─────────────────────────────────────
+param set COM_RC_IN_MODE 4      # no RC required
+param set NAV_RCL_ACT 0         # ignore RC loss
+param set NAV_DLL_ACT 0         # ignore datalink loss
+param set COM_ARM_MAG_STR 0
+param set CBRK_SUPPLY_CHK 894281
+param set CBRK_USB_CHK 197848
+#
+# ── SITL sim noise off (clean kinematic IMU, like ArduPilot SIM_*_NOISE 0) ────
+param set SENS_BOARD_ROT 0
+#
+# NOTE: motor count / airframe is selected by the SITL build target / SYS_AUTOSTART,
+# not here. Quad-X = SYS_AUTOSTART 4001 (gz_x500) or the none_iris equivalent.

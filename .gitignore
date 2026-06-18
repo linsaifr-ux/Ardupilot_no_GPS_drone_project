@@ -1,0 +1,129 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# Simulator caches (large binary/tile data — re-downloadable)
+simulator/cesium_tile_cache/
+simulator/cesium_terrain_cache/
+simulator/cesium_tile_list.json
+simulator/cesium_terrain_list.json
+simulator/elevation_cache.json
+simulator/osm_cache.json
+simulator/satellite_ground.jpg
+
+# Isaac Sim generated files
+simulator/geo_metadata.json
+simulator/*.log
+simulator/__pycache__/
+
+# Drone camera live output (transient — overwritten every 5 sim steps)
+simulator/drone_frames/
+
+# Flight trace CSVs and plots (runtime output — generated per flight)
+simulator/flight_traces/
+
+# AnyLoc generated databases (rebuild with: python anyloc/build_database.py [--model vits14])
+anyloc/database/
+anyloc/database_vits14/
+
+# AnyLoc test / debug output
+anyloc/test_output/
+
+# Claude Code local settings
+**/.claude/
+
+# Model weights (large files — store in DVC or separate release)
+**/*.pt
+**/*.pth
+**/*.onnx
+**/*.weights
+**/*.engine
+
+# Dataset files
+**/*.bag
+**/dataset/
+**/data/
+
+# ArduPilot SITL runtime artefacts (written to project root by sim_vehicle.py)
+eeprom.bin
+mav.tlog
+mav.tlog.raw
+*.tlog
+*.tlog.raw
+*.bin
+*.parm
+!control/no_gps.parm
+terrain/
+
+# AnyLoc runtime output (written each anchor frame, read by run_vision.py)
+anyloc/latest_estimate.json
+
+# Survey detection log and crops (written by px4_commander.py at runtime)
+detections.csv
+det_crops/
+
+# Terrain elevation written by cesium_scene.py on startup (runtime, machine-specific)
+control/home_elevation.json
+
+# ArduPilot SITL logs (written to project root and control/ by sim_vehicle.py)
+logs/
+control/logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / credentials
+*.env
+.env*
+*token*
+*secret*
+*credential*
+
+# Third-party dependencies (cloned separately, not tracked)
+third_party/
+
+#contest ref
+114rule.pdf
+
+# LaTeX build artefacts
+instructions/report/*.aux
+instructions/report/*.log
+instructions/report/*.out
+instructions/report/*.toc
+
+# ArduPilot crash dumps (written to project root by SITL)
+dumpcore.sh_*.out
+dumpstack.sh_*.out
+
+# YOLO training runs (weights, plots, metrics — large and reproducible)
+detection/runs/
+runs/
+
+# Stray files accidentally created by redirecting to a module name
+# (e.g. `python … > np`); these are junk, not source — delete if present.
+detection/matplotlib
+detection/np
+detection/torch
+
+# PX4 SITL runtime artefacts (PX4 itself lives in ~/PX4-Autopilot, but logs/
+# params may land here if run from the project tree)
+*.ulg
+parameters*.bson
+rootfs/
