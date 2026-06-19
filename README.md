@@ -5,11 +5,10 @@ Autonomous drone that localises itself and detects objects without GPS, validate
 **Location:** Chiayi, Taiwan — 23.4509°N, 120.2861°E  
 **Stack:** Isaac Sim 6.0.0 · AnyLoc (DINOv2 ViT-S/14 + VLAD) · YOLO11s · **PX4 SITL** · **ArduPilot SITL** · ROS2 Jazzy · MAVROS2
 
-> **Autopilot:** PX4 (primary, fully validated) + ArduPilot (re-implemented 2026-06-19). Root cause
-> of original ArduPilot WP nav inversion identified: old `flight_commander.py` sent NED coordinates
-> to MAVROS2, which always applies ENU→NED — axis-swapping the target. `ardupilot_commander.py`
-> ports the working PX4 ENU setpoint convention. Toggle with `PX4_SIM` env var; physics, Cesium,
-> and AnyLoc are unchanged.
+> **Autopilot:** PX4 (primary, fully validated) + ArduPilot (**AP-3 HOLD GATE passed 2026-06-19**, 0.1 m drift; AP-4–AP-6 pending).
+> Original WP nav inversion fixed: old `flight_commander.py` sent NED to MAVROS2 (which always applies ENU→NED), axis-swapping the target.
+> `ardupilot_commander.py` sends ENU identically to `px4_commander.py`.
+> **PSC rename (V4.8):** `PSC_POSXY_*`/`PSC_VELXY_*` → `PSC_NE_*`/`PSC_NE_VEL_*`; `no_gps.parm` updated (old names silently ignored → default `PSC_NE_VEL_I=1.0` caused integral windup → growing oscillation).
 
 ---
 
@@ -120,12 +119,12 @@ no_GPS_drone_project/
 | PX4-8 | Survey mission plan: lawnmower + car detection response | Done ✓ |
 | PX4-9 | Survey commander: 12 m/s, 7-strip E-W lawnmower (91.7 m spacing, 33 m overlap, ~10.2 min), YOLO log-in-flight (no divert) | Done ✓ |
 | PX4-10 | Jetson distributed sim (Jetson = commander+AnyLoc+YOLO; PC = Isaac+PX4) | TODO |
-| AP-1 | ArduPilot SITL + drone_sim.py + EKF origin + arm in GUIDED | Pending test |
-| AP-2 | HOLDTEST: EKF_POS_HORIZ_ABS set; NAV_TAKEOFF; 3 m hold < 0.5 m drift | Pending test |
-| AP-3 | Single-WP nav: ENU setpoint fix verified (no mirror-direction) | Pending test |
-| AP-4 | Full survey: 7-strip E-W lawnmower, YOLO log-in-flight | Pending test |
-| AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending test |
-| AP-6 | AnyLoc + detection: `run.sh --tmux --isaac --anyloc --detection` | Pending test |
+| AP-1 | SITL + drone_sim.py: bridge connects, physics packets | Done ✓ |
+| AP-2 | EKF origin set + arm in GUIDED succeeds | Done ✓ |
+| AP-3 | HOLDTEST: 40 s hold at 3 m AGL, drift < 0.5 m | Done ✓ (0.1 m, 2026-06-19) |
+| AP-4 | Full survey: 7-strip E-W lawnmower, YOLO log-in-flight | Pending |
+| AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending |
+| AP-6 | AnyLoc + detection: `run.sh --tmux --isaac --anyloc --detection` | Pending |
 | 8 | Deploy to real hardware | TODO |
 
 ---
@@ -286,6 +285,8 @@ source /opt/ros/jazzy/setup.bash
 python3 control/ardupilot_commander.py        # T3: mission commander
 # or: HOLDTEST=1 python3 control/ardupilot_commander.py
 ```
+
+> **ArduPilot V4.8 PSC parameter rename:** `no_gps.parm` uses `PSC_NE_POS_P`, `PSC_NE_VEL_P/I/D` (renamed from `PSC_POSXY_P`, `PSC_VELXY_*` in V4.8.0-dev). If you see growing horizontal oscillation on a fresh build, verify these names are accepted (`param show PSC_NE*` in MAVProxy). Setting `PSC_NE_VEL_I=0.0` and `PSC_NE_POS_P=0.2` is critical — the defaults (I=1.0, P=1.0) cause integral windup and underdamped oscillation. See `instructions/ap3_holdgate_solving_process.md` for the full debugging record.
 
 ---
 

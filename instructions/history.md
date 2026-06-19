@@ -1,5 +1,27 @@
 # Project History
 
+## 2026-06-19 — ArduPilot AP-3 HOLD GATE passed (PSC_NE parameter rename fix)
+
+**Result:** HOLDTEST passed — 0.1 m horizontal drift over 40 s at 3 m AGL. Full debugging record in `instructions/ap3_holdgate_solving_process.md`.
+
+**Root cause discovered:** ArduPilot V4.8.0-dev renamed the horizontal position controller parameters from `PSC_POSXY_*`/`PSC_VELXY_*` to `PSC_NE_*`/`PSC_NE_VEL_*`. The old `no_gps.parm` used V4.3-era names that were **silently ignored** — no warning, no error, params simply not applied. This left two dangerous defaults active:
+- `PSC_NE_VEL_I = 1.0` (default): integrator accumulates velocity error across the 40 s gate → grows without bound → spiral oscillation
+- `PSC_NE_POS_P = 1.0` (default): above the overdamped critical P ≈ 0.44 → underdamped → sustained oscillation even if the integrator were zero
+
+**Fix:** Updated `control/no_gps.parm` to use V4.8 parameter names:
+```
+PSC_NE_POS_P    0.2     # below P_crit≈0.44 → real eigenvalues → overdamped
+PSC_NE_VEL_P    2.0     # keep default
+PSC_NE_VEL_I    0.0     # ZERO — default 1.0 causes integral windup
+PSC_NE_VEL_D    0.5     # raised from 0.25 for extra damping
+```
+
+**HOLDTEST gate:** rewritten to use `make_sp(e0, n0, HOLD_AGL)` position setpoints — lets ArduPilot's PSC loop stabilise internally rather than fighting it with external velocity commands.
+
+**Files changed:** `control/no_gps.parm`
+
+---
+
 ## 2026-06-19 — ArduPilot migration: ardupilot_commander.py (root cause fix)
 
 **Root cause identified** for the ArduPilot WP nav inversion that led to the PX4 migration.

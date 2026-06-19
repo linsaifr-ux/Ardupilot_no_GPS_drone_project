@@ -97,7 +97,8 @@ Thumbs.db
 *credential*
 
 # Third-party dependencies (cloned separately, not tracked)
-third_party/
+# No trailing slash — also matches the symlink at repo root
+third_party
 
 #contest ref
 114rule.pdf

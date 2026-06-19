@@ -1,7 +1,7 @@
 # ArduPilot Migration Plan — Based on Working PX4 Process
 
 **Date:** 2026-06-19  
-**Status:** Implemented ✓  
+**Status:** AP-3 HOLD GATE passed ✓ (0.1 m drift). AP-4–AP-6 pending.  
 **Goal:** Port the working PX4 survey pipeline back to ArduPilot, fixing the root cause of the original AC_PosControl inversion bug.
 
 ---
@@ -237,14 +237,41 @@ Or keep existing flag structure and add `--isaac` as the only new flag for ArduP
 
 Run these phases in order. Each must pass before the next.
 
-| Phase | Command | Pass Criteria |
-|---|---|---|
-| AP-1 | `python3 control/drone_sim.py` + `launch_sitl.sh` | ArduPilot logs "GPS Glitch" cleared, no crash |
-| AP-2 | + `launch_mavros.sh` + `ardupilot_commander.py HOLDTEST=1` | EKF_POS_HORIZ_ABS set; arm succeeds |
-| AP-3 | HOLDTEST=1 full run | Drone holds 3 m AGL for 40 s; drift < 0.5 m |
-| AP-4 | Full survey with single WP override `SURVEY_WPS = [(531, −454, 65)]` | horiz_err < 60 m at 699 m leg; no mirror-direction |
-| AP-5 | Isaac Sim: `run.sh --tmux --isaac` + full survey | End-to-end with cesium_scene.py |
-| AP-6 | `run.sh --tmux --isaac --anyloc --detection` | AnyLoc Phase 2 active; YOLO logs detections |
+| Phase | Command | Pass Criteria | Result |
+|---|---|---|---|
+| AP-1 | `python3 control/drone_sim.py` + `launch_sitl.sh` | ArduPilot logs "GPS Glitch" cleared, no crash | Done ✓ |
+| AP-2 | + `launch_mavros.sh` + `ardupilot_commander.py HOLDTEST=1` | EKF_POS_HORIZ_ABS set; arm succeeds | Done ✓ |
+| AP-3 | `HOLDTEST=1 python3 control/ardupilot_commander.py` | Drone holds 3 m AGL for 40 s; drift < 0.5 m | **PASSED ✓** (0.1 m drift, 2026-06-19) |
+| AP-4 | Full survey with single WP override `SURVEY_WPS = [(531, −454, 65)]` | horiz_err < 60 m at 699 m leg; no mirror-direction | Pending |
+| AP-5 | Isaac Sim: `run.sh --tmux --isaac` + full survey | End-to-end with cesium_scene.py | Pending |
+| AP-6 | `run.sh --tmux --isaac --anyloc --detection` | AnyLoc Phase 2 active; YOLO logs detections | Pending |
+
+---
+
+## Post-AP-3 Discovery: PSC Parameter Rename in ArduPilot V4.8
+
+**Critical finding (2026-06-19):** ArduPilot V4.8.0-dev renamed the horizontal position controller parameters. The original `no_gps.parm` used V4.3-era names that were silently ignored, leaving dangerous defaults active.
+
+| Old name (V4.3, silently ignored) | New name (V4.8+) | Default | Required |
+|---|---|---|---|
+| `PSC_POSXY_P` | `PSC_NE_POS_P` | 1.0 | **0.2** |
+| `PSC_VELXY_P` | `PSC_NE_VEL_P` | 2.0 | 2.0 |
+| `PSC_VELXY_I` | `PSC_NE_VEL_I` | **1.0** | **0.0** |
+| `PSC_VELXY_D` | `PSC_NE_VEL_D` | 0.25 | **0.5** |
+
+**Effect of wrong defaults:**
+- `PSC_NE_VEL_I = 1.0`: integrator accumulates velocity error over 40 s → grows without bound → oscillation that never converges. Root cause of every growing-oscillation failure observed.
+- `PSC_NE_POS_P = 1.0`: above the overdamped critical value (~0.44 with VEL_P=2.0, τ_att=0.15 s) → underdamped complex poles → sustained oscillation even with I=0.
+
+**Stability analysis (corrected params: POS_P=0.2, VEL_I=0, VEL_D=0.5):**
+- Inner velocity loop dominant pole: τ_vel ≈ 0.71 s (from `0.429s² + 3.01s + 3.0 = 0`)
+- Outer loop characteristic: `1.065s² + 1.5s + 0.2 = 0`
+- Discriminant: `2.25 − 4×1.065×0.2 = 1.398 > 0` → real poles → overdamped ✓
+- Poles: τ₁ ≈ 6.7 s, τ₂ ≈ 0.79 s → exp(−40/6.7) ≈ 0.3% remaining at 40 s → passes 0.5 m criterion
+
+**`no_gps.parm` was updated** to use the V4.8 names. Verify with `param show PSC_NE*` in MAVProxy after startup.
+
+Full debugging record: `instructions/ap3_holdgate_solving_process.md`.
 
 ---
 

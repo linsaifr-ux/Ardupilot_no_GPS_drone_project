@@ -76,7 +76,7 @@ print_usage() {
 }
 
 # ── Parse flags ────────────────────────────────────────────────────────────────
-TMUX_MODE=0; USE_PX4=0; WIPE=""; PARAMS=""; HEADLESS=0; NO_WINDOW=0; RASTERIZE=0; ANYLOC=0; DETECTION=0; USE_ISAAC=0
+TMUX_MODE=0; USE_PX4=0; WIPE=""; PARAMS=""; HEADLESS=0; NO_WINDOW=0; RASTERIZE=0; ANYLOC=0; DETECTION=0; USE_ISAAC=0; HOLDTEST=0
 for arg in "$@"; do
     case "$arg" in
         --tmux)       TMUX_MODE=1 ;;
@@ -89,6 +89,7 @@ for arg in "$@"; do
         --anyloc)     ANYLOC=1 ;;
         --detection)  DETECTION=1 ;;
         --isaac)      USE_ISAAC=1 ;;
+        --holdtest)   HOLDTEST=1 ;;
         --help|-h)    print_usage; exit 0 ;;
     esac
 done
@@ -256,6 +257,9 @@ if [[ "$TMUX_MODE" == "1" ]]; then
     echo "[run.sh] Cleaning up old ArduPilot processes..."
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     pkill -9 -f 'arducopter|mavproxy|mavros_node|ardupilot_commander' 2>/dev/null || true
+    # Also kill any stale PX4 SITL — it broadcasts to UDP 14550 (GCS port) and
+    # will be picked up by MAVROS instead of ArduPilot's MAVProxy.
+    pkill -9 -f '/px4 |bin/px4$' 2>/dev/null || true
     sleep 2
 
     WIN_NEXT=0
@@ -361,11 +365,12 @@ if [[ "$TMUX_MODE" == "1" ]]; then
     WIN_NEXT=$((WIN_NEXT+1))
 
     # ── Window 3: ArduPilot Commander ────────────────────────────────────────
-    echo "[run.sh] Starting ArduPilot commander..."
+    echo "[run.sh] Starting ArduPilot commander$([[ "$HOLDTEST" == "1" ]] && echo " (HOLDTEST=1)")..."
     tmux new-window -t "$SESSION"
     tmux rename-window -t "$SESSION:${WIN_NEXT}" "Commander"
+    HOLDTEST_PREFIX=""; [[ "$HOLDTEST" == "1" ]] && HOLDTEST_PREFIX="HOLDTEST=1 "
     tmux send-keys -t "$SESSION:${WIN_NEXT}" \
-        "bash '$SCRIPT_DIR/control/launch_commander_ardupilot.sh' 2>&1 | tee '$CMD_LOG'; exec bash" Enter
+        "${HOLDTEST_PREFIX}bash '$SCRIPT_DIR/control/launch_commander_ardupilot.sh' 2>&1 | tee '$CMD_LOG'; exec bash" Enter
     WIN_NEXT=$((WIN_NEXT+1))
 
     WIN_LABELS="0=Bridge/Isaac · 1=SITL · 2=MAVROS · 3=Commander"

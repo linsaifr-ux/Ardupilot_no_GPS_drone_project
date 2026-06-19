@@ -199,8 +199,12 @@ def main():
                               f"  pr={_kpitch_rate:+.2f}  vN={_kvn:+.2f}  vE={_kve:+.2f}"
                               f"  AGL={_agl:.1f}m")
                 else:
-                    # ArduCopter X-frame: first-order position filter (ch1=FR,ch2=RL,ch3=RR,ch4=FL)
-                    _roll_tgt  = ((_p4[1] + _p4[3]) - (_p4[0] + _p4[2])) * _K_MAX_TILT
+                    # ArduCopter QUAD-X (FRAME_TYPE=1): Motor→Servo mapping from AP_MotorsMatrix:
+                    #   Motor 1(FR,45°)→Servo1=ch1, Motor2(RL,-135°)→Servo2=ch2,
+                    #   Motor 3(RR,-45°)→Servo3=ch3, Motor4(FL,135°)→Servo4=ch4
+                    # Roll  right = (FR+RR) - (RL+FL) = right_side - left_side
+                    # Pitch fwd   = (FR+FL) - (RL+RR) = front - rear  → negative = nose down = northward
+                    _roll_tgt  = ((_p4[0] + _p4[2]) - (_p4[1] + _p4[3])) * _K_MAX_TILT
                     _pitch_tgt = ((_p4[0] + _p4[3]) - (_p4[1] + _p4[2])) * _K_MAX_TILT
                     _ka = _kdt / (_K_TILT_TAU + _kdt)
                     _kroll  += _ka * (_roll_tgt  - _kroll)

@@ -48,13 +48,13 @@ MOT_THST_HOVER  0.5
 # are tuned for real-drone dynamics. drone_sim.py's kinematic model responds
 # differently, causing I-term windup → motor imbalances → 180 m horizontal drift.
 # Reducing these makes corrections gentler and prevents runaway.
-ATC_ANG_RLL_P   1.5     # roll angle P (default 4.5)
-ATC_ANG_PIT_P   1.5     # pitch angle P (default 4.5)
-ATC_RAT_RLL_P   0.10    # roll rate P — raised from 0.04; needed to generate motor differential for tilt
-ATC_RAT_RLL_I   0.0     # roll rate I — zeroed: windup causes divergence with this kinematic model
+ATC_ANG_RLL_P   2.5     # roll angle P (default 4.5; raised now that motor decode is correct)
+ATC_ANG_PIT_P   2.5     # pitch angle P
+ATC_RAT_RLL_P   0.15    # roll rate P — motor decode correct; can use stronger response
+ATC_RAT_RLL_I   0.001   # roll rate I — minimum non-zero; ArduPilot rejects 0.0 as invalid param
 ATC_RAT_RLL_D   0.0     # roll rate D (removed — causes oscillation with kinematic IMU)
-ATC_RAT_PIT_P   0.10    # pitch rate P
-ATC_RAT_PIT_I   0.0     # pitch rate I — zeroed: same reason as roll
+ATC_RAT_PIT_P   0.15    # pitch rate P
+ATC_RAT_PIT_I   0.001   # pitch rate I — minimum non-zero; same reason as roll
 ATC_RAT_PIT_D   0.0     # pitch rate D
 
 # Altitude PID gains — default values are tuned for ~100 Hz physics.
@@ -69,11 +69,14 @@ WPNAV_SPEED_UP  100     # max climb rate cm/s (default 250) — gentler climb
 WPNAV_SPEED_DN  60      # max descent rate cm/s (default 150)
 WPNAV_SPEED     1200    # max horizontal speed cm/s — 12 m/s matches SURVEY_SPEED in ardupilot_commander.py
 
-# Horizontal position controller — reduce from defaults to prevent flyaway
-PSC_POSXY_P     0.3     # horizontal position P (default 1.0)
-PSC_VELXY_P     0.6     # horizontal velocity P (default 2.0)
-PSC_VELXY_I     0.0     # horizontal velocity I — zeroed (integrator drove slow oscillation)
-PSC_VELXY_D     0.75    # horizontal velocity D — strong damping; clean now via EK3_SRC1_VELXY=6 vision_speed
+# Horizontal position controller — ArduPilot V4.8+ renamed PSC_POSXY/VELXY → PSC_NE_*.
+# P_crit (overdamped boundary) ≈ (1+VEL_D)^2/(4*τ_vel) ≈ 0.44 with VEL_P=2.0, τ_att=0.15s.
+# NE_POS_P < P_crit → real eigenvalues → overdamped (τ_settle ≈ 5 s).
+# NE_VEL_I MUST be zero: default 1.0 causes integral windup → growing oscillation.
+PSC_NE_POS_P    0.2     # horizontal position P — below critical P≈0.44 → overdamped
+PSC_NE_VEL_P    2.0     # horizontal velocity P (keep default)
+PSC_NE_VEL_I    0.0     # horizontal velocity I — ZERO: default 1.0 causes integral windup
+PSC_NE_VEL_D    0.5     # horizontal velocity D — increase from default 0.25 for more damping
 
 # Prevent auto-disarm while debugging takeoff (10 s default causes disarm before liftoff)
 DISARM_DELAY    0

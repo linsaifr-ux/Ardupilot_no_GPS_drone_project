@@ -1148,8 +1148,9 @@ def _run_physics():
                 new_roll  = max(-_K_MAX_TILT, min(_K_MAX_TILT,
                                                    kroll  + new_roll_rate  * _kdt_loc))
             else:
-                # ArduCopter QUAD X: ch1=FR(45°) ch2=RR(135°) ch3=RL(-135°) ch4=FL(-45°).
-                _roll_tgt  = ((_p4[2] + _p4[3]) - (_p4[0] + _p4[1])) * _K_MAX_TILT
+                # ArduCopter QUAD-X: Motor1(FR)→ch1, Motor2(RL)→ch2, Motor3(RR)→ch3, Motor4(FL)→ch4
+                # Roll right = (FR+RR)-(RL+FL); Pitch fwd = (FR+FL)-(RL+RR), negative = northward
+                _roll_tgt  = ((_p4[0] + _p4[2]) - (_p4[1] + _p4[3])) * _K_MAX_TILT
                 _pitch_tgt = ((_p4[0] + _p4[3]) - (_p4[1] + _p4[2])) * _K_MAX_TILT
                 _ka        = _kdt_loc / (_K_TILT_TAU + _kdt_loc)
                 new_roll   = kroll  + _ka * (_roll_tgt  - kroll)

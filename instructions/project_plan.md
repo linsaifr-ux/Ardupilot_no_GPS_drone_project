@@ -217,7 +217,7 @@ ROS2 node. MAVROS2 + PX4 OFFBOARD mode via `setpoint_raw/local` (position target
 
 ### 5b. Flight Control — ArduPilot path (`control/ardupilot_commander.py`) **[RE-IMPLEMENTED]**
 
-**Status:** Implemented 2026-06-19 — pending test (AP-1 through AP-6)
+**Status:** AP-3 HOLD GATE passed 2026-06-19 (0.1 m drift). AP-4–AP-6 pending.
 
 ROS2 node. Ported from `px4_commander.py` with ArduPilot-specific additions (EKF origin, EKF_POS_HORIZ_ABS wait, NAV_TAKEOFF, LAND mode, force-arm fallback).
 
@@ -266,10 +266,11 @@ Original ArduPilot commander with the axis-swap bug. Velocity-based `go_to_ned()
 | `MOT_THST_HOVER` | 0.5 | hover PWM = 1500 (matches Isaac Sim k_T and kinematic model) |
 | `SCHED_LOOP_RATE` | 50 | matches Isaac Sim frame rate |
 | `DISARM_DELAY` | 0 | enables NAV_TAKEOFF path (removes land-detector deadlock) |
-| `WPNAV_SPEED` | 100 | 1 m/s horizontal max |
-| `PSC_POSXY_P` | 0.3 | horizontal position P (default 1.0) |
-| `PSC_VELXY_P` | 0.5 | horizontal velocity P (default 2.0) |
-| `PSC_VELXY_I` | 0.0 | horizontal velocity I — zeroed to prevent windup during 90 s climb |
+| `WPNAV_SPEED` | 1200 | 12 m/s horizontal max (matches SURVEY_SPEED) |
+| `PSC_NE_POS_P` | **0.2** | horizontal position P — V4.8 name; below P_crit≈0.44 → overdamped |
+| `PSC_NE_VEL_P` | 2.0 | horizontal velocity P |
+| `PSC_NE_VEL_I` | **0.0** | horizontal velocity I — MUST be zero; default 1.0 causes integral windup → growing oscillation |
+| `PSC_NE_VEL_D` | **0.5** | horizontal velocity D — raised from default 0.25 for damping |
 | `FS_CRASH_CHECK` | 0 | disable crash-detect disarm (kinematic model requires tilt angles that exceed the 30° threshold; re-enable on real hardware) |
 | `ATC_ANG_RLL_P` | 1.5 | roll angle P (default 4.5 → windup → drift) |
 | `ATC_ANG_PIT_P` | 1.5 | pitch angle P |
@@ -388,12 +389,12 @@ bash control/launch_commander_ardupilot.sh
 | PX4-8 | Survey mission plan: lawnmower + car detection response | Done ✓ |
 | PX4-9 | Implement survey commander: 12 m/s, 7-strip E-W lawnmower (91.7 m spacing, 33 m overlap, ~10.2 min), YOLO log-in-flight (no divert) | Done ✓ |
 | PX4-10 | Jetson distributed sim: Jetson runs commander+AnyLoc+YOLO, PC runs Isaac+PX4 | TODO |
-| AP-1 | ArduPilot SITL + drone_sim.py: EKF origin + arm in GUIDED | Pending test |
-| AP-2 | HOLDTEST: EKF_POS_HORIZ_ABS set; NAV_TAKEOFF; 3 m hold < 0.5 m drift | Pending test |
-| AP-3 | Single-WP nav: ENU setpoint fix verified (no mirror-direction) | Pending test |
-| AP-4 | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight | Pending test |
-| AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending test |
-| AP-6 | Full pipeline: `run.sh --tmux --isaac --anyloc --detection` | Pending test |
+| AP-1 | SITL + drone_sim.py: bridge connects, physics packets | Done ✓ |
+| AP-2 | EKF origin + arm in GUIDED succeeds | Done ✓ |
+| AP-3 | HOLDTEST: 40 s hold at 3 m AGL, drift < 0.5 m | Done ✓ (0.1 m, 2026-06-19) |
+| AP-4 | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight | Pending |
+| AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending |
+| AP-6 | Full pipeline: `run.sh --tmux --isaac --anyloc --detection` | Pending |
 | 6c | HIGHRES_IMU from ArduPilot → localization pipeline | TODO |
 | 6d | IMU fusion: AnyLoc anchor validator + VO quality gate | TODO |
 | 7 | Full pipeline: AnyLoc + VO + detection → PX4 commands | TODO |

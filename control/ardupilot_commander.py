@@ -581,7 +581,7 @@ class ArduPilotCommander(rclpy.node.Node):
                     self.get_logger().warn(
                         "Drone not lifting after 30 s — check DISARM_DELAY=0 in params")
                     return False
-            if agl >= alt_agl - 2.0:
+            if agl >= alt_agl - 0.5:
                 self.get_logger().info(f"Reached {alt_agl:.0f} m AGL ✓")
                 return True
 
@@ -593,7 +593,12 @@ class ArduPilotCommander(rclpy.node.Node):
         STABILIZE → arm → GUIDED → EKF origin → wait EKF_POS_HORIZ_ABS.
         Returns True on success, False on any failure.
         """
-        self.set_mode("STABILIZE")
+        # Retry STABILIZE — ArduPilot sometimes rejects the first request right after boot
+        for attempt in range(5):
+            if self.set_mode("STABILIZE"):
+                break
+            self.get_logger().warn(f"STABILIZE mode set failed (attempt {attempt+1}/5) — retrying in 1 s …")
+            time.sleep(1.0)
         time.sleep(0.5)
 
         print("[APCmd] Arming in STABILIZE …")
@@ -720,6 +725,14 @@ def main():
         stop.set(); cmd.destroy_node(); rclpy.shutdown(); return
     print("[APCmd] MAVROS connected ✓")
 
+    # Wait for ArduPilot to report a valid mode (not empty string) — SITL takes 2–5 s
+    # to finish initialization after the MAVLink heartbeat begins.
+    print("[APCmd] waiting for ArduPilot mode to initialize …")
+    if not cmd._spin_until(lambda: bool(cmd._state.mode), 30.0):
+        print("[APCmd] WARNING: ArduPilot mode never set — proceeding anyway")
+    else:
+        print(f"[APCmd] ArduPilot mode: {cmd._state.mode} ✓")
+
     # Spin briefly to populate /drone/state
     print("[APCmd] waiting for drone state (up to 30 s) …")
     _last_diag = [time.time()]
@@ -760,10 +773,14 @@ def main():
             e0 = cmd._drone.pose.position.x if cmd._drone else 0.0
             n0 = cmd._drone.pose.position.y if cmd._drone else 0.0
 
-        sp = cmd.make_sp(e0, n0, HOLD_AGL)
-        print(f"[APCmd] === HOLD GATE: {HOLD_AGL:.0f} m AGL for 40 s ===")
+        # Use ArduPilot's own PSC position loop: send a fixed position target at
+        # (e0, n0, HOLD_AGL) and let PSC_POSXY_P=0.8 / VELXY_D=0.5 handle stabilisation.
+        # Velocity carrot experiments consistently showed growing oscillation because
+        # ArduPilot's internal position hold fights the external velocity commands.
+        print(f"[APCmd] === HOLD GATE: {HOLD_AGL:.0f} m AGL for 40 s  (pos setpoint e0={e0:.1f} n0={n0:.1f}) ===")
         t_end = time.time() + 40.0; t_log = 0.0
         while time.time() < t_end:
+            sp = cmd.make_sp(e0, n0, HOLD_AGL)
             sp.header.stamp = cmd.get_clock().now().to_msg()
             cmd._sp_pub.publish(sp)
             rclpy.spin_once(cmd, timeout_sec=0.02)
@@ -771,10 +788,15 @@ def main():
                 t_log = time.time()
                 ds = cmd._drone.pose.position
                 agl = ds.z - HOME_ALT_MSL
+                lv2 = cmd._local_vel.twist.linear if cmd._local_vel else None
+                vspd = math.hypot(lv2.x, lv2.y) if lv2 else 0.0
                 print(f"[APCmd] drift E={ds.x-e0:+6.1f} N={ds.y-n0:+6.1f}"
-                      f"  AGL={agl:4.1f}  dist={math.hypot(ds.x-e0,ds.y-n0):5.1f} m"
+                      f"  AGL={agl:4.1f}  spd={vspd:.2f}  dist={math.hypot(ds.x-e0,ds.y-n0):5.1f} m"
                       f"  mode={cmd._state.mode} armed={cmd._state.armed}")
-        print("[APCmd] === gate done ===")
+        ds = cmd._drone.pose.position if cmd._drone else None
+        final_dist = math.hypot(ds.x - e0, ds.y - n0) if ds else 999.0
+        result = "PASS ✓" if final_dist < 0.5 else f"FAIL (drift={final_dist:.1f} m)"
+        print(f"[APCmd] === gate done — {result} ===")
         stop.set(); cmd.destroy_node(); rclpy.shutdown(); return
 
     # ── Full survey mission ────────────────────────────────────────────────────
