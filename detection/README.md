@@ -122,10 +122,7 @@ conda run -n isaac_sim_test --no-capture-output python3 detection/ros2_node.py
 | Subscribe | `/drone/agl` | `std_msgs/Float64` | AGL in metres — inference gated on AGL ≥ 50 m |
 | Publish | `/yolo/detections` | `vision_msgs/Detection2DArray` | bounding boxes + class + confidence |
 
-**Survey mission integration:** `px4_commander.py` subscribes to `/yolo/detections` and on
-vehicle detection projects the bounding-box centre to world coordinates via yaw-corrected
-GSD, deduplicates within 5 m, and appends to `detections.csv` (timestamp, category,
-confidence, lat, lon, agl_m). The survey route is never interrupted.
+**Survey mission integration:** Both `px4_commander.py` and `ardupilot_commander.py` subscribe to `/yolo/detections`. On vehicle detection each commander projects the bounding-box centre to world coordinates via yaw-corrected GSD, deduplicates within 5 m, and appends to `detections.csv` (timestamp, category, confidence, lat, lon, agl_m). The survey route is never interrupted.
 
 ### Detection2D fields
 

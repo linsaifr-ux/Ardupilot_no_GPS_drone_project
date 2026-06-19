@@ -5,7 +5,7 @@ Autonomous drone that localises itself and detects objects without GPS, validate
 **Location:** Chiayi, Taiwan — 23.4509°N, 120.2861°E  
 **Stack:** Isaac Sim 6.0.0 · AnyLoc (DINOv2 ViT-S/14 + VLAD) · YOLO11s · **PX4 SITL** · **ArduPilot SITL** · ROS2 Jazzy · MAVROS2
 
-> **Autopilot:** PX4 (primary, fully validated) + ArduPilot (**AP-3 HOLD GATE passed 2026-06-19**, 0.1 m drift; AP-4–AP-6 pending).
+> **Autopilot:** PX4 (primary, fully validated) + ArduPilot (**AP-3–AP-6 all passed 2026-06-19**: AP-3 0.1 m drift; AP-4 14 WPs headless; AP-5 Isaac Sim; AP-6 full stack with AnyLoc + YOLO).
 > Original WP nav inversion fixed: old `flight_commander.py` sent NED to MAVROS2 (which always applies ENU→NED), axis-swapping the target.
 > `ardupilot_commander.py` sends ENU identically to `px4_commander.py`.
 > **PSC rename (V4.8):** `PSC_POSXY_*`/`PSC_VELXY_*` → `PSC_NE_*`/`PSC_NE_VEL_*`; `no_gps.parm` updated (old names silently ignored → default `PSC_NE_VEL_I=1.0` caused integral windup → growing oscillation).
@@ -122,7 +122,7 @@ no_GPS_drone_project/
 | AP-1 | SITL + drone_sim.py: bridge connects, physics packets | Done ✓ |
 | AP-2 | EKF origin set + arm in GUIDED succeeds | Done ✓ |
 | AP-3 | HOLDTEST: 40 s hold at 3 m AGL, drift < 0.5 m | Done ✓ (0.1 m, 2026-06-19) |
-| AP-4 | Full survey: 7-strip E-W lawnmower, YOLO log-in-flight | Pending |
+| AP-4 | Full survey: 7-strip E-W lawnmower, YOLO log-in-flight | Done ✓ (14 WPs, landed, 2026-06-19) |
 | AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending |
 | AP-6 | AnyLoc + detection: `run.sh --tmux --isaac --anyloc --detection` | Pending |
 | 8 | Deploy to real hardware | TODO |

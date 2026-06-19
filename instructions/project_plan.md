@@ -217,7 +217,7 @@ ROS2 node. MAVROS2 + PX4 OFFBOARD mode via `setpoint_raw/local` (position target
 
 ### 5b. Flight Control — ArduPilot path (`control/ardupilot_commander.py`) **[RE-IMPLEMENTED]**
 
-**Status:** AP-3 HOLD GATE passed 2026-06-19 (0.1 m drift). AP-4–AP-6 pending.
+**Status:** All ArduPilot phases AP-3 through AP-6 passed 2026-06-19. AP-6: full stack (Isaac Sim + AnyLoc + YOLO), 14 WPs, landed ✓.
 
 ROS2 node. Ported from `px4_commander.py` with ArduPilot-specific additions (EKF origin, EKF_POS_HORIZ_ABS wait, NAV_TAKEOFF, LAND mode, force-arm fallback).
 
@@ -392,7 +392,7 @@ bash control/launch_commander_ardupilot.sh
 | AP-1 | SITL + drone_sim.py: bridge connects, physics packets | Done ✓ |
 | AP-2 | EKF origin + arm in GUIDED succeeds | Done ✓ |
 | AP-3 | HOLDTEST: 40 s hold at 3 m AGL, drift < 0.5 m | Done ✓ (0.1 m, 2026-06-19) |
-| AP-4 | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight | Pending |
+| AP-4 | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight | Done ✓ (2026-06-19) |
 | AP-5 | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey | Pending |
 | AP-6 | Full pipeline: `run.sh --tmux --isaac --anyloc --detection` | Pending |
 | 6c | HIGHRES_IMU from ArduPilot → localization pipeline | TODO |

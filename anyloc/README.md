@@ -3,9 +3,9 @@
 Visual place recognition for GPS-denied drone navigation.  
 Uses **DINOv2** patch features + **VLAD** aggregation + **FAISS** nearest-neighbour search against a geo-tagged satellite image database.
 
-Active backbone: **ViT-S/14** (`dinov2_vits14`) — half the feature dimension of ViT-B/14, ~2× faster inference, similar accuracy. The production localizer reads `model_name` from the database metadata and loads the correct backbone automatically.
+Active backbone: **ViT-B/14** (`dinov2_vitb14`) — the built database is in `anyloc/database/` and `ros2_node.py` points there. The localizer reads `model_name` from the database metadata and loads the correct backbone automatically.
 
-In the full pipeline, AnyLoc provides Phase 2 VPE (visual position estimates) when the drone is above 50 m AGL. Below that threshold the flight commander uses kinematic truth as Phase 1 VPE. AnyLoc estimates are published via `/mavros/vision_pose/pose_cov` with covariance proportional to retrieval error, so the EKF weights them appropriately.
+In the full pipeline, AnyLoc runs as a **Phase 2 logger** when the drone is above 50 m AGL: it subscribes to `/drone/camera/image_raw`, retrieves the nearest geo-tagged satellite crop, and writes `latest_estimate.json` with the estimated lat/lon, error, and confidence score. The flight commander logs these estimates but does **not** fuse them into the EKF — kinematic truth is used for VPE throughout the survey. Fusing AnyLoc VPE (cov ≈ 800 m², 20–60 m error) destabilises EKF3 (`position lost` failsafe).
 
 ---
 
@@ -48,11 +48,11 @@ Build once before running the localizer. Downloads NLSC PHOTO2 tiles (zoom 18) a
 Run from the **project root**:
 
 ```bash
-# ViT-S/14 (active — faster, used by ros2_node.py and run_localizer.py)
-conda run -n isaac_sim_test python anyloc/build_database.py --model vits14
-
-# ViT-B/14 (reference — larger, higher VLAD dim)
+# ViT-B/14 (active — used by ros2_node.py; larger VLAD dim = 49152)
 conda run -n isaac_sim_test python anyloc/build_database.py
+
+# ViT-S/14 (alternative — faster, smaller VLAD dim = 24576)
+conda run -n isaac_sim_test python anyloc/build_database.py --model vits14
 ```
 
 ### Build options
@@ -78,15 +78,15 @@ conda run -n isaac_sim_test python anyloc/build_database.py
 ### Output
 
 ```
-anyloc/database_vits14/       ← active (ViT-S/14)
+anyloc/database/              ← active (ViT-B/14, used by ros2_node.py)
 ├── database.pt               # split-file pointer
 ├── database_meta.pt          # lats, lons, alts, codebook, model_name
-├── database_vlads.pt         # VLAD vectors (N × 24576, ~265 MB)
+├── database_vlads.pt         # VLAD vectors (N × 49152, ~550 MB)
 ├── db_images/                # satellite crop JPEGs
 └── db_meta.json              # build cache (skip re-crop if present)
 
-anyloc/database/              ← reference (ViT-B/14)
-├── database_meta.pt          # VLAD vectors (N × 49152, ~530 MB)
+anyloc/database_vits14/       ← alternative (ViT-S/14, ~265 MB, faster)
+├── database_meta.pt          # VLAD vectors (N × 24576)
 └── …
 ```
 

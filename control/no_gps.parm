@@ -85,3 +85,8 @@ DISARM_DELAY    0
 # Kinematic model + VPE position hold requires tilt angles that exceed this threshold.
 # Disabled here; re-enable on real hardware.
 FS_CRASH_CHECK  0
+
+# GUIDED mode setpoint timeout (default 3 s) — when Isaac Sim runs at 200%+ CPU,
+# rclpy.spin_once() delays can exceed 3 s, causing ArduPilot to switch to LAND.
+# 30 s gives the commander time to recover from transient CPU spikes.
+GUID_TIMEOUT    30

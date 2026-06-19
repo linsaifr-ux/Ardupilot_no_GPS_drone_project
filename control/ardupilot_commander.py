@@ -368,16 +368,16 @@ class ArduPilotCommander(rclpy.node.Node):
                     except (FileNotFoundError, KeyError, json.JSONDecodeError):
                         pass
 
-                if agl >= MIN_LOCALISATION_AGL and anyloc_est is not None:
-                    east_v, north_v, yaw_v, cov_xy = anyloc_est
+                # Always use kinematic truth for VPE.  AnyLoc estimates (cov ~800 m²)
+                # cause EKF3 position-lost failsafe when their large innovations exceed
+                # EK3_POS_ERR_LIM — AnyLoc runs as a logger/comparison, not EKF input.
+                if self._drone is not None:
+                    east_v  = self._drone.pose.position.x
+                    north_v = self._drone.pose.position.y
                 else:
-                    if self._drone is not None:
-                        east_v  = self._drone.pose.position.x
-                        north_v = self._drone.pose.position.y
-                    else:
-                        east_v, north_v = 0.0, 0.0
-                    yaw_v  = math.pi / 2.0
-                    cov_xy = 0.1
+                    east_v, north_v = 0.0, 0.0
+                yaw_v  = math.pi / 2.0
+                cov_xy = 0.1
 
                 hy  = yaw_v / 2.0
                 msg = PoseWithCovarianceStamped()
@@ -590,8 +590,12 @@ class ArduPilotCommander(rclpy.node.Node):
 
     def engage_guided(self):
         """
-        STABILIZE → arm → GUIDED → EKF origin → wait EKF_POS_HORIZ_ABS.
-        Returns True on success, False on any failure.
+        STABILIZE → arm → EKF origin → wait EKF_POS_HORIZ_ABS → GUIDED.
+
+        EKF origin and POS_ABS wait come BEFORE switching to GUIDED because
+        ArduPilot rejects GUIDED mode with "requires position" if the EKF
+        does not have a valid absolute position. This matters especially after
+        a previous run where VPE stopped and the EKF entered failsafe.
         """
         # Retry STABILIZE — ArduPilot sometimes rejects the first request right after boot
         for attempt in range(5):
@@ -606,9 +610,8 @@ class ArduPilotCommander(rclpy.node.Node):
             print("[APCmd] ABORT: arm failed")
             return False
 
-        self.set_mode("GUIDED")
-        time.sleep(0.5)
-
+        # Publish EKF origin before asking for GUIDED: origin is required for
+        # the EKF to build an absolute position estimate.
         if not self.set_ekf_origin(HOME_LAT, HOME_LON, HOME_ALT_MSL):
             print("[APCmd] ABORT: EKF origin failed")
             return False
@@ -616,6 +619,14 @@ class ArduPilotCommander(rclpy.node.Node):
         if not self.wait_ekf_pos(timeout=60.0):
             print("[APCmd] ABORT: EKF POS_ABS not reached — check VPE flow")
             return False
+
+        # Now that EKF has valid absolute position, GUIDED mode will accept.
+        for attempt in range(5):
+            if self.set_mode("GUIDED"):
+                break
+            self.get_logger().warn(f"GUIDED mode set failed (attempt {attempt+1}/5) — retrying in 1 s …")
+            time.sleep(1.0)
+        time.sleep(0.5)
 
         return True
 

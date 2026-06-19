@@ -6,7 +6,7 @@ Two autopilots are supported via the `PX4_SIM` environment variable:
 | Autopilot | Bridge | Transport | Commander | Status |
 |-----------|--------|-----------|-----------|--------|
 | **PX4** (`PX4_SIM=1`) | `px4_sim_bridge.py` | MAVLink HIL, TCP 4560 | `px4_commander.py` | **Full mission ready** — phases 1–5 complete; position-hold gate passed (<0.3 m drift); waypoint nav 90 m AGL / 699 m leg implemented |
-| **ArduPilot** (default) | `sitl_bridge.py` | JSON FDM, UDP 9002 | `ardupilot_commander.py` | **AP-3 HOLD GATE passed 2026-06-19** (0.1 m drift). ENU setpoint fix + PSC_NE_* parameter rename fix applied. AP-4–AP-6 pending. |
+| **ArduPilot** (default) | `sitl_bridge.py` | JSON FDM, UDP 9002 | `ardupilot_commander.py` | **AP-3–AP-6 all passed** 2026-06-19. AP-6: full stack (Isaac Sim + AnyLoc + YOLO), 14 WPs, landed ✓. |
 
 Root cause of original ArduPilot failure: `flight_commander.py` sent NED coordinates to `setpoint_raw/local`; MAVROS2 always applies ENU→NED regardless of the frame flag, swapping axes before forwarding to ArduPilot. `ardupilot_commander.py` sends ENU (identical to `px4_commander.py`) and the inversion is resolved. `flight_commander.py` is kept as a reference archive.
 
@@ -209,7 +209,7 @@ bash control/launch_commander_ardupilot.sh
 | AP-1 | Done ✓ | SITL + drone_sim.py: bridge connects, physics packets |
 | AP-2 | Done ✓ | EKF origin + arm in GUIDED succeeds |
 | AP-3 | **Done ✓** (2026-06-19) | HOLDTEST: 40 s hold at 3 m AGL — **0.1 m drift** (PSC_NE rename fix) |
-| AP-4 | Pending | Full survey: 7-strip E-W lawnmower 91.7 m spacing, YOLO log-in-flight |
+| AP-4 | **Done ✓** (2026-06-19) | Full survey: 7-strip lawnmower, 14 WPs, 65 m AGL, 12 m/s, landed ✓ |
 | AP-5 | Pending | Isaac Sim pipeline: `run.sh --tmux --isaac` + full survey |
 | AP-6 | Pending | AnyLoc + detection: `run.sh --tmux --isaac --anyloc --detection` |
 

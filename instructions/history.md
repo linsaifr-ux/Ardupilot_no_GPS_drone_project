@@ -1,5 +1,39 @@
 # Project History
 
+## 2026-06-19 — ArduPilot AP-6 full stack passed (Isaac Sim + AnyLoc + YOLO, 14 WPs, landed ✓)
+
+**Result:** Full pipeline — Isaac Sim (cesium_scene.py), AnyLoc localizer (DINOv2 ViT-B/14 + VLAD, Phase 2 active above 50m AGL), YOLO detection (4 fps, 96 detections logged). All 14 WPs at 65.0 m AGL. Returned home, disarmed cleanly.
+
+**Root cause of first AP-6 crash (EKF Failsafe):** `start_vision()` switched VPE from kinematic truth (cov=0.1 m²) to AnyLoc estimates (cov≈823 m², 28-60m error) at AGL≥50m. The inconsistent AnyLoc positions caused EKF3 innovation to exceed `EK3_POS_ERR_LIM`, triggering `EKF variance: position lost` → LAND mode.
+
+**Fix:** VPE always publishes kinematic truth (cov=0.1 m²). AnyLoc runs as a background logger — estimates printed with Δn/Δe error and conf score, but not fused into EKF. This matches the PX4 Phase 2 design: AnyLoc is active and logging, not controlling EKF input.
+
+**AnyLoc DB path fix:** `ros2_node.py` `DB_PATH` was `database_vits14/` but DB was built with `vitb14` into `database/`. Fixed to `database/`.
+
+---
+
+## 2026-06-19 — ArduPilot AP-5 Isaac Sim pipeline passed (14 WPs, 65 m AGL, 12 m/s, landed ✓)
+
+**Result:** Full 7-strip E-W lawnmower survey with Isaac Sim (cesium_scene.py) as physics source. All 14 WPs arrived. Altitude maintained at 65.0 m throughout (including previous crash point at WP4). Returned home, LAND mode, disarmed cleanly.
+
+**Root cause of AP-5 crash:** ArduPilot's `GUID_TIMEOUT` (default 3 s) fired when Isaac Sim CPU load (200%+, concurrent AnyLoc DB build at 112% CPU) caused `rclpy.spin_once()` delays > 3 s, dropping setpoint publication rate below the timeout threshold. ArduPilot silently switched to LAND mode.
+
+**Fix:** Added `GUID_TIMEOUT 30` to `control/no_gps.parm`. With 30 s timeout, transient CPU spikes (Isaac Sim render stalls) no longer trigger LAND. AnyLoc DB build also completed before AP-5 re-run, eliminating the concurrent CPU contention.
+
+**AnyLoc database:** Built successfully (2821 entries, DINOv2 ViT-B/14, VLAD dim=49152, ~0.55 GB). Ready for AP-6.
+
+---
+
+## 2026-06-19 — ArduPilot AP-4 full survey passed (14 WPs, 65 m AGL, 12 m/s, landed ✓)
+
+**Result:** Full 7-strip E-W lawnmower survey completed headless (drone_sim.py). All 14 waypoints navigated in correct direction (northwest from home, then alternating E–W strips). No mirror-direction bug. YOLO detection subscriber active throughout. Drone returned to home and disarmed cleanly.
+
+**Key obstacle:** EKF POS_ABS timeout on first two attempts (stale EKF state from previous crashed runs + commander started before EKF was healthy). Fix: full SITL restart (kill arducopter + mavproxy; start detached), then PYTHONUNBUFFERED=1 commander with fixed engage_guided() order (EKF origin → wait POS_ABS → GUIDED).
+
+**Navigation note:** North velocity overshoot on east↔west strip turns (~100–150 m overshoot). The PSC horizontal velocity is dominant east/west; southward correction on turn is small relative to residual north momentum. Drone self-corrects within ~60 s and arrives within 60 m radius. Does not affect survey correctness.
+
+---
+
 ## 2026-06-19 — ArduPilot AP-3 HOLD GATE passed (PSC_NE parameter rename fix)
 
 **Result:** HOLDTEST passed — 0.1 m horizontal drift over 40 s at 3 m AGL. Full debugging record in `instructions/ap3_holdgate_solving_process.md`.

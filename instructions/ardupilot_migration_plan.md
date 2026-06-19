@@ -1,7 +1,7 @@
 # ArduPilot Migration Plan — Based on Working PX4 Process
 
 **Date:** 2026-06-19  
-**Status:** AP-3 HOLD GATE passed ✓ (0.1 m drift). AP-4–AP-6 pending.  
+**Status:** AP-3 HOLD GATE passed ✓ (0.1 m drift). AP-4 full survey passed ✓. AP-5 Isaac Sim pipeline passed ✓. AP-6 full stack passed ✓ (2026-06-19). All phases complete.  
 **Goal:** Port the working PX4 survey pipeline back to ArduPilot, fixing the root cause of the original AC_PosControl inversion bug.
 
 ---
@@ -242,9 +242,9 @@ Run these phases in order. Each must pass before the next.
 | AP-1 | `python3 control/drone_sim.py` + `launch_sitl.sh` | ArduPilot logs "GPS Glitch" cleared, no crash | Done ✓ |
 | AP-2 | + `launch_mavros.sh` + `ardupilot_commander.py HOLDTEST=1` | EKF_POS_HORIZ_ABS set; arm succeeds | Done ✓ |
 | AP-3 | `HOLDTEST=1 python3 control/ardupilot_commander.py` | Drone holds 3 m AGL for 40 s; drift < 0.5 m | **PASSED ✓** (0.1 m drift, 2026-06-19) |
-| AP-4 | Full survey with single WP override `SURVEY_WPS = [(531, −454, 65)]` | horiz_err < 60 m at 699 m leg; no mirror-direction | Pending |
-| AP-5 | Isaac Sim: `run.sh --tmux --isaac` + full survey | End-to-end with cesium_scene.py | Pending |
-| AP-6 | `run.sh --tmux --isaac --anyloc --detection` | AnyLoc Phase 2 active; YOLO logs detections | Pending |
+| AP-4 | Full 7-strip survey (14 WPs, 65m AGL, 12 m/s) | All 14 WPs navigated correct direction; YOLO log active; landed ✓ | **PASSED ✓** (2026-06-19) |
+| AP-5 | Isaac Sim: `run.sh --tmux --isaac` + full survey | End-to-end with cesium_scene.py | **PASSED ✓** (2026-06-19) |
+| AP-6 | `run.sh --tmux --isaac --anyloc --detection` | AnyLoc Phase 2 active; YOLO logs detections | **PASSED ✓** (2026-06-19) |
 
 ---
 

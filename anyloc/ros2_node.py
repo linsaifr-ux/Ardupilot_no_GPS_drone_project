@@ -62,7 +62,7 @@ SEARCH_RADIUS_M = 200.0
 MIN_AGL         = 50.0   # m — below this AGL skip inference (matches px4_commander Phase 2)
 
 HERE          = os.path.dirname(os.path.abspath(__file__))
-DB_PATH       = os.path.join(HERE, "database_vits14")
+DB_PATH       = os.path.join(HERE, "database")
 ESTIMATE_JSON = os.path.join(HERE, "latest_estimate.json")
 
 
