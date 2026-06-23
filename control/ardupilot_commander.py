@@ -123,7 +123,7 @@ ZONE_VERTS = [
     (121.0, -1293.0),   # SW'
 ]
 
-# Camera parameters (AP-IMX900-Mini-USB3-I5 at 1024×768 publish resolution)
+# Camera parameters (AP-IMX900-Mini-USB3-I5 at 1280×960 publish resolution)
 CAM_W    = 1024
 CAM_H    = 768
 HFOV_DEG = 88.0

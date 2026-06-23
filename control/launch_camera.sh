@@ -9,7 +9,7 @@ echo "[camera] Using $CAMERA_DEV"
 ros2 run v4l2_camera v4l2_camera_node \
     --ros-args \
     -p video_device:="$CAMERA_DEV" \
-    -p image_size:=[1280,720] \
+    -p image_size:=[1280,960] \
     -p pixel_format:="YUYV" \
     -p output_encoding:="rgb8" \
     -p camera_frame_rate:=30.0 \

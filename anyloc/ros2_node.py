@@ -36,7 +36,7 @@ if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
 import rclpy
 import rclpy.node
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, NavSatFix
 from std_msgs.msg import Float64
 
 import matplotlib
@@ -136,6 +136,11 @@ class AnyLocNode(rclpy.node.Node):
         self._drone_agl = 0.0
         self._agl_logged = False   # one-time "AGL reached" print
 
+        # GPS ground truth from MAVROS (used for error_m; avoids circular
+        # comparison when EKF is on SRC2/ExternalNav)
+        self._gps_lat = HOME_LAT
+        self._gps_lon = HOME_LON
+
         # Latest results shared with postview thread
         self.lock         = threading.Lock()
         self.latest_frame  = None   # PIL drone camera image
@@ -143,9 +148,10 @@ class AnyLocNode(rclpy.node.Node):
         self.latest_result = None   # dict with all display fields
 
         # Subscribers
-        self.create_subscription(Image,       "/drone/camera/image_raw", self._cb_image, 1)
-        self.create_subscription(PoseStamped, "/drone/pose",             self._cb_pose,  10)
-        self.create_subscription(Float64,     "/drone/agl",              self._cb_agl,   10)
+        self.create_subscription(Image,       "/drone/camera/image_raw",          self._cb_image, 1)
+        self.create_subscription(PoseStamped, "/drone/pose",                       self._cb_pose,  10)
+        self.create_subscription(Float64,     "/drone/agl",                        self._cb_agl,   10)
+        self.create_subscription(NavSatFix,   "/mavros/global_position/global",   self._cb_gps,   10)
 
         # Publishers
         self.pub_est = self.create_publisher(
@@ -172,6 +178,11 @@ class AnyLocNode(rclpy.node.Node):
         self._drone_alt = msg.pose.position.z
         self._drone_yaw = _yaw_from_quat(
             msg.pose.orientation.z, msg.pose.orientation.w)
+
+    def _cb_gps(self, msg):
+        if msg.status.status >= 0:  # STATUS_NO_FIX = -1
+            self._gps_lat = msg.latitude
+            self._gps_lon = msg.longitude
 
     def _cb_agl(self, msg):
         self._drone_agl = msg.data if msg.data > 0.5 else self._drone_agl
@@ -264,12 +275,14 @@ class AnyLocNode(rclpy.node.Node):
         # Write JSON every frame with VO-smoothed position so the commander's
         # VPE thread gets a continuous update stream instead of a stale anchor
         # that jumps every ANYLOC_INTERVAL frames (~2 s), causing EKF2 lurches.
+        gps_lat = self._gps_lat
+        gps_lon = self._gps_lon
         self._write_estimate(est_lat, est_lon, drone_alt, agl_m, yaw_deg,
-                             score, drone_lat, drone_lon)
+                             score, gps_lat, gps_lon)
 
         self._publish(est_lat, est_lon, drone_alt)
 
-        err_m      = _geo_dist_m(drone_lat, drone_lon, est_lat, est_lon)
+        err_m      = _geo_dist_m(gps_lat, gps_lon, est_lat, est_lon)
         anchor_age = 0 if run_anyloc else (self._frame_count % ANYLOC_INTERVAL)
         mode_tag   = 'ANYLOC' if run_anyloc else f'VO +{anchor_age}f'
 
@@ -286,6 +299,7 @@ class AnyLocNode(rclpy.node.Node):
                 drone_lat=drone_lat, drone_lon=drone_lon,
                 drone_alt=drone_alt, drone_agl=agl_m,
                 drone_yaw=math.degrees(self._drone_yaw),
+                gps_lat=gps_lat, gps_lon=gps_lon,
                 est_lat=est_lat, est_lon=est_lon,
                 err_m=err_m, score=score, db_idx=db_idx,
                 n_vo=n_vo, elapsed_ms=elapsed_ms,
@@ -329,13 +343,13 @@ class AnyLocNode(rclpy.node.Node):
             self.pub_mavros_vpe.publish(vpe)
 
     def _write_estimate(self, est_lat, est_lon, alt_msl, agl_m,
-                        yaw_deg, score, drone_lat, drone_lon):
+                        yaw_deg, score, gps_lat, gps_lon):
         est = {
             "timestamp": time.time(),
             "est_lat":   est_lat, "est_lon":  est_lon,
             "alt_msl_m": alt_msl, "agl_m":    agl_m,
             "yaw_deg":   yaw_deg, "score":    float(score),
-            "error_m":   float(_geo_dist_m(drone_lat, drone_lon,
+            "error_m":   float(_geo_dist_m(gps_lat, gps_lon,
                                            est_lat, est_lon)),
         }
         tmp = ESTIMATE_JSON + ".tmp"

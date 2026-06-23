@@ -1,0 +1,193 @@
+# Field AnyLoc Database Collection
+
+Build a real-imagery AnyLoc database by flying a grid survey, recording video + telemetry, then running the offline pipeline.
+
+**Hardware:** Jetson Orin NX · AP-IMX900-Mini-USB3-I5 (`/dev/video0`, 2048×1536 native) · ArduPilot FC  
+**Scripts:** `tools/record_field.py` · `tools/extract_frames.py` · `anyloc/build_database_real.py`
+
+---
+
+## Why a real database
+
+The default `build_database.py` generates synthetic crops from NLSC satellite tiles.  
+A real-imagery database uses the actual camera, actual lighting, and actual terrain texture — closer to what the drone sees at inference time.
+
+---
+
+## How recording works
+
+`record_field.py` records **two streams in parallel**:
+
+| Stream | Transport | Source |
+|---|---|---|
+| Video | GStreamer → `/dev/video0` directly | H.264, 2048×1536 30fps, ~58 MB/min |
+| Telemetry | ROS2 subscriptions | lat/lon/AGL/heading at 5 Hz → CSV |
+
+Video goes **directly to the V4L2 device, not through ROS**. This means:
+
+- `launch_camera.sh` must **not** be running during collection — it also opens `/dev/video0` and will conflict
+- AnyLoc and YOLO nodes must also be stopped for the same reason
+- Only MAVROS + hw_bridge are needed (they don't touch the camera)
+
+---
+
+## Camera FOV at 65 m AGL
+
+The camera spec is HFOV=88° × VFOV=65.1° at native 4:3 (2048×1536).  
+The inference node publishes at **1280×960** (4:3) to preserve the full FOV — do not change it to 1280×720 (16:9 crops the sensor vertically and reduces VFOV to ~57°).
+
+| | Ground width | Ground height | GSD |
+|---|---|---|---|
+| Recording 2048×1536 | 125.5 m | 83.0 m | 6.1 × 5.4 cm/px |
+| Inference 1280×960 | 125.5 m | 83.0 m | 9.8 × 8.7 cm/px |
+
+---
+
+## Flight plan
+
+- **Pattern:** lawnmower (boustrophedon) grid
+- **Altitude:** 65 m AGL constant (matches operational mission altitude)
+- **Strip spacing:** 50 m → 60% side overlap ✓ (optimal 35 m → 72%)
+- **Ground speed:** ≤ 3 m/s (reduces motion blur)
+- **Heading:** any — `extract_frames.py --rotate` corrects to North-up in post
+- **Area:** full operational zone + 20% margin
+- **Lighting:** fly at the same time of day as planned GPS-denied missions (shadows are strong VLAD features and shift between morning and afternoon)
+
+**Estimated storage:** ~58 MB/min → ≈ 1.2 GB for a 20-minute survey
+
+### Overlap guide
+
+| Strip spacing | Side overlap | |
+|---|---|---|
+| 35 m | 72% | optimal |
+| 50 m | 60% | acceptable |
+| 75 m | 40% | too low |
+
+| Frame spacing (`--min-dist`) | Forward overlap | |
+|---|---|---|
+| 25 m | 70% | optimal |
+| 30 m | 64% | acceptable |
+| 50 m | 40% | too low |
+
+---
+
+## Terminal setup during collection flight
+
+```
+Terminal 1   bash control/launch_mavros_real.sh
+Terminal 2   source /opt/ros/humble/setup.bash && python3 control/hw_bridge.py
+Terminal 3   source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1
+```
+
+Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for `/dev/video0`.
+
+---
+
+## Step 1 — Record
+
+```bash
+source /opt/ros/humble/setup.bash
+python3 tools/record_field.py --output field_data/survey1
+```
+
+Live status while recording:
+```
+[REC]    42s  lat=23.451234  lon=120.287654  agl=65.2 m  hdg=045°
+```
+
+Press **Ctrl+C** to stop (or `--duration SECONDS` for a fixed length).
+
+Output in `field_data/survey1/`:
+```
+video.mp4       H.264, 2048×1536 30fps
+telemetry.csv   unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
+meta.json       video_start_unix, fps, width, height
+```
+
+---
+
+## Step 2 — Extract frames
+
+```bash
+python3 tools/extract_frames.py field_data/survey1/ --rotate --min-dist 25
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--min-dist` | 30 m | Minimum ground distance between saved frames (25 m recommended) |
+| `--min-agl` | 50 m | Skip frames below this AGL |
+| `--rotate` | off | Rotate each frame to North-up using heading |
+
+Output in `field_data/survey1/`:
+```
+frames/000000.jpg, 000001.jpg, …   geo-tagged frames
+frames.csv                          path, lat, lon, alt_amsl, alt_agl, heading_deg
+```
+
+---
+
+## Step 3 — Build the database
+
+```bash
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database_real.py field_data/survey1/
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--model` | `vits14` | DINOv2 backbone — must match the inference node |
+| `--db-dir` | `anyloc/database_real` | Output directory |
+| `--rebuild` | off | Overwrite existing database |
+
+Output in `anyloc/database_real/`:
+```
+database.pt         split-format pointer (identical layout to build_database.py output)
+database_meta.pt    lats, lons, alts (AGL), codebook, model_name
+database_vlads.pt   (N × D) VLAD matrix
+db_images/          640×480 thumbnails for localizer visualisation fallback
+```
+
+---
+
+## Step 4 — Activate
+
+```bash
+ln -sfn database_real anyloc/database
+```
+
+Verify:
+```bash
+ls -la anyloc/database
+/home/jetson/venv/anyloc/bin/python3 -c "
+import torch
+db = torch.load('anyloc/database/database.pt', weights_only=False)
+meta = torch.load(db['meta'], weights_only=False)
+vlads = torch.load(db['vlads'], weights_only=False)
+print(f'entries={vlads.shape[0]}  vlad_dim={vlads.shape[1]}  model={meta[\"model_name\"]}')
+"
+```
+
+---
+
+## Switching back to satellite database
+
+```bash
+ln -sfn database_vits14 anyloc/database
+```
+
+---
+
+## Files summary
+
+| File | Purpose |
+|---|---|
+| `tools/record_field.py` | Record video + telemetry during the survey flight |
+| `tools/extract_frames.py` | Extract geo-tagged frames from the recording |
+| `anyloc/build_database_real.py` | Build AnyLoc database from extracted frames |
+| `control/launch_camera.sh` | **Do not run during collection** — conflicts with recorder |
+| `field_data/<session>/video.mp4` | Raw recording (keep until DB verified) |
+| `field_data/<session>/frames.csv` | Frame index with GPS + heading |
+| `anyloc/database_real/` | Ready-to-use database (activate with symlink) |
