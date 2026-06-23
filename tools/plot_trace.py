@@ -22,9 +22,9 @@ except ImportError:
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
 TRACE_DIR  = os.path.join(HERE, "..", "simulator", "flight_traces")
-# Mission waypoint (same as WAYPOINTS in px4_commander.py)
+# Mission waypoint (same as WAYPOINTS in px4_commander.py / ardupilot_commander.py)
 WP_NORTH, WP_EAST = 531.2, -453.9
-WP_RADIUS         = 60.0
+WP_RADIUS         = 8.0
 
 
 def load_csv(path):

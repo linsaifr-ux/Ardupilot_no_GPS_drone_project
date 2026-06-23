@@ -43,8 +43,8 @@ import rclpy.node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
-from mavros_msgs.msg import Mavlink, PositionTarget, State
-from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode
+from mavros_msgs.msg import Mavlink, PositionTarget, State, Waypoint as MavWP, WaypointReached
+from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, ParamSet, SetMode, WaypointPush, WaypointClear
 
 try:
     from vision_msgs.msg import Detection2DArray
@@ -78,7 +78,12 @@ except (FileNotFoundError, KeyError):
 # ── Mission parameters ─────────────────────────────────────────────────────────
 TAKEOFF_ALT          = float(os.environ.get("TAKEOFF_ALT", "65.0"))
 HOLD_AGL             = 3.0    # m — Phase-3 gate altitude (HOLDTEST mode)
-WAYPOINT_RADIUS      = 60.0   # m — survey waypoint arrival threshold
+WAYPOINT_RADIUS      = 30.0   # m — enter stop-and-wait zone
+ARRIVAL_SPEED        = 0.3    # m/s — speed threshold to confirm stopped
+ARRIVAL_STABLE       = 5      # consecutive readings below ARRIVAL_SPEED before switching WP
+APPROACH_DECEL       = 0.015  # 1/s — vel_cmd = min(speed, APPROACH_DECEL * hdist)
+                               #        ramp reaches 0.45 m/s at 30 m; decel rate 0.015*7=0.105 m/s²
+                               #        safely below drone's ~0.12 m/s² effective decel limit
 WAYPOINT_TIMEOUT     = 900.0  # s per waypoint
 MIN_LOCALISATION_AGL = 50.0   # m — below this use truth VPE; above, use AnyLoc
 
@@ -88,22 +93,24 @@ COS_LAT   = math.cos(math.radians(HOME_LAT))
 M_PER_DEG = 111_320.0
 
 # ── Survey waypoints (north_m, east_m, agl_m relative to home) ────────────────
-# 7-strip E-W boustrophedon lawnmower; 91.7 m N-S spacing; 65 m AGL; ~7.36 km.
+# 7-strip boundary-parallel boustrophedon; −10.63° from east; 86.3 m strip spacing.
+# Mirrors SURVEY_WPS in tools/live_trace.py exactly.
+# Corner WPs (indices 2,4,6,8,10,12) are boundary-touch turns between strips.
 SURVEY_WPS = [
-    ( 60.0,   -573.0,  TAKEOFF_ALT),  # ENTRY: E end strip S  → fly W
-    ( 60.0,   -972.0,  TAKEOFF_ALT),  # WP01 : W end strip S
-    (152.0,  -1288.0,  TAKEOFF_ALT),  # WP02 : W end strip 1  → fly E
-    (152.0,   -556.0,  TAKEOFF_ALT),  # WP03 : E end strip 1
-    (243.0,   -539.0,  TAKEOFF_ALT),  # WP04 : E end strip 2  → fly W
-    (243.0,  -1275.0,  TAKEOFF_ALT),  # WP05 : W end strip 2
-    (335.0,  -1261.0,  TAKEOFF_ALT),  # WP06 : W end strip 3  → fly E
-    (335.0,   -521.0,  TAKEOFF_ALT),  # WP07 : E end strip 3
-    (427.0,   -504.0,  TAKEOFF_ALT),  # WP08 : E end strip 4  → fly W
-    (427.0,  -1247.0,  TAKEOFF_ALT),  # WP09 : W end strip 4
-    (518.0,  -1234.0,  TAKEOFF_ALT),  # WP10 : W end strip 5  → fly E
-    (518.0,   -548.0,  TAKEOFF_ALT),  # WP11 : E end strip 5
-    (610.0,  -1043.0,  TAKEOFF_ALT),  # WP12 : E end strip N  → fly W
-    (610.0,  -1220.0,  TAKEOFF_ALT),  # WP13 : W end strip N
+    (  -6.0,   -591.0,  TAKEOFF_ALT),  # 0  ENTRY : E end strip 1  → fly W
+    ( 124.0,  -1288.0,  TAKEOFF_ALT),  # 1  WP01  : W end strip 1
+    ( 210.0,  -1275.0,  TAKEOFF_ALT),  # 2  WP02  : W boundary corner → fly NE
+    (  78.0,   -575.0,  TAKEOFF_ALT),  # 3  WP03  : E end strip 2
+    ( 163.0,   -559.0,  TAKEOFF_ALT),  # 4  WP04  : E boundary corner → fly NE
+    ( 295.0,  -1262.0,  TAKEOFF_ALT),  # 5  WP05  : W end strip 3  → fly W
+    ( 381.0,  -1249.0,  TAKEOFF_ALT),  # 6  WP06  : W boundary corner → fly NE
+    ( 248.0,   -543.0,  TAKEOFF_ALT),  # 7  WP07  : E end strip 4
+    ( 333.0,   -527.0,  TAKEOFF_ALT),  # 8  WP08  : E boundary corner → fly NE
+    ( 466.0,  -1236.0,  TAKEOFF_ALT),  # 9  WP09  : W end strip 5  → fly W
+    ( 551.0,  -1224.0,  TAKEOFF_ALT),  # 10 WP10  : W boundary corner → fly NE
+    ( 418.0,   -511.0,  TAKEOFF_ALT),  # 11 WP11  : E end strip 6
+    ( 502.0,   -495.0,  TAKEOFF_ALT),  # 12 WP12  : E boundary corner → fly NE
+    ( 637.0,  -1211.0,  TAKEOFF_ALT),  # 13 WP13  : W end strip 7  (final)
 ]
 
 # ── Detection zone — buffered boundary (30 m inward from raw corners) ──────────
@@ -162,6 +169,7 @@ class ArduPilotCommander(rclpy.node.Node):
 
         self._ekf_flags           = 0
         self._gps_origin_received = False
+        self._wp_reached          = -1   # seq of last WaypointReached (1-based mission index)
 
         self._latest_frame     = None
         self._det_count        = 0
@@ -169,16 +177,18 @@ class ArduPilotCommander(rclpy.node.Node):
 
         # Subscribers
         from geometry_msgs.msg import PoseStamped
-        self.create_subscription(State,        "/mavros/state",
+        self.create_subscription(State,          "/mavros/state",
                                  self._cb_state, 10)
-        self.create_subscription(PoseStamped,  "/mavros/local_position/pose",
+        self.create_subscription(PoseStamped,    "/mavros/local_position/pose",
                                  self._cb_local, _SENSOR_QOS)
-        self.create_subscription(TwistStamped, "/mavros/local_position/velocity_local",
+        self.create_subscription(TwistStamped,   "/mavros/local_position/velocity_local",
                                  self._cb_vel,   _SENSOR_QOS)
-        self.create_subscription(PoseStamped,  "/drone/state",
+        self.create_subscription(PoseStamped,    "/drone/state",
                                  self._cb_drone, _SENSOR_QOS)
-        self.create_subscription(Mavlink,      "/uas1/mavlink_source",
+        self.create_subscription(Mavlink,        "/uas1/mavlink_source",
                                  self._cb_mavlink, _SENSOR_QOS)
+        self.create_subscription(WaypointReached, "/mavros/mission/reached",
+                                 self._cb_wp_reached, 10)
 
         if _HAVE_VISION_MSGS:
             self.create_subscription(Detection2DArray, "/yolo/detections",
@@ -204,18 +214,22 @@ class ArduPilotCommander(rclpy.node.Node):
             GeoPointStamped, "/mavros/global_position/set_gp_origin", 1)
 
         # Service clients
-        self._arm_cli  = self.create_client(CommandBool, "/mavros/cmd/arming")
-        self._mode_cli = self.create_client(SetMode,     "/mavros/set_mode")
-        self._tof_cli  = self.create_client(CommandTOL,  "/mavros/cmd/takeoff")
-        self._cmd_cli  = self.create_client(CommandLong, "/mavros/cmd/command")
+        self._arm_cli  = self.create_client(CommandBool,  "/mavros/cmd/arming")
+        self._mode_cli = self.create_client(SetMode,      "/mavros/set_mode")
+        self._tof_cli  = self.create_client(CommandTOL,   "/mavros/cmd/takeoff")
+        self._cmd_cli  = self.create_client(CommandLong,  "/mavros/cmd/command")
+        self._wp_push  = self.create_client(WaypointPush, "/mavros/mission/push")
+        self._wp_clr   = self.create_client(WaypointClear,"/mavros/mission/clear")
+        self._param_cli = self.create_client(ParamSet,    "/mavros/param/set")
 
         self.get_logger().info("ArduPilot commander ready")
 
     # ── Callbacks ──────────────────────────────────────────────────────────────
-    def _cb_state(self, m):  self._state     = m
-    def _cb_local(self, m):  self._local_pos = m
-    def _cb_vel(self, m):    self._local_vel = m
-    def _cb_drone(self, m):  self._drone     = m
+    def _cb_state(self, m):       self._state      = m
+    def _cb_local(self, m):       self._local_pos  = m
+    def _cb_vel(self, m):         self._local_vel  = m
+    def _cb_drone(self, m):       self._drone      = m
+    def _cb_wp_reached(self, m):  self._wp_reached = m.wp_seq
 
     def _cb_mavlink(self, msg: Mavlink) -> None:
         raw = b"".join(x.to_bytes(8, "little") for x in msg.payload64)
@@ -451,6 +465,25 @@ class ArduPilotCommander(rclpy.node.Node):
         sp.position.z = float(up)
         return sp
 
+    def make_vel_sp(self, vel_east, vel_north, _agl=None):
+        """
+        Pure velocity setpoint (ENU), velocity.z=0 for altitude hold.
+        MAVROS2 converts ENU→NED: vel.x→N, vel.y→E, vel.z→-D (0=hold altitude).
+        Mixed position-Z + velocity-XY type_mask is not recognised by ArduPilot GUIDED
+        mode — it silently stays in position-hold.  Pure velocity mode works reliably.
+        """
+        sp = PositionTarget()
+        sp.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        sp.type_mask = (PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY |
+                        PositionTarget.IGNORE_PZ |
+                        PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY |
+                        PositionTarget.IGNORE_AFZ |
+                        PositionTarget.IGNORE_YAW | PositionTarget.IGNORE_YAW_RATE)
+        sp.velocity.x = float(vel_east)
+        sp.velocity.y = float(vel_north)
+        sp.velocity.z = 0.0   # explicit zero → hold current altitude
+        return sp
+
     def set_mode(self, mode, timeout=8.0):
         req = SetMode.Request(); req.custom_mode = mode
         fut = self._mode_cli.call_async(req)
@@ -492,6 +525,159 @@ class ArduPilotCommander(rclpy.node.Node):
         ok2 = fut2.done() and fut2.result().success
         self.get_logger().info(f"force arm: {'✓' if ok2 else 'FAIL'}")
         return ok2
+
+    def set_wpnav_speed(self, speed_ms, timeout=5.0):
+        """Set WPNAV_SPEED parameter (cm/s) — controls GUIDED position-mode cruise speed.
+        MAV_CMD_DO_CHANGE_SPEED (set_cruise_speed) only affects AUTO mode."""
+        req = ParamSet.Request()
+        req.param_id   = "WPNAV_SPEED"
+        req.value.real = float(speed_ms * 100)   # m/s → cm/s
+        fut = self._param_cli.call_async(req)
+        end = time.time() + timeout
+        while not fut.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        ok = fut.done() and fut.result().success
+        print(f"[APCmd] WPNAV_SPEED → {speed_ms:.0f} m/s ({speed_ms*100:.0f} cm/s): {'✓' if ok else 'FAIL'}")
+        return ok
+
+    def set_cruise_speed(self, speed_ms, timeout=5.0):
+        """Set AUTO-mode cruise speed via MAV_CMD_DO_CHANGE_SPEED.
+        Has no effect in GUIDED position mode — use set_wpnav_speed() instead."""
+        req = CommandLong.Request()
+        req.command = 178   # MAV_CMD_DO_CHANGE_SPEED
+        req.param1  = 1.0   # ground speed
+        req.param2  = float(speed_ms)
+        req.param3  = -1.0  # no throttle change
+        fut = self._cmd_cli.call_async(req)
+        end = time.time() + timeout
+        while not fut.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        ok = fut.done() and fut.result().success
+        print(f"[APCmd] cruise speed → {speed_ms:.0f} m/s: {'✓' if ok else 'FAIL'}")
+        return ok
+
+    # ── AUTO-mode mission helpers ──────────────────────────────────────────────
+    def push_mission(self, waypoints_ned, acceptance_radius=5.0, timeout=30.0):
+        """
+        Upload survey waypoints as a MAVLink mission and switch to AUTO.
+
+        waypoints_ned: list of (north_m, east_m, agl_m) in local frame.
+        Converts to lat/lon/rel_alt using HOME position so ArduPilot's AUTO
+        mode can navigate using EKF3 position (VPE-derived, no GPS required).
+
+        Mission layout expected by ArduPilot:
+          index 0 — home placeholder (lat=0, lon=0 → ArduPilot uses stored home)
+          index 1…N — NAV_WAYPOINT items (the actual survey WPs)
+        WaypointReached publishes the seq of the reached item (1-based here).
+        """
+        # Clear existing mission first
+        clr_req = WaypointClear.Request()
+        fut = self._wp_clr.call_async(clr_req)
+        end = time.time() + 5.0
+        while not fut.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+
+        mission = []
+
+        # Index 0: home placeholder — ArduPilot ignores x/y and uses its stored home
+        home = MavWP()
+        home.frame        = MavWP.FRAME_GLOBAL_REL_ALT
+        home.command      = 16   # NAV_WAYPOINT
+        home.is_current   = False
+        home.autocontinue = True
+        home.x_lat        = HOME_LAT
+        home.y_long       = HOME_LON
+        home.z_alt        = 0.0
+        mission.append(home)
+
+        for i, (north_m, east_m, agl_m) in enumerate(waypoints_ned):
+            lat = HOME_LAT + north_m / M_PER_DEG
+            lon = HOME_LON + east_m  / (M_PER_DEG * COS_LAT)
+
+            wp = MavWP()
+            wp.frame        = MavWP.FRAME_GLOBAL_REL_ALT
+            wp.command      = 16   # NAV_WAYPOINT
+            wp.is_current   = (i == 0)
+            wp.autocontinue = True
+            wp.param1       = 0.0                # hold time (s)
+            wp.param2       = acceptance_radius  # arrival radius (m)
+            wp.param3       = 0.0                # pass-through (0 = stop)
+            wp.param4       = float('nan')       # yaw (nan = auto-heading)
+            wp.x_lat        = lat
+            wp.y_long       = lon
+            wp.z_alt        = agl_m
+            mission.append(wp)
+
+        req = WaypointPush.Request()
+        req.start_index = 0
+        req.waypoints   = mission
+        fut = self._wp_push.call_async(req)
+        end = time.time() + timeout
+        while not fut.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+
+        if fut.done() and fut.result().success:
+            print(f"[APCmd] mission uploaded: {fut.result().wp_transfered} items ✓")
+            return True
+        print("[APCmd] mission upload FAILED")
+        return False
+
+    def run_auto_survey(self, waypoints_ned, timeout_total=1800.0):
+        """
+        Upload mission and run AUTO mode survey.
+        Blocks until the last waypoint is reached or timeout expires.
+        Returns True on completion, False on timeout.
+
+        Position source: EKF3 fed by the running VPE thread (visual localisation).
+        No GPS required — AUTO mode uses whatever position EKF3 reports.
+        """
+        n_wps = len(waypoints_ned)
+        last_seq = n_wps   # mission index of last survey WP (home is index 0)
+
+        if not self.push_mission(waypoints_ned):
+            return False
+
+        self._wp_reached = -1
+        if not self.set_mode("AUTO"):
+            print("[APCmd] AUTO mode set FAILED")
+            return False
+
+        print(f"[APCmd] === AUTO SURVEY START  {n_wps} waypoints  speed={SURVEY_SPEED:.0f} m/s ===")
+        deadline   = time.time() + timeout_total
+        last_print = time.time()
+
+        while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+
+            seq = self._wp_reached
+            if seq >= 1:   # seq 1…n_wps correspond to survey WPs 0…n_wps-1
+                wp_idx = seq - 1
+                wn, we, _ = waypoints_ned[wp_idx]
+                pos_str = ""
+                if self._drone is not None:
+                    ds = self._drone.pose.position
+                    dx = ds.x - we; dy = ds.y - wn
+                    pos_str = (f"  E={ds.x:+.1f} N={ds.y:+.1f}"
+                               f"  err={math.hypot(dx, dy):.1f} m")
+                print(f"[APCmd] WP {seq}/{n_wps} REACHED ✓  N={wn:+.0f} E={we:+.0f}{pos_str}")
+                if seq >= last_seq:
+                    print("[APCmd] === AUTO SURVEY COMPLETE ===")
+                    return True
+                self._wp_reached = -1   # reset so next arrival prints once
+
+            now = time.time()
+            if now - last_print > 10.0:
+                seq_cur = self._wp_reached if self._wp_reached >= 0 else "?"
+                pos_str = ""
+                if self._drone is not None:
+                    ds = self._drone.pose.position
+                    pos_str = f"  E={ds.x:+.1f} N={ds.y:+.1f}"
+                print(f"[APCmd] AUTO in progress  last_reached={seq_cur}/{n_wps}"
+                      f"  mode={self._state.mode}{pos_str}")
+                last_print = now
+
+        print("[APCmd] AUTO survey TIMEOUT")
+        return False
 
     # ── ArduPilot-specific helpers ─────────────────────────────────────────────
     def set_ekf_origin(self, lat, lon, alt_msl_m, timeout=60.0):
@@ -634,30 +820,28 @@ class ArduPilotCommander(rclpy.node.Node):
     def go_to_ned(self, north, east, agl, timeout=WAYPOINT_TIMEOUT,
                   speed=5.0, radius=None):
         """
-        Fly to (north, east, agl) via ENU velocity setpoints.
+        Fly to (north, east, agl) via GUIDED velocity setpoints.
 
-        MAVROS converts ENU velocity → NED; ArduPilot GUIDED velocity controller
-        closes the loop. Velocity setpoints were confirmed to track direction correctly
-        in prior testing (position setpoints flew mirror-direction due to axis swap).
+        Python commands the velocity vector directly — bypasses WPNAV path
+        planning, eliminating the NE-drift / large-oscillation artefact caused
+        by WPNAV's cross-track control interacting with the slow kinematic ATC.
 
-        speed   horizontal cruise speed m/s
-        radius  arrival distance m (default WAYPOINT_RADIUS)
-        Returns True when within radius; False on timeout.
+        Velocity profile:
+          • hdist > arrival_r:  vel = min(speed, APPROACH_DECEL * hdist)
+                                 ramps to ARRIVAL_SPEED exactly at arrival_r
+          • hdist ≤ arrival_r:  vel = 0  (stop and hold)
+
+        Arrival confirmed when ARRIVAL_STABLE consecutive readings show
+        horizontal speed < ARRIVAL_SPEED while inside the arrival zone.
         """
-        NAV_SPEED_V = 2.0    # m/s max vertical correction speed
-        ALT_KP      = 0.4    # altitude P-gain for vertical velocity
-        arrival_r   = radius if radius is not None else WAYPOINT_RADIUS
-
-        _VMASK = (PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY |
-                  PositionTarget.IGNORE_PZ |
-                  PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY |
-                  PositionTarget.IGNORE_AFZ |
-                  PositionTarget.IGNORE_YAW | PositionTarget.IGNORE_YAW_RATE)
-
-        deadline   = time.time() + timeout
-        last_print = time.time()
+        arrival_r    = radius if radius is not None else WAYPOINT_RADIUS
+        deadline     = time.time() + timeout
+        last_print   = time.time()
+        stable_count = 0
 
         while time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+
             if self._drone is not None:
                 ds = self._drone.pose.position
                 cur_e, cur_n = ds.x, ds.y
@@ -667,31 +851,26 @@ class ArduPilotCommander(rclpy.node.Node):
                 cur_e, cur_n = p.x, p.y
                 drone_agl    = p.z
             else:
-                rclpy.spin_once(self, timeout_sec=0.1)
                 continue
 
-            dx = cur_e - east
-            dy = cur_n - north
+            dx    = cur_e - east    # east error  (drone − target, positive = drone east of target)
+            dy    = cur_n - north   # north error (drone − target, positive = drone north of target)
             hdist = math.hypot(dx, dy)
 
-            spd = min(speed, hdist)
-            if hdist > 0.5:
-                v_e = -dx / hdist * spd
-                v_n = -dy / hdist * spd
+            lv  = self._local_vel
+            spd = math.hypot(lv.twist.linear.x, lv.twist.linear.y) if lv else 999.0
+
+            # Velocity setpoint: ramp toward target; zero inside arrival zone
+            if hdist > arrival_r and hdist > 0.01:
+                vel_mag = min(speed, APPROACH_DECEL * hdist)
+                vel_e   = -vel_mag * dx / hdist   # negate: toward target
+                vel_n   = -vel_mag * dy / hdist
             else:
-                v_e = v_n = 0.0
+                vel_e, vel_n = 0.0, 0.0
 
-            v_up = max(-NAV_SPEED_V, min(NAV_SPEED_V, ALT_KP * (agl - drone_agl)))
-
-            sp = PositionTarget()
-            sp.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
-            sp.type_mask = _VMASK
-            sp.velocity.x = float(v_e)   # ENU east  → MAVROS → NED east
-            sp.velocity.y = float(v_n)   # ENU north → MAVROS → NED north
-            sp.velocity.z = float(v_up)  # ENU up    → MAVROS → NED down (negated)
+            sp = self.make_vel_sp(vel_e, vel_n, agl)
             sp.header.stamp = self.get_clock().now().to_msg()
             self._sp_pub.publish(sp)
-            rclpy.spin_once(self, timeout_sec=0.05)
 
             now = time.time()
             if now - last_print > 5.0:
@@ -699,16 +878,21 @@ class ArduPilotCommander(rclpy.node.Node):
                 if self._local_pos:
                     lp = self._local_pos.pose.position
                     ekf = f"  EKF=({lp.x:+.0f},{lp.y:+.0f},{lp.z:+.0f})"
-                vel_s = ""
-                if self._local_vel:
-                    lv = self._local_vel.twist.linear
-                    vel_s = f"  vm=({lv.x:+.1f},{lv.y:+.1f})"
+                in_zone = hdist <= arrival_r
+                phase = (f" [stopping {stable_count}/{ARRIVAL_STABLE}]" if in_zone
+                         else f" [vel=({vel_e:+.1f},{vel_n:+.1f})]")
                 print(f"[APCmd] errN={dy:+.1f} errE={dx:+.1f}"
-                      f"  AGL={drone_agl:.1f} m  dist={hdist:.1f} m{ekf}{vel_s}")
+                      f"  AGL={drone_agl:.1f} m  dist={hdist:.1f} m"
+                      f"  spd={spd:.2f} m/s{ekf}{phase}")
                 last_print = now
 
             if hdist <= arrival_r:
-                return True
+                if spd < ARRIVAL_SPEED:
+                    stable_count += 1
+                    if stable_count >= ARRIVAL_STABLE:
+                        return True
+                else:
+                    stable_count = 0
 
         return False
 
@@ -822,7 +1006,7 @@ def main():
                 print("[APCmd] ABORT: takeoff failed")
                 stop.set(); cmd.destroy_node(); rclpy.shutdown(); return
 
-        # Hold 5 s at cruise altitude before starting survey
+        # Hold 5 s at cruise altitude — let EKF settle before uploading mission
         if cmd._drone is not None:
             hold_e = cmd._drone.pose.position.x
             hold_n = cmd._drone.pose.position.y
@@ -836,7 +1020,11 @@ def main():
             cmd._sp_pub.publish(sp)
             rclpy.spin_once(cmd, timeout_sec=0.05)
 
-        # ── Survey loop ────────────────────────────────────────────────────────
+        # Survey via velocity setpoints (make_vel_sp) — Python commands the velocity
+        # vector directly toward each WP with a linear distance ramp, bypassing WPNAV
+        # path planning.  WPNAV_SPEED from no_gps.parm still caps the actual speed;
+        # the runtime ParamSet call is informational only (fails when param plugin disabled).
+        cmd.set_wpnav_speed(SURVEY_SPEED)
         print(f"[APCmd] === SURVEY START  {len(SURVEY_WPS)} waypoints"
               f"  speed={SURVEY_SPEED:.0f} m/s ===")
         wp_idx = 0
@@ -844,11 +1032,9 @@ def main():
             wn, we, wagl = SURVEY_WPS[wp_idx]
             print(f"[APCmd] SURVEY WP {wp_idx+1}/{len(SURVEY_WPS)}"
                   f"  N={wn:+.0f} E={we:+.0f} AGL={wagl:.0f} m")
-
             reached = cmd.go_to_ned(wn, we, wagl,
                                     timeout=WAYPOINT_TIMEOUT,
                                     speed=SURVEY_SPEED)
-
             if reached and cmd._drone is not None:
                 ds  = cmd._drone.pose.position
                 dx  = ds.x - we; dy = ds.y - wn
@@ -856,11 +1042,10 @@ def main():
                       f"  E={ds.x:+.1f} N={ds.y:+.1f}"
                       f"  horiz_err={math.hypot(dx, dy):.1f} m")
             else:
-                print(f"[APCmd] WP {wp_idx+1} {'ARRIVED' if reached else 'TIMEOUT — skipping'}")
+                print(f"[APCmd] WP {wp_idx+1}"
+                      f" {'ARRIVED' if reached else 'TIMEOUT — skipping'}")
             wp_idx += 1
 
-        # Survey complete — fly home explicitly; LAND mode does not need GPS home.
-        # RTL is unsafe with external-vision-only localisation (requires GPS home fix).
         print("[APCmd] === SURVEY COMPLETE — returning home ===")
         cmd.go_to_ned(0.0, 0.0, TAKEOFF_ALT, timeout=300.0, speed=SURVEY_SPEED)
         print("[APCmd] Over home — LAND")
@@ -871,6 +1056,8 @@ def main():
     except KeyboardInterrupt:
         print("[APCmd] Ctrl-C — returning home")
         try:
+            cmd.set_mode("GUIDED")
+            cmd._spin_until(lambda: cmd._state.mode == "GUIDED", timeout=5.0)
             cmd.go_to_ned(0.0, 0.0, TAKEOFF_ALT, timeout=120.0, speed=SURVEY_SPEED)
             cmd.set_mode("LAND")
             cmd._spin_until(lambda: not cmd._state.armed, timeout=150.0)

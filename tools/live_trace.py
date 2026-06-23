@@ -7,7 +7,7 @@ Usage:
     python3 tools/live_trace.py <trace.csv>   # specific file
 
 Overlays:
-  - Planned survey route (14 waypoints, 7-strip lawnmower)
+  - Planned survey route (14 WPs: boundary-parallel strips at −10.63°, 86 m spacing)
   - Raw detection zone boundary (solid white)
   - Buffered boundary 30 m inward (orange dashed)
   - Detected vehicles from detections.csv (refreshed live)
@@ -41,33 +41,36 @@ TRACE_DIR = os.path.join(PROJ_ROOT, "simulator", "flight_traces")
 DET_LOG   = os.path.join(PROJ_ROOT, "detections.csv")
 CROP_DIR  = os.path.join(PROJ_ROOT, "det_crops")
 
-# ── Survey constants (mirror of px4_commander.py) ─────────────────────────────
+# ── Survey constants (mirror of px4_commander.py / ardupilot_commander.py) ────
 HOME_LAT  = 23.450868
 HOME_LON  = 120.286135
 COS_LAT   = math.cos(math.radians(HOME_LAT))
 M_PER_DEG = 111_320.0
 
 TARGET_AGL = 65.0
-WP_RADIUS  = 60.0
+WP_RADIUS  = 8.0
 
-# (north_m, east_m) — mirror of SURVEY_WPS in px4_commander.py
-# 7-strip E-W boustrophedon; 91.7 m N-S spacing; enter from east, S→N.
+# (north_m, east_m) — mirror of SURVEY_WPS in ardupilot_commander.py
+# 7-strip boundary-parallel boustrophedon; −10.63° from east; 86.3 m spacing; 14 WPs.
 SURVEY_WPS = [
-    ( 60.0,   -573.0),   # ENTRY: E end strip S
-    ( 60.0,   -972.0),   # WP01 : W end strip S
-    (152.0,  -1288.0),   # WP02 : W end strip 1
-    (152.0,   -556.0),   # WP03 : E end strip 1
-    (243.0,   -539.0),   # WP04 : E end strip 2
-    (243.0,  -1275.0),   # WP05 : W end strip 2
-    (335.0,  -1261.0),   # WP06 : W end strip 3
-    (335.0,   -521.0),   # WP07 : E end strip 3
-    (427.0,   -504.0),   # WP08 : E end strip 4
-    (427.0,  -1247.0),   # WP09 : W end strip 4
-    (518.0,  -1234.0),   # WP10 : W end strip 5
-    (518.0,   -548.0),   # WP11 : E end strip 5
-    (610.0,  -1043.0),   # WP12 : E end strip N
-    (610.0,  -1220.0),   # WP13 : W end strip N
+    (  -6.0,   -591.0),  # 0  ENTRY  : E end strip 1  → fly W
+    ( 124.0,  -1288.0),  # 1  WP01   : W end strip 1
+    ( 210.0,  -1275.0),  # 2  WP02   : W boundary → fly NE
+    (  78.0,   -575.0),  # 3  WP03   : E end strip 2  → fly E
+    ( 163.0,   -559.0),  # 4  WP04   : E boundary → fly NE
+    ( 295.0,  -1262.0),  # 5  WP05   : W end strip 3  → fly W
+    ( 381.0,  -1249.0),  # 6  WP06   : W boundary → fly NE
+    ( 248.0,   -543.0),  # 7  WP07   : E end strip 4  → fly E
+    ( 333.0,   -527.0),  # 8  WP08   : E boundary → fly NE
+    ( 466.0,  -1236.0),  # 9  WP09   : W end strip 5  → fly W
+    ( 551.0,  -1224.0),  # 10 WP10   : W boundary → fly NE
+    ( 418.0,   -511.0),  # 11 WP11   : E end strip 6  → fly E
+    ( 502.0,   -495.0),  # 12 WP12   : E boundary → fly NE
+    ( 637.0,  -1211.0),  # 13 WP13   : W end strip 7  → fly W (final)
 ]
+
+# Corner (TURN) indices — marked differently on the map
+_CORNER_IDX = {2, 4, 6, 8, 10, 12}
 
 # Raw detection zone boundary (actual area corners), CW: NW→NE→SE→SW
 RAW_ZONE_VERTS = [
@@ -208,12 +211,20 @@ _route_n = [0.0] + [n for n, _ in SURVEY_WPS]
 ax_top.plot(_route_e, _route_n,
             color="#666688", linewidth=0.8, linestyle=":", zorder=2, label="Planned route")
 
-# WP markers + labels
+# WP markers + labels (corners shown in amber, strip WPs in blue-grey)
+_strip_wps = [i for i in range(len(SURVEY_WPS)) if i not in _CORNER_IDX]
+_strip_n   = [SURVEY_WPS[i][0] for i in _strip_wps]
+_strip_e   = [SURVEY_WPS[i][1] for i in _strip_wps]
+_turn_n    = [SURVEY_WPS[i][0] for i in _CORNER_IDX]
+_turn_e    = [SURVEY_WPS[i][1] for i in _CORNER_IDX]
+ax_top.plot(_strip_e, _strip_n, ".", color="#8888bb", markersize=6, zorder=3)
+ax_top.plot(_turn_e,  _turn_n,  "+", color="#ffaa44", markersize=8, zorder=3,
+            markeredgewidth=1.2)
 for idx, (wn, we) in enumerate(SURVEY_WPS):
     label = "ENTRY" if idx == 0 else f"WP{idx:02d}"
-    ax_top.plot(we, wn, ".", color="#8888bb", markersize=6, zorder=3)
+    color = "#ffaa44" if idx in _CORNER_IDX else "#8888bb"
     ax_top.annotate(label, (we, wn), textcoords="offset points", xytext=(4, 2),
-                    color="#8888bb", fontsize=6, zorder=3)
+                    color=color, fontsize=6, zorder=3)
 
 # Simulator target cars (from cesium_scene.py make_car calls)
 _SIM_CARS = [
@@ -259,8 +270,11 @@ _legend_handles = [
     _Line2D([0],[0], color="#ff8800",  lw=1.0, ls="--", label="Buffered boundary (30 m)"),
     _Line2D([0],[0], color="#666688",  lw=0.8, ls=":",  label="Planned route"),
     _Line2D([0],[0], color="#4488ff",  lw=1.5, ls="-",  label="Actual path"),
-    _Line2D([0],[0], marker="^", color="#aaffaa", ms=8, ls="none", label="Home"),
-    _Line2D([0],[0], marker="s", color="#ffe066", ms=8, ls="none",
+    _Line2D([0],[0], marker="^", color="#aaffaa", ms=8,  ls="none", label="Home"),
+    _Line2D([0],[0], marker=".", color="#8888bb", ms=8,  ls="none", label="Strip WP"),
+    _Line2D([0],[0], marker="+", color="#ffaa44", ms=8,  ls="none",
+            markeredgewidth=1.2, label="Corner WP"),
+    _Line2D([0],[0], marker="s", color="#ffe066", ms=8,  ls="none",
             markeredgecolor="#cc9900", label="Sim car"),
     _Line2D([0],[0], marker="*", color="#ff4444", ms=10, ls="none", label="Detection"),
 ]
