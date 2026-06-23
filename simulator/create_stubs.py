@@ -7,7 +7,7 @@ import os
 import re
 import sys
 
-SITE_PACKAGES = os.path.join(sys.prefix, "lib", "python3.12", "site-packages")
+SITE_PACKAGES = os.path.join(sys.prefix, "lib", "python3.10", "site-packages")
 ISAACSIM = os.path.join(SITE_PACKAGES, "isaacsim")
 
 EXT_SEARCH_DIRS = [

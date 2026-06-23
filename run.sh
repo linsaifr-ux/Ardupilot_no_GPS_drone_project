@@ -119,7 +119,7 @@ if [[ "$TMUX_MODE" == "1" ]]; then
             tmux new-session -d -s "$SESSION" -x 220 -y 50
             tmux rename-window -t "$SESSION:0" "Bridge"
             tmux send-keys -t "$SESSION:0" \
-                "source /opt/ros/jazzy/setup.bash && cd '$SCRIPT_DIR' && PX4_SIM=1 python3 control/drone_sim.py; exec bash" Enter
+                "source /opt/ros/humble/setup.bash && cd '$SCRIPT_DIR' && PX4_SIM=1 python3 control/drone_sim.py; exec bash" Enter
 
             echo -n "[run.sh] Waiting for headless bridge (TCP 4560)"
             WAITED=0
@@ -288,7 +288,7 @@ if [[ "$TMUX_MODE" == "1" ]]; then
         tmux new-session -d -s "$SESSION" -x 220 -y 50
         tmux rename-window -t "$SESSION:0" "Bridge"
         tmux send-keys -t "$SESSION:0" \
-            "source /opt/ros/jazzy/setup.bash && cd '$SCRIPT_DIR' && python3 control/drone_sim.py; exec bash" Enter
+            "source /opt/ros/humble/setup.bash && cd '$SCRIPT_DIR' && python3 control/drone_sim.py; exec bash" Enter
 
         echo -n "[run.sh] Waiting for headless bridge (UDP 9002)"
         WAITED=0

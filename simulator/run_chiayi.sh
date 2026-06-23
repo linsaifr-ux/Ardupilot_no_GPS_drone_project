@@ -7,7 +7,7 @@
 # Source ROS2 Jazzy so Isaac Sim can use system rclpy (Python 3.12 compatible).
 # ROS2 env vars (AMENT_PREFIX_PATH, ROS_DISTRO, LD_LIBRARY_PATH) are inherited
 # by the conda process, and cesium_scene.py adds the site-packages path to sys.path.
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 cd "$(dirname "$0")"
 

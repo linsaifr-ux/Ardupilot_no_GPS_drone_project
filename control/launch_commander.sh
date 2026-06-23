@@ -13,7 +13,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 echo "[Commander] Starting flight_commander.py..."
 python3 "$SCRIPT_DIR/flight_commander.py"

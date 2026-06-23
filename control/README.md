@@ -53,8 +53,10 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 **`ardupilot_commander.py`** — ArduPilot/MAVROS2 full mission commander (ported from `px4_commander.py`).
 - STABILIZE → arm → GUIDED → EKF origin → `EKF_POS_HORIZ_ABS` wait → NAV_TAKEOFF → 7-strip E-W survey 12 m/s → LAND
 - ENU setpoints (identical to `px4_commander.py`); MAVROS converts to NED for ArduPilot
-- Two-phase VPE: Phase 1 (AGL < 50 m) = kinematic truth, Phase 2 (≥ 50 m) = AnyLoc
+- Two-phase VPE: Phase 1 (AGL < 50 m) = home anchor, Phase 2 (≥ 50 m) = AnyLoc `latest_estimate.json`
+- After reaching cruise altitude: switches EKF source to SRC2 (ExternalNav) via `MAV_CMD_DO_AUX_FUNCTION`
 - Force-arm fallback via `CommandLong(400, param2=21196)` for SITL pre-arm bypass
+- `--manual-takeoff`: skips auto arm/takeoff; waits for RC arm, sets EKF origin from live GPS, waits for GUIDED
 - `HOLDTEST=1`: 3 m hold gate (ArduPilot Phase-3 regression test)
 - Survey mission, YOLO detection callback, CSV logging — identical to `px4_commander.py`
 
@@ -71,21 +73,40 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - `EKF2_BARO_CTRL=0`, `COM_RC_IN_MODE=4`, failsafes disabled
 - Apply once with `apply_px4_params.sh` — persists in `parameters.bson`
 
-**`no_gps.parm`** — ArduPilot no-GPS params:
+**`real_hw.parm`** — ArduPilot real-hardware params (dual-source EKF):
+- `GPS_TYPE=1`, `EK3_SRC1_POSXY=3` (GPS for arming/takeoff), `EK3_SRC2_POSXY=6` (ExternalNav for survey)
+- `VISO_TYPE=1`, `BRD_SAFETYENABLE=1`, `PSC_NE_VEL_I=0.0`, `GUID_TIMEOUT=30`
+- RC aux channel: `RCx_OPTION=90` (EKF Source Select — LOW=SRC1/GPS, HIGH=SRC2/ExternalNav)
+- Upload via Mission Planner or MAVProxy: `param load control/real_hw.parm`
+
+**`no_gps.parm`** — ArduPilot SITL no-GPS params:
 - `EK3_SRC1_POSXY=6`, `EK3_SRC1_POSZ=6` (ExternalNav), `GPS_TYPE=0`
 - `FS_CRASH_CHECK=0`, `ARMING_CHECK=0`, `DISARM_DELAY=0`
+- **Do not upload to real FC** — SITL-only settings
 
 ### Launch scripts
 
+**Real hardware (Jetson + ArduPilot FC):**
+
 | Script | Purpose |
 |--------|---------|
-| `launch_px4_sitl.sh` | Start PX4 SITL (checks TCP 4560, waits for UDP 14580); saves PID to `/tmp/px4_sitl.pid`; overwrites `/tmp/px4_sitl.log` on each launch |
-| `stop_px4_sitl.sh` | Stop PX4 SITL gracefully — tries MAVLink shutdown → SIGTERM (saved PID) → pkill SIGTERM → SIGKILL |
+| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` |
+| `launch_camera.sh` | v4l2_camera: `/dev/video0`, YUYV 1280×720 @ 30 fps → `/drone/camera/image_raw` (rgb8) |
+| `hw_bridge.py` | Converts MAVROS EKF position to `/drone/state`, `/drone/pose`, `/drone/agl` |
+| `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera + hw_bridge + AnyLoc + YOLO + commander |
+| `launch_gstreamer.sh` | H.265 camera stream to ground station (opens camera directly — don't run with launch_camera.sh) |
+
+**Simulation (SITL):**
+
+| Script | Purpose |
+|--------|---------|
+| `launch_px4_sitl.sh` | Start PX4 SITL (checks TCP 4560, waits for UDP 14580) |
+| `stop_px4_sitl.sh` | Stop PX4 SITL gracefully |
 | `apply_px4_params.sh` | Set + save PX4 params, auto-reboot PX4 |
 | `launch_mavros_px4.sh` | MAVROS2 → PX4 (`fcu_url udp://:14540@127.0.0.1:14580`) |
 | `launch_commander_px4.sh` | Run `px4_commander.py` (sources ROS2) |
 | `launch_sitl.sh` | ArduPilot SITL via MAVProxy (`--wipe` flag) |
-| `launch_mavros.sh` | MAVROS2 → ArduPilot (UDP 14550) |
+| `launch_mavros.sh` | MAVROS2 → ArduPilot SITL (UDP 14550) |
 | `launch_commander_ardupilot.sh` | Run `ardupilot_commander.py` (sources ROS2, `PYTHONUNBUFFERED=1`) |
 | `launch_commander.sh` | Run `flight_commander.py` (legacy reference) |
 
@@ -193,14 +214,22 @@ bash control/launch_commander_ardupilot.sh
 
 ## ArduPilot Takeoff Sequence (ardupilot_commander.py)
 
-1. Start VPE thread (Phase 1: kinematic stub at 20 Hz)
-2. STABILIZE mode, then arm (force-arm fallback via `CommandLong` if needed)
-3. GUIDED mode
-4. Publish EKF global origin to `/mavros/global_position/set_gp_origin` (retry 10× / 5 s)
-5. Wait for `EKF_POS_HORIZ_ABS` flag (bit 4) via raw MAVLink on `/uas1/mavlink_source`
-6. `MAV_CMD_NAV_TAKEOFF` — ArduPilot climbs autonomously; commander monitors `_agl()`
-7. Hold 5 s at cruise altitude
-8. Velocity-carrot survey navigation (ENU setpoints, identical to `px4_commander.py`)
+**Auto mode (no flags):**
+1. Start VPE thread (Phase 1: home-anchor at 20 Hz)
+2. STABILIZE → arm (force-arm fallback via `CommandLong` for SITL)
+3. Publish EKF global origin to `/mavros/global_position/set_gp_origin`
+4. Wait for `EKF_POS_HORIZ_ABS` (GPS SRC1)
+5. GUIDED mode → `MAV_CMD_NAV_TAKEOFF` to 65 m AGL
+6. Hold 5 s at cruise altitude
+7. Switch EKF source → SRC2 (ExternalNav) via `MAV_CMD_DO_AUX_FUNCTION`
+8. Wait for `EKF_POS_HORIZ_ABS` re-confirmed on SRC2
+9. Velocity-carrot survey navigation (ENU setpoints)
+
+**Manual-takeoff mode (`--manual-takeoff`):**
+1. Start VPE thread
+2. Wait for RC arm → set EKF origin from live GPS position at arm moment
+3. Wait for FC in GUIDED mode + AGL > 5 m
+4. Survey starts automatically
 
 ## ArduPilot Phase Status
 

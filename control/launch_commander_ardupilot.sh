@@ -12,7 +12,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 echo "[Commander AP] Starting ardupilot_commander.py..."
 PYTHONUNBUFFERED=1 python3 "$SCRIPT_DIR/ardupilot_commander.py" "$@"

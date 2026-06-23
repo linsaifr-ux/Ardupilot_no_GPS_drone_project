@@ -39,7 +39,7 @@ import sys
 import time
 
 # ROS2 Jazzy site-packages — must precede rclpy import when running in conda
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 

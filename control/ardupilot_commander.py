@@ -22,10 +22,11 @@ Environment variables:
   TAKEOFF_ALT=<m>    override mission cruise altitude (default 65.0 m)
 
 Run:
-  source /opt/ros/jazzy/setup.bash
+  source /opt/ros/humble/setup.bash
   python3 control/ardupilot_commander.py
   HOLDTEST=1 python3 control/ardupilot_commander.py
 """
+import argparse
 import json
 import math
 import os
@@ -34,7 +35,7 @@ import sys
 import threading
 import time
 
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 
@@ -43,6 +44,7 @@ import rclpy.node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geographic_msgs.msg import GeoPointStamped
 from geometry_msgs.msg import PoseWithCovarianceStamped, TwistStamped
+from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import Mavlink, PositionTarget, State, Waypoint as MavWP, WaypointReached
 from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, ParamSet, SetMode, WaypointPush, WaypointClear
 
@@ -141,6 +143,15 @@ ESTIMATE_JSON = os.path.join(
     "anyloc", "latest_estimate.json"
 )
 
+# Mission Planner waypoint loading
+_DEFAULT_WP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "survey.waypoints")
+try:
+    from mission_loader import load_mission_planner_waypoints as _load_wp
+    _HAVE_LOADER = True
+except ImportError:
+    _HAVE_LOADER = False
+
 
 # ── Zone boundary helper ───────────────────────────────────────────────────────
 def _in_buffered_zone(north_m, east_m):
@@ -170,6 +181,7 @@ class ArduPilotCommander(rclpy.node.Node):
         self._ekf_flags           = 0
         self._gps_origin_received = False
         self._wp_reached          = -1   # seq of last WaypointReached (1-based mission index)
+        self._gps_fix             = None  # latest NavSatFix from /mavros/global_position/global
 
         self._latest_frame     = None
         self._det_count        = 0
@@ -187,6 +199,8 @@ class ArduPilotCommander(rclpy.node.Node):
                                  self._cb_drone, _SENSOR_QOS)
         self.create_subscription(Mavlink,        "/uas1/mavlink_source",
                                  self._cb_mavlink, _SENSOR_QOS)
+        self.create_subscription(NavSatFix,      "/mavros/global_position/global",
+                                 self._cb_gps,    _SENSOR_QOS)
         self.create_subscription(WaypointReached, "/mavros/mission/reached",
                                  self._cb_wp_reached, 10)
 
@@ -230,6 +244,7 @@ class ArduPilotCommander(rclpy.node.Node):
     def _cb_vel(self, m):         self._local_vel  = m
     def _cb_drone(self, m):       self._drone      = m
     def _cb_wp_reached(self, m):  self._wp_reached = m.wp_seq
+    def _cb_gps(self, m):         self._gps_fix    = m
 
     def _cb_mavlink(self, msg: Mavlink) -> None:
         raw = b"".join(x.to_bytes(8, "little") for x in msg.payload64)
@@ -247,7 +262,17 @@ class ArduPilotCommander(rclpy.node.Node):
 
     def _cb_detections(self, msg):
         """Project YOLO detections to world coords via yaw-corrected GSD and log."""
-        if self._drone is None:
+        if self._drone is not None:
+            ds    = self._drone.pose.position
+            cur_n, cur_e = ds.y, ds.x
+            agl   = max(1.0, ds.z - HOME_ALT_MSL)
+            q     = self._drone.pose.orientation
+        elif self._local_pos is not None:
+            p     = self._local_pos.pose.position
+            cur_n, cur_e = p.y, p.x
+            agl   = max(1.0, p.z)
+            q     = self._local_pos.pose.orientation
+        else:
             return
 
         vehicles = [d for d in msg.detections
@@ -256,11 +281,6 @@ class ArduPilotCommander(rclpy.node.Node):
         if not vehicles:
             return
 
-        ds    = self._drone.pose.position
-        cur_n = ds.y
-        cur_e = ds.x
-        agl   = max(1.0, ds.z - HOME_ALT_MSL)
-
         gsd_x = 2.0 * agl * math.tan(math.radians(HFOV_DEG / 2.0)) / CAM_W
         gsd_y = 2.0 * agl * math.tan(math.radians(VFOV_DEG / 2.0)) / CAM_H
 
@@ -268,7 +288,7 @@ class ArduPilotCommander(rclpy.node.Node):
         cx = best.bbox.center.position.x
         cy = best.bbox.center.position.y
 
-        q       = self._drone.pose.orientation
+
         yaw_enu = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                              1.0 - 2.0 * (q.y ** 2 + q.z ** 2))
         h    = -yaw_enu
@@ -357,10 +377,6 @@ class ArduPilotCommander(rclpy.node.Node):
                     drone_agl = max(0.0, self._drone.pose.position.z - HOME_ALT_MSL)
 
                 if drone_agl >= MIN_LOCALISATION_AGL:
-                    if not phase_logged:
-                        print(f"[APCmd] AGL {drone_agl:.0f} m ≥ {MIN_LOCALISATION_AGL:.0f} m"
-                              " — VPE → AnyLoc")
-                        phase_logged = True
                     try:
                         mtime = os.path.getmtime(ESTIMATE_JSON)
                         if mtime != last_mtime:
@@ -382,16 +398,37 @@ class ArduPilotCommander(rclpy.node.Node):
                     except (FileNotFoundError, KeyError, json.JSONDecodeError):
                         pass
 
-                # Always use kinematic truth for VPE.  AnyLoc estimates (cov ~800 m²)
-                # cause EKF3 position-lost failsafe when their large innovations exceed
-                # EK3_POS_ERR_LIM — AnyLoc runs as a logger/comparison, not EKF input.
-                if self._drone is not None:
+                # Phase 1 (SITL): use kinematic truth from /drone/state
+                # Phase 2 (real hw, above MIN_LOCALISATION_AGL): use AnyLoc
+                # Phase 1 (real hw, below MIN_LOCALISATION_AGL): anchor at home (0,0)
+                use_anyloc = (anyloc_est is not None
+                              and drone_agl >= MIN_LOCALISATION_AGL)
+
+                if use_anyloc:
+                    east_v, north_v, yaw_v, cov_xy = anyloc_est
+                elif self._drone is not None:
+                    # SITL: kinematic truth always available
                     east_v  = self._drone.pose.position.x
                     north_v = self._drone.pose.position.y
+                    yaw_v   = math.pi / 2.0
+                    cov_xy  = 0.1
                 else:
-                    east_v, north_v = 0.0, 0.0
-                yaw_v  = math.pi / 2.0
-                cov_xy = 0.1
+                    # Real hardware Phase 1: anchor EKF at home; drone is on
+                    # ground or climbing — small XY drift from home is acceptable
+                    east_v  = 0.0
+                    north_v = 0.0
+                    yaw_v   = math.pi / 2.0
+                    cov_xy  = 0.5
+
+                if use_anyloc and not phase_logged:
+                    print(f"[APCmd] AGL {drone_agl:.0f} m ≥ {MIN_LOCALISATION_AGL:.0f} m"
+                          " — VPE → AnyLoc")
+                    phase_logged = True
+
+                # Use EKF z for altitude on real hardware when /drone/state absent
+                vpe_z = (drone_agl if self._drone is not None
+                         else (self._local_pos.pose.position.z
+                               if self._local_pos else 0.0))
 
                 hy  = yaw_v / 2.0
                 msg = PoseWithCovarianceStamped()
@@ -399,7 +436,7 @@ class ArduPilotCommander(rclpy.node.Node):
                 msg.header.frame_id = "map"
                 msg.pose.pose.position.x    = east_v
                 msg.pose.pose.position.y    = north_v
-                msg.pose.pose.position.z    = drone_agl
+                msg.pose.pose.position.z    = vpe_z
                 msg.pose.pose.orientation.z = math.sin(hy)
                 msg.pose.pose.orientation.w = math.cos(hy)
                 cov = [0.0] * 36
@@ -510,6 +547,13 @@ class ArduPilotCommander(rclpy.node.Node):
 
         # Force-arm fallback: bypasses all pre-arm checks (SITL VisOdom health, GPS, etc.)
         self.get_logger().warn("regular arm failed — retrying with force arm …")
+
+        if not os.environ.get("ALLOW_FORCE_ARM"):
+            self.get_logger().error(
+                "Arm rejected. Real hardware: press safety button, verify VPE "
+                "is publishing, check EKF POS_ABS. Set ALLOW_FORCE_ARM=1 for SITL only.")
+            return False
+
         drain_end = time.time() + 0.5
         while time.time() < drain_end:
             rclpy.spin_once(self, timeout_sec=0.05)
@@ -554,6 +598,29 @@ class ArduPilotCommander(rclpy.node.Node):
             rclpy.spin_once(self, timeout_sec=0.05)
         ok = fut.done() and fut.result().success
         print(f"[APCmd] cruise speed → {speed_ms:.0f} m/s: {'✓' if ok else 'FAIL'}")
+        return ok
+
+    def switch_ekf_source(self, source_set=2, timeout=5.0):
+        """Switch EKF source set via MAV_CMD_DO_AUX_FUNCTION (same as RC aux switch).
+
+        source_set=1 → SRC1 (GPS, switch LOW)
+        source_set=2 → SRC2 (ExternalNav/AnyLoc, switch HIGH)
+
+        Requires RCx_OPTION=90 configured in real_hw.parm.
+        """
+        switch_pos = {1: 0.0, 2: 2.0, 3: 1.0}  # LOW=SRC1, HIGH=SRC2, MID=SRC3
+        pos = switch_pos.get(source_set, 2.0)
+        req = CommandLong.Request()
+        req.command = 218    # MAV_CMD_DO_AUX_FUNCTION
+        req.param1  = 90.0   # AUX_FUNCTION: EKF Source Select
+        req.param2  = pos    # 0=LOW(SRC1), 1=MID(SRC3), 2=HIGH(SRC2)
+        fut = self._cmd_cli.call_async(req)
+        end = time.time() + timeout
+        while not fut.done() and time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        ok = fut.done() and fut.result().success
+        label = {1: "SRC1/GPS", 2: "SRC2/ExternalNav", 3: "SRC3"}.get(source_set, str(source_set))
+        print(f"[APCmd] EKF source → {label}: {'✓' if ok else 'FAIL (check RCx_OPTION=90 in real_hw.parm)'}")
         return ok
 
     # ── AUTO-mode mission helpers ──────────────────────────────────────────────
@@ -796,14 +863,15 @@ class ArduPilotCommander(rclpy.node.Node):
             print("[APCmd] ABORT: arm failed")
             return False
 
-        # Publish EKF origin before asking for GUIDED: origin is required for
-        # the EKF to build an absolute position estimate.
+        # Publish EKF origin: required for ExternalNav SRC; ignored by GPS SRC (harmless).
+        # With GPS as SRC1, EKF POS_ABS arrives within seconds of GPS fix.
+        # With ExternalNav as SRC1, this sets the reference point for VPE coordinates.
         if not self.set_ekf_origin(HOME_LAT, HOME_LON, HOME_ALT_MSL):
             print("[APCmd] ABORT: EKF origin failed")
             return False
 
         if not self.wait_ekf_pos(timeout=60.0):
-            print("[APCmd] ABORT: EKF POS_ABS not reached — check VPE flow")
+            print("[APCmd] ABORT: EKF POS_ABS not reached — check GPS fix or VPE flow")
             return False
 
         # Now that EKF has valid absolute position, GUIDED mode will accept.
@@ -900,6 +968,25 @@ class ArduPilotCommander(rclpy.node.Node):
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--waypoint-file", default=_DEFAULT_WP_FILE)
+    parser.add_argument("--manual-takeoff", action="store_true",
+                        help="Skip auto arm/takeoff. Arm+fly manually with GPS, "
+                             "switch EKF source to VPE, then switch to GUIDED — "
+                             "commander waits and starts the survey automatically.")
+    args, _ = parser.parse_known_args()
+
+    global SURVEY_WPS
+    if _HAVE_LOADER:
+        mp_wps = _load_wp(args.waypoint_file, HOME_LAT, HOME_LON, HOME_ALT_MSL)
+        if mp_wps:
+            SURVEY_WPS = mp_wps
+            print(f"[APCmd] {len(SURVEY_WPS)} waypoints from "
+                  f"{os.path.basename(args.waypoint_file)}")
+        else:
+            print(f"[APCmd] No waypoint file — using hardcoded SURVEY_WPS "
+                  f"({len(SURVEY_WPS)} wps)")
+
     rclpy.init()
     cmd = ArduPilotCommander()
     stop = threading.Event()
@@ -943,10 +1030,52 @@ def main():
     if not cmd._spin_until(_wait_drone, 30.0):
         print("[APCmd] WARNING: /drone/state not received — proceeding without kinematic truth")
 
-    # Detect in-air restart
+    # Detect in-air restart or manual-takeoff mode — both skip auto arm/takeoff
     start_agl = cmd._agl()
-    in_air = start_agl > 5.0
-    if in_air:
+    in_air = start_agl > 5.0 or args.manual_takeoff
+
+    if args.manual_takeoff and start_agl <= 5.0:
+        print("[APCmd] === MANUAL TAKEOFF MODE ===")
+        print("[APCmd]   1. Arm with RC (GPS — STABILIZE or LOITER)")
+        print("[APCmd]      Jetson will set EKF origin from GPS the moment you arm")
+        print("[APCmd]   2. Climb to cruise altitude (~65 m AGL)")
+        print("[APCmd]   3. Flip RC aux switch HIGH → SRC2 (ExternalNav/VPE)")
+        print("[APCmd]   4. Switch FC to GUIDED — survey starts automatically")
+        print("[APCmd]")
+        print("[APCmd] waiting for arm …")
+
+        # Wait for arm, then set EKF origin from live GPS position
+        if not cmd._spin_until(lambda: cmd._state.armed, timeout=600.0):
+            print("[APCmd] ABORT: timed out waiting for arm")
+            stop.set(); cmd.destroy_node(); rclpy.shutdown(); return
+
+        gps = cmd._gps_fix
+        if gps is not None and gps.status.status >= 0:
+            arm_lat = gps.latitude
+            arm_lon = gps.longitude
+            arm_alt = gps.altitude
+            print(f"[APCmd] Armed ✓  GPS: {arm_lat:.6f} N  {arm_lon:.6f} E  {arm_alt:.1f} m MSL")
+            cmd.set_ekf_origin(arm_lat, arm_lon, arm_alt)
+        else:
+            print(f"[APCmd] Armed ✓  no GPS fix — using home_elevation.json origin")
+            cmd.set_ekf_origin(HOME_LAT, HOME_LON, HOME_ALT_MSL)
+
+        print("[APCmd] waiting for GUIDED + AGL > 5 m …")
+
+        def _survey_ready():
+            return (cmd._state.mode == "GUIDED"
+                    and cmd._state.armed
+                    and cmd._agl() > 5.0)
+
+        if not cmd._spin_until(_survey_ready, timeout=600.0):
+            print("[APCmd] ABORT: timed out waiting for GUIDED mode")
+            stop.set(); cmd.destroy_node(); rclpy.shutdown(); return
+
+        print(f"[APCmd] GUIDED ✓  AGL={cmd._agl():.0f} m — waiting for EKF POS_ABS …")
+        if not cmd.wait_ekf_pos(timeout=60.0):
+            print("[APCmd] WARNING: EKF POS_ABS not confirmed — proceeding anyway")
+
+    elif in_air:
         print(f"[APCmd] in-air restart at {start_agl:.0f} m AGL — skipping takeoff")
         if cmd._state.mode != "GUIDED":
             print(f"[APCmd] mode={cmd._state.mode} — switching to GUIDED …")
@@ -1019,6 +1148,14 @@ def main():
             sp.header.stamp = cmd.get_clock().now().to_msg()
             cmd._sp_pub.publish(sp)
             rclpy.spin_once(cmd, timeout_sec=0.05)
+
+        # Switch EKF source to SRC2 (ExternalNav/AnyLoc) now that we're at cruise altitude.
+        # Arms and climbs on GPS (SRC1); switches to VPE for the survey.
+        print("[APCmd] switching EKF source → SRC2 (ExternalNav/AnyLoc) …")
+        cmd.switch_ekf_source(2)
+        time.sleep(2.0)   # give EKF time to converge on new source
+        if not cmd.wait_ekf_pos(timeout=30.0):
+            print("[APCmd] WARNING: EKF POS_ABS not re-confirmed on SRC2 — proceeding anyway")
 
         # Survey via velocity setpoints (make_vel_sp) — Python commands the velocity
         # vector directly toward each WP with a linear distance ramp, bypassing WPNAV

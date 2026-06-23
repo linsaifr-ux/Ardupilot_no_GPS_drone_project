@@ -1,0 +1,73 @@
+# ArduPilot parameters for real hardware, no-GPS survey
+# Contest: arm on GPS, manually switch RC to ExternalNav (AnyLoc VPE) mid-flight
+#
+# EKF source switch via RC:
+#   Switch LOW  → SRC1 (GPS) — use for arming and takeoff
+#   Switch HIGH → SRC2 (ExternalNav/AnyLoc) — flip at cruise altitude once AnyLoc is confident
+#
+# Set in Mission Planner: RCx_OPTION = 90  (EKF Position Source) on a 2/3-pos switch channel
+
+# Frame
+FRAME_CLASS     1       # quadrotor
+FRAME_TYPE      1       # quad-X
+
+# GPS enabled — used for arming and as SRC1
+GPS_TYPE        1       # enable GPS driver (auto-detect receiver type)
+GPS_ARMING_MIN_SAT 6    # require 6 sats before arm (safety check)
+FS_GPS_ENABLE   0       # no GPS failsafe — jammer will kill GPS during contest
+FENCE_ENABLE    0
+
+# EKF source 1: GPS (switch LOW — used for arming and takeoff)
+EK3_SRC1_POSXY  3       # GPS → XY position
+EK3_SRC1_VELXY  3       # GPS → XY velocity
+EK3_SRC1_POSZ   1       # Baro → altitude
+EK3_SRC1_YAW    1       # Compass → yaw
+
+# EKF source 2: ExternalNav/AnyLoc (switch HIGH — activate at cruise altitude)
+EK3_SRC2_POSXY  6       # ExternalNav → XY position
+EK3_SRC2_VELXY  6       # ExternalNav → XY velocity
+EK3_SRC2_POSZ   1       # Baro → altitude (same — AnyLoc gives no independent altitude)
+EK3_SRC2_YAW    1       # Compass → yaw (same)
+
+VISO_TYPE       1       # enable MAVLink ExternalNav processing (VPE from Jetson)
+
+# Real hardware safety
+BRD_SAFETYENABLE  1     # Physical safety button required before arm
+FS_CRASH_CHECK    1     # Re-enable crash detection
+ARMING_CHECK      0     # Disable software pre-arm — BRD_SAFETYENABLE=1 (physical switch) is the protection
+                        # ARMING_CHECK=1 blocks arm with "VisoDOM not healthy" if commander not running first
+DISARM_DELAY      10    # Disarm after 10 s on ground
+
+# Hover thrust — must calibrate for actual airframe; default 0.35 is usually OK
+MOT_THST_HOVER  0.35    # adjust via autotune or trial
+
+# Attitude controller — start conservative; tune after first hover test
+ATC_ANG_RLL_P   4.5
+ATC_ANG_PIT_P   4.5
+ATC_RAT_RLL_P   0.135
+ATC_RAT_RLL_I   0.135
+ATC_RAT_RLL_D   0.0036
+ATC_RAT_PIT_P   0.135
+ATC_RAT_PIT_I   0.135
+ATC_RAT_PIT_D   0.0036
+
+# Horizontal position controller (V4.8+ param names)
+PSC_NE_POS_P    0.2     # below critical P → overdamped
+PSC_NE_VEL_P    2.0
+PSC_NE_VEL_I    0.0     # MUST be 0 — default 1.0 causes integral windup
+PSC_NE_VEL_D    0.5
+
+# Speed limits
+WPNAV_SPEED     1200    # 12 m/s max
+WPNAV_SPEED_UP  300     # 3 m/s climb
+WPNAV_SPEED_DN  150     # 1.5 m/s descent
+
+# EKF innovation gating for ExternalNav
+EK3_GLITCH_RAD    50    # m — horizontal position glitch threshold (default 25 m); raise to 50 m
+                        # so AnyLoc jumps up to 50 m are accepted without triggering glitch reset
+# Note: EK3_POS_I_GATE (default 5.0 sigma) does NOT need changing — the large covariance
+# we publish in VPE (cov = err_m²) automatically scales the gate. A 40 m AnyLoc error with
+# cov=1600 m² gives sigma=40 m; gate = 5×40 = 200 m >> actual innovation → always accepted.
+
+# Timeouts
+GUID_TIMEOUT    30      # 30 s GUIDED setpoint timeout (prevent failsafe on CPU spikes)

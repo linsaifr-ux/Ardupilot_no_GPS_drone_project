@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 
@@ -196,8 +196,24 @@ def run_postview(node: YOLONode):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--headless", action="store_true")
+    args, _ = parser.parse_known_args()
+
     rclpy.init()
     node = YOLONode()
+
+    if args.headless:
+        print("[YOLO] Running headless — no postview window")
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()
+        return
 
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()

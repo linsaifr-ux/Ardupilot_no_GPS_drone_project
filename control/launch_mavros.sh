@@ -11,7 +11,7 @@
 #
 # Prerequisites (one-time):
 #   sudo apt install ros-jazzy-mavros ros-jazzy-mavros-extras ros-jazzy-mavros-msgs
-#   sudo /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+#   sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
 #
 # Run order:
 #   Terminal 1: SITL         (sim_vehicle.py ... --out udp:127.0.0.1:14550)
@@ -20,7 +20,7 @@
 #   Terminal 4: AnyLoc node  (./anyloc/run_ros2_localizer.sh)
 #   Terminal 5: Flight cmd   (python3 control/flight_commander.py)
 
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 # Kill any stale MAVROS2 instance (prevents "Promise already satisfied" crash)
 pkill -f mavros_node 2>/dev/null; sleep 1

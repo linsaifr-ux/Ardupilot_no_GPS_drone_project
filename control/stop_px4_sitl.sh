@@ -10,7 +10,7 @@
 # Usage:
 #   bash control/stop_px4_sitl.sh
 
-ROS_SETUP="/opt/ros/jazzy/setup.bash"
+ROS_SETUP="/opt/ros/humble/setup.bash"
 PID_FILE="/tmp/px4_sitl.pid"
 
 _px4_running() { pgrep -x px4 &>/dev/null; }

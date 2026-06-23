@@ -14,7 +14,7 @@ EKF origin and status are handled via MAVROS2 raw MAVLink topics
 (/uas1/mavlink_source BEST_EFFORT) — no pymavlink or extra UDP port needed.
 
 Run:
-  source /opt/ros/jazzy/setup.bash
+  source /opt/ros/humble/setup.bash
   python3 control/flight_commander.py
 
 Prerequisites (running concurrently):
@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 

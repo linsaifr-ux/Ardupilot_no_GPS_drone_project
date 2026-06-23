@@ -33,7 +33,9 @@ simulator/drone_frames/
 simulator/flight_traces/
 
 # AnyLoc generated databases (rebuild with: python anyloc/build_database.py [--model vits14])
+anyloc/database
 anyloc/database/
+anyloc/database_vits14
 anyloc/database_vits14/
 
 # AnyLoc test / debug output
@@ -63,17 +65,22 @@ mav.tlog.raw
 *.bin
 *.parm
 !control/no_gps.parm
+!control/real_hw.parm
 terrain/
 
-# AnyLoc runtime output (written each anchor frame, read by run_vision.py)
+# AnyLoc runtime output (written at runtime)
 anyloc/latest_estimate.json
+anyloc/latest_estimate.json.tmp
+anyloc/latest_match.jpg
+anyloc/latest_match.jpg.tmp
 
 # Survey detection log and crops (written by px4_commander.py at runtime)
 detections.csv
 det_crops/
 
 # Terrain elevation written by cesium_scene.py on startup (runtime, machine-specific)
-control/home_elevation.json
+# Keep home_elevation.json tracked — it's manually set to the contest site coordinates
+# control/home_elevation.json
 
 # ArduPilot SITL logs (written to project root and control/ by sim_vehicle.py)
 logs/

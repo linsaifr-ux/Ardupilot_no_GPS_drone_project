@@ -94,54 +94,48 @@ set `FCU_DEV=/dev/ttyUSB1` before launching (see `launch_mavros_real.sh` below).
 
 ## Software Prerequisites on Jetson
 
-### ROS2 Jazzy
+### ROS2 Humble
+
+Jetson runs Ubuntu 22.04 (arm64) with ROS2 Humble:
 
 ```bash
-# Check if already installed:
-source /opt/ros/jazzy/setup.bash && echo "ROS2 OK"
-
-# If not installed — follow: https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html
-# Jetson runs Ubuntu 22.04 (arm64); use the arm64 deb path.
+# Check:
+source /opt/ros/humble/setup.bash && echo "ROS2 OK"
 ```
 
 ### MAVROS
 
 ```bash
-sudo apt install -y ros-jazzy-mavros ros-jazzy-mavros-extras ros-jazzy-mavros-msgs
-sudo /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+sudo apt install -y ros-humble-mavros ros-humble-mavros-extras ros-humble-mavros-msgs
+sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
 ```
 
 ### v4l2_camera (camera driver)
 
 ```bash
-sudo apt install -y ros-jazzy-v4l2-camera
-# Verify camera is detected:
+sudo apt install -y ros-humble-v4l2-camera
 ls /dev/video*
-v4l2-ctl --list-devices
 ```
 
-### Python / conda environment
+### Python venvs (no conda on Jetson)
 
-The conda env is called `isaac_sim_test` (same name as on the PC — keep consistent for shared scripts):
+Two venvs with Jetson-specific PyTorch wheels are already set up:
 
-```bash
-# Check if env exists:
-conda activate isaac_sim_test && echo "conda env OK"
-
-# If not — create:
-conda create -n isaac_sim_test python=3.10
-conda activate isaac_sim_test
-
-# Install dependencies:
-pip install torch torchvision pillow numpy opencv-python
-conda install -n isaac_sim_test -c conda-forge faiss-cpu
-pip install ultralytics   # for YOLOv8
-```
+| Venv | Path | Packages |
+|---|---|---|
+| anyloc | `/home/jetson/venv/anyloc` | torch 2.5 (NV), faiss, Pillow, numpy |
+| yolo | `/home/jetson/venv/yolo` | torch 2.5 (NV), ultralytics, opencv |
 
 Verify:
 ```bash
-conda run -n isaac_sim_test python -c "import torch, faiss, ultralytics; print('deps OK')"
+/home/jetson/venv/anyloc/bin/python3 -c "import torch, faiss; print('anyloc venv OK')"
+/home/jetson/venv/yolo/bin/python3  -c "import torch, ultralytics; print('yolo venv OK')"
 ```
+
+These venvs are used by:
+- `anyloc/run_ros2_localizer.sh` → `/home/jetson/venv/anyloc/bin/python3`
+- `detection/run_ros2_detector.sh` → `/home/jetson/venv/yolo/bin/python3`
+- `control/launch_real_hw.sh` → both venvs for background processes
 
 ---
 
@@ -182,7 +176,7 @@ import math
 import os
 import sys
 
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 
@@ -577,7 +571,7 @@ def main():
 # MAVROS2 connected to real ArduPilot FC via USB-to-TTL adapter.
 # Default device: /dev/ttyUSB0 — override with: FCU_DEV=/dev/ttyUSB1 bash launch_mavros_real.sh
 set -e
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 FCU_DEV="${FCU_DEV:-/dev/ttyUSB0}"
 
@@ -611,7 +605,7 @@ The camera (AP-IMX900-Mini-USB3-I5) is a UVC USB camera. Publish to `/drone/came
 ```bash
 #!/bin/bash
 # Launch USB camera driver on Jetson
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 # Find camera device — AP-IMX900 typically appears as /dev/video0
 CAMERA_DEV="${CAMERA_DEV:-/dev/video0}"
@@ -739,7 +733,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 
 echo "=== Real Hardware Launch ==="
 echo "Project: $PROJECT_DIR"
@@ -765,16 +759,13 @@ sleep 2
 
 # 4. AnyLoc (headless — no display needed during flight)
 echo "[launch] Starting AnyLoc localizer ..."
-source /opt/ros/jazzy/setup.bash
-conda run -n isaac_sim_test --no-capture-output \
-    python3 -u "$PROJECT_DIR/anyloc/ros2_node.py" --headless &
+/home/jetson/venv/anyloc/bin/python3 -u "$PROJECT_DIR/anyloc/ros2_node.py" --headless &
 ANYLOC_PID=$!
 sleep 4
 
 # 5. YOLO detector (headless)
 echo "[launch] Starting YOLO detector ..."
-conda run -n isaac_sim_test --no-capture-output \
-    python3 -u "$PROJECT_DIR/detection/ros2_node.py" --headless &
+/home/jetson/venv/yolo/bin/python3 -u "$PROJECT_DIR/detection/ros2_node.py" --headless &
 YOLO_PID=$!
 sleep 2
 
@@ -803,24 +794,23 @@ If the contest is at a different location, rebuild it.
 **The database builder fetches satellite imagery from NLSC PHOTO2 (Taiwan government tile server).**
 
 ```bash
-# Update HOME coordinates in build_database.py:
-#   CENTER_LAT = <contest site lat>
-#   CENTER_LON = <contest site lon>
-# Then rebuild:
-conda run -n isaac_sim_test python anyloc/build_database.py --rebuild
+# Update CENTER_LAT / CENTER_LON in anyloc/build_database.py
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --rebuild
 
 # Or pass AGL range matching your flight altitude (65 m):
-conda run -n isaac_sim_test python anyloc/build_database.py \
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py \
     --agl-min 60 --agl-max 70 --agl-step 5 --rebuild
 ```
 
+Database lives at `anyloc/database_vits14/` with a symlink `anyloc/database → anyloc/database_vits14`.
+
 After rebuilding, verify:
 ```bash
-ls -lh anyloc/database/  # should show database.pt (~50-200 MB), db_images/ dir
-python3 -c "
+ls -lh anyloc/database_vits14/   # database.pt, database_vlads.pt (~265 MB), db_images/
+/home/jetson/venv/anyloc/bin/python3 -c "
 import torch
-db = torch.load('anyloc/database/database.pt')
-print(f'DB entries: {len(db[\"lats\"])}')
+meta = torch.load('anyloc/database_vits14/database_meta.pt')
+print(f'DB entries: {len(meta[\"lats\"])}')
 "
 ```
 

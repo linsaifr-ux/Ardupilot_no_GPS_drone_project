@@ -17,7 +17,7 @@ Writes:
   to avoid duplicate EKF2 inputs when both processes run together.
 
 Run:
-  source /opt/ros/jazzy/setup.bash
+  source /opt/ros/humble/setup.bash
   DISPLAY=:2 conda run -n isaac_sim_test python3 anyloc/ros2_node.py
 """
 
@@ -29,7 +29,7 @@ import threading
 import time
 
 # ROS2 Jazzy site-packages (Python 3.12) — add when running inside conda env
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 
@@ -64,6 +64,7 @@ MIN_AGL         = 50.0   # m — below this AGL skip inference (matches px4_comm
 HERE          = os.path.dirname(os.path.abspath(__file__))
 DB_PATH       = os.path.join(HERE, "database")
 ESTIMATE_JSON = os.path.join(HERE, "latest_estimate.json")
+MATCH_JPG     = os.path.join(HERE, "latest_match.jpg")
 
 
 # ── Helpers (identical to run_localizer.py) ───────────────────────────────────
@@ -110,8 +111,11 @@ def _yaw_from_quat(qz, qw):
 # ── ROS2 node ─────────────────────────────────────────────────────────────────
 
 class AnyLocNode(rclpy.node.Node):
-    def __init__(self):
+    def __init__(self, test_mode: bool = False, test_agl: float = 65.0):
         super().__init__("anyloc_localizer")
+
+        self._test_mode = test_mode
+        self._test_agl  = test_agl   # fake AGL used when on ground in test mode
 
         self._loc = AnyLocLocalizer(DB_PATH)
         self._vo  = VORefiner()
@@ -146,10 +150,17 @@ class AnyLocNode(rclpy.node.Node):
         # Publishers
         self.pub_est = self.create_publisher(
             PoseWithCovarianceStamped, "/anyloc/pose_estimate", 1)
-        # Note: VPE to MAVROS is handled by px4_commander.py reading latest_estimate.json.
-        # Publishing directly to /mavros/vision_pose/pose here caused duplicate VPE when
-        # running alongside the commander, confusing EKF2. The file-based interface is the
-        # correct integration point.
+
+        # In test mode also publish directly to MAVROS so EKF receives VPE
+        # without needing the commander.  In normal mode the commander reads
+        # latest_estimate.json to avoid duplicate VPE inputs.
+        self.pub_mavros_vpe = None
+        if test_mode:
+            self.pub_mavros_vpe = self.create_publisher(
+                PoseWithCovarianceStamped, "/mavros/vision_pose/pose_cov", 1)
+            self.get_logger().info(
+                f"[TEST MODE] AGL gate disabled — running AnyLoc at all altitudes"
+                f"  fake_agl={test_agl:.0f} m when on ground")
 
         self.get_logger().info("AnyLoc node ready — waiting for /drone/camera/image_raw")
 
@@ -166,20 +177,32 @@ class AnyLocNode(rclpy.node.Node):
         self._drone_agl = msg.data if msg.data > 0.5 else self._drone_agl
 
     def _cb_image(self, msg):
-        agl_m = self._drone_agl
-        if agl_m < MIN_AGL:
-            return
-
-        if not self._agl_logged:
-            print(f"[AnyLoc] AGL {agl_m:.0f} m ≥ {MIN_AGL:.0f} m — starting inference")
-            self._agl_logged = True
-
+        # Decode first so postview shows live feed even on the ground.
         try:
             pil_img = PILImage.frombytes(
                 "RGB", (msg.width, msg.height), bytes(msg.data))
         except Exception as e:
             self.get_logger().warn(f"Image decode: {e}")
             return
+
+        with self.lock:
+            self.latest_frame = pil_img
+
+        agl_m = self._drone_agl
+
+        if self._test_mode:
+            # Bypass AGL gate; use fake AGL when on ground so scale is realistic
+            if agl_m < 2.0:
+                agl_m = self._test_agl
+            if not self._agl_logged:
+                print(f"[AnyLoc] TEST MODE — running inference (agl={agl_m:.0f} m)")
+                self._agl_logged = True
+        else:
+            if agl_m < MIN_AGL:
+                return  # below cruise altitude — skip AnyLoc inference
+            if not self._agl_logged:
+                print(f"[AnyLoc] AGL {agl_m:.0f} m ≥ {MIN_AGL:.0f} m — starting inference")
+                self._agl_logged = True
 
         agl_m     = self._drone_agl
         yaw_deg   = math.degrees(self._drone_yaw)
@@ -251,9 +274,14 @@ class AnyLocNode(rclpy.node.Node):
         mode_tag   = 'ANYLOC' if run_anyloc else f'VO +{anchor_age}f'
 
         with self.lock:
-            self.latest_frame = pil_img
             if match_img is not None:
                 self.latest_match = match_img
+                try:
+                    _tmp = MATCH_JPG + ".tmp"
+                    match_img.save(_tmp, "JPEG", quality=85)
+                    os.replace(_tmp, MATCH_JPG)
+                except Exception:
+                    pass
             self.latest_result = dict(
                 drone_lat=drone_lat, drone_lon=drone_lon,
                 drone_alt=drone_alt, drone_agl=agl_m,
@@ -282,6 +310,23 @@ class AnyLocNode(rclpy.node.Node):
         cov[21] = cov[28] = cov[35] = 0.3**2
         est.pose.covariance = cov
         self.pub_est.publish(est)
+
+        if self.pub_mavros_vpe is not None:
+            # Convert WGS84 → ENU metres from HOME for MAVROS vision_pose
+            north_m = (lat  - HOME_LAT) * M_PER_DEG
+            east_m  = (lon  - HOME_LON) * M_PER_DEG * COS_LAT
+            agl_m   = alt_msl - HOME_ALT_MSL
+
+            vpe = PoseWithCovarianceStamped()
+            vpe.header.stamp    = now
+            vpe.header.frame_id = "map"
+            vpe.pose.pose.position.x = east_m    # ENU: x=East
+            vpe.pose.pose.position.y = north_m   # ENU: y=North
+            vpe.pose.pose.position.z = agl_m     # ENU: z=Up
+            vpe.pose.pose.orientation.z = math.sin(hy)
+            vpe.pose.pose.orientation.w = math.cos(hy)
+            vpe.pose.covariance = cov
+            self.pub_mavros_vpe.publish(vpe)
 
     def _write_estimate(self, est_lat, est_lon, alt_msl, agl_m,
                         yaw_deg, score, drone_lat, drone_lon):
@@ -326,7 +371,17 @@ def run_postview(node: AnyLocNode):
             match  = node.latest_match
             result = node.latest_result
 
-        if frame is None or result is None or match is None:
+        if frame is None:
+            plt.pause(0.15)
+            continue
+
+        if result is None or match is None:
+            # Show live camera feed while waiting for AnyLoc result (below 50 m AGL)
+            v1 = _pil_overlay(frame.resize((640, 480), PILImage.LANCZOS),
+                              ['DRONE CAMERA', 'Waiting for AnyLoc … (AGL < 50 m)'],
+                              text_color='white')
+            im1.set_data(_pil_to_array(v1))
+            fig.canvas.draw_idle()
             plt.pause(0.15)
             continue
 
@@ -361,18 +416,153 @@ def run_postview(node: AnyLocNode):
     print("[PostView] Closed.")
 
 
+# ── GStreamer stream (replaces postview when --stream-host is given) ──────────
+
+def run_stream(node: AnyLocNode, host: str, port: int):
+    """
+    Stream the postview as H.265/RTP to a ground station.
+    Identical panel compositing to run_postview() — same overlays, same layout.
+
+    Receive on ground station:
+        gst-launch-1.0 udpsrc port=5000 ! \\
+            application/x-rtp,encoding-name=H265,payload=96 ! \\
+            rtph265depay ! h265parse ! avdec_h265 ! \\
+            videoconvert ! autovideosink sync=false
+    """
+    import gi
+    gi.require_version('Gst', '1.0')
+    from gi.repository import Gst
+
+    PANEL_W, PANEL_H = 640, 480
+    STREAM_FPS = 10
+
+    Gst.init(None)
+    pipeline = Gst.parse_launch(
+        f'appsrc name=src format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={PANEL_W*2},height={PANEL_H},framerate={STREAM_FPS}/1 ! '
+        f'videoconvert ! '
+        f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'nvv4l2h265enc bitrate=2000000 preset-level=UltraFastPreset '
+        f'idrinterval={STREAM_FPS} iframeinterval={STREAM_FPS} ! '
+        f'rtph265pay config-interval=-1 mtu=1200 ! '
+        f'udpsink host={host} port={port} sync=false'
+    )
+    appsrc = pipeline.get_by_name('src')
+    pipeline.set_state(Gst.State.PLAYING)
+
+    blank = PILImage.fromarray(np.zeros((PANEL_H, PANEL_W, 3), dtype=np.uint8))
+    frame_count = 0
+    frame_dur   = Gst.SECOND // STREAM_FPS
+
+    print(f"[Stream] Streaming postview 1280×480 H.265 → {host}:{port}")
+    print(f"[Stream] Receive: gst-launch-1.0 udpsrc port={port} ! "
+          f"application/x-rtp,encoding-name=H265,payload=96 ! "
+          f"rtph265depay ! h265parse ! avdec_h265 ! videoconvert ! autovideosink sync=false")
+    print("[Stream] Waiting for first frame …  (Ctrl-C to quit)")
+
+    try:
+        while True:
+            with node.lock:
+                frame  = node.latest_frame
+                match  = node.latest_match
+                result = node.latest_result
+
+            if frame is None:
+                time.sleep(0.1)
+                continue
+
+            if result is None or match is None:
+                v1 = _pil_overlay(frame.resize((PANEL_W, PANEL_H), PILImage.LANCZOS),
+                                  ['DRONE CAMERA', 'Waiting for AnyLoc … (AGL < 50 m)'],
+                                  text_color='white')
+                v2 = blank
+            else:
+                r     = result
+                err_m = r['err_m']
+                color = '#50ff50' if err_m < 200 else '#5050ff'
+                mode  = r['mode_tag']
+
+                v1 = _pil_overlay(frame.resize((PANEL_W, PANEL_H), PILImage.LANCZOS), [
+                    'DRONE CAMERA',
+                    f"LAT   {r['drone_lat']:.5f} N",
+                    f"LON   {r['drone_lon']:.5f} E",
+                    f"ALT   {r['drone_alt']:.1f} m MSL    AGL {r['drone_agl']:.1f} m",
+                    f"YAW   {r['drone_yaw']:.1f} deg",
+                ], text_color='white')
+
+                v2 = _pil_overlay(match.resize((PANEL_W, PANEL_H), PILImage.LANCZOS), [
+                    f"{mode}   score {r['score']:.3f}   #{r['db_idx']}",
+                    f"LAT   {r['est_lat']:.5f} N",
+                    f"LON   {r['est_lon']:.5f} E",
+                    f"ALT   {r['drone_agl']:.1f} m AGL",
+                    f"ERR   {err_m:.0f} m    VO pts {r['n_vo']}    {r['elapsed_ms']:.0f} ms",
+                ], text_color=color)
+
+            # PIL RGB → numpy BGR → combine panels
+            bgr1 = np.array(v1.convert('RGB'))[:, :, ::-1].copy()
+            bgr2 = np.array(v2.convert('RGB'))[:, :, ::-1].copy()
+            combined = np.hstack([bgr1, bgr2])
+
+            frame_count += 1
+            buf          = Gst.Buffer.new_wrapped(combined.tobytes())
+            buf.pts      = frame_count * frame_dur
+            buf.duration = frame_dur
+            flow = appsrc.emit('push-buffer', buf)
+            if flow != Gst.FlowReturn.OK:
+                print(f"[Stream] GStreamer error: {flow}")
+                break
+
+            time.sleep(1.0 / STREAM_FPS)
+
+    except KeyboardInterrupt:
+        print("\n[Stream] Stopping …")
+    finally:
+        appsrc.emit('end-of-stream')
+        pipeline.set_state(Gst.State.NULL)
+        print("[Stream] Done.")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    rclpy.init()
-    node = AnyLocNode()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--headless", action="store_true",
+                        help="Disable postview (flight mode — no display, no stream)")
+    parser.add_argument("--stream-host", metavar="IP", default=None,
+                        help="Stream postview as H.265/RTP to this ground station IP")
+    parser.add_argument("--stream-port", type=int, default=5000,
+                        help="UDP port for GStreamer stream (default: 5000)")
+    parser.add_argument("--test", action="store_true",
+                        help="Test mode: bypass AGL gate, run AnyLoc at any altitude, "
+                             "publish VPE directly to /mavros/vision_pose/pose_cov")
+    parser.add_argument("--test-agl", type=float, default=65.0,
+                        help="Fake AGL (m) used when on ground in --test mode (default: 65)")
+    args, _ = parser.parse_known_args()
 
-    # ROS2 spin in background thread so matplotlib can own the main thread
+    rclpy.init()
+    node = AnyLocNode(test_mode=args.test, test_agl=args.test_agl)
+
+    if args.headless:
+        print("[AnyLoc] Running headless — no postview window")
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+            rclpy.shutdown()
+        return
+
+    # ROS2 spin in background thread so postview/stream can own the main thread
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
     try:
-        run_postview(node)
+        if args.stream_host:
+            run_stream(node, args.stream_host, args.stream_port)
+        else:
+            run_postview(node)
     except KeyboardInterrupt:
         pass
     finally:

@@ -5,7 +5,7 @@
 # MAVROS binds 14540 and auto-learns PX4's address.  MAVROS auto-detects PX4 and
 # loads the px4 mode map (OFFBOARD, AUTO.*) — no apm plugin denylist needed.
 
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/humble/setup.bash
 pkill -f mavros_node 2>/dev/null; sleep 1
 
 ros2 run mavros mavros_node \

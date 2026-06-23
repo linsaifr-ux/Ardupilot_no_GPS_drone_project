@@ -42,8 +42,8 @@ _MOTOR_LOCAL = [
 ]
 
 # ROS2 Jazzy Python packages (Python 3.12) — compatible with Isaac Sim 6.0 (Python 3.12).
-# run_chiayi.sh sources /opt/ros/jazzy/setup.bash so ROS2 shared libs are on LD_LIBRARY_PATH.
-_ROS2_SITE = "/opt/ros/jazzy/lib/python3.12/site-packages"
+# run_chiayi.sh sources /opt/ros/humble/setup.bash so ROS2 shared libs are on LD_LIBRARY_PATH.
+_ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 try:
