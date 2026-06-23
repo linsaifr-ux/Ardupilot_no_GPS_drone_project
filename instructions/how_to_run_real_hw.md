@@ -14,7 +14,7 @@ Mission Planner (PC)
   └─ survey.waypoints ──scp──▶  Jetson Orin NX
                                   launch_real_hw.sh
                                   ├─ [1] launch_mavros_real.sh    → serial:///dev/ttyUSB0:921600
-                                  ├─ [2] launch_camera.sh         → /dev/video0 (YUYV 1280×720 @ 30fps → rgb8) → /drone/camera/image_raw
+                                  ├─ [2] launch_camera.sh         → /dev/video0 (YUYV 1280×960 @ 30fps → rgb8) → /drone/camera/image_raw
                                   ├─ [3] hw_bridge.py             → /mavros/local_position/pose → /drone/state /drone/pose /drone/agl
                                   ├─ [4] anyloc/ros2_node.py      → venv/anyloc → /drone/camera/image_raw → AnyLoc VPE
                                   ├─ [5] detection/ros2_node.py   → venv/yolo   → /drone/camera/image_raw → detections.csv
@@ -93,14 +93,33 @@ Set RC aux switch for EKF source:
 
 ### 5. AnyLoc database
 
-Database lives at `anyloc/database_vits14/` with a symlink `anyloc/database → anyloc/database_vits14` (already created).
+Database lives at `anyloc/database_vits14/` (satellite tiles) with a symlink `anyloc/database → anyloc/database_vits14` (already created).
 
-To rebuild for a different site:
+To rebuild satellite database for a different site:
 ```bash
 # Update CENTER_LAT / CENTER_LON in anyloc/build_database.py
 /home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --rebuild
 ls -lh anyloc/database_vits14/   # expect database.pt, database_vlads.pt, db_meta.json, db_images/
 ```
+
+To build a **real-field database** from actual drone footage (better match at inference time):
+```bash
+# 1. Record survey flight (MAVROS only, no launch_camera.sh)
+source /opt/ros/humble/setup.bash
+python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+# → writes field_data/survey1/video.mkv  telemetry.csv  meta.json
+# MKV format: stays playable even after power-off mid-flight
+
+# 2. Extract geo-tagged frames
+python3 tools/extract_frames.py field_data/survey1/ --rotate --min-dist 25
+
+# 3. Build database
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database_real.py field_data/survey1/
+
+# 4. Activate
+ln -sfn database_real anyloc/database
+```
+See `instructions/field_database_collection.md` for the complete guide (flight plan, FOV/overlap analysis, terminal setup).
 
 ---
 
@@ -302,7 +321,7 @@ Once you switch to GUIDED at altitude, commander starts the survey automatically
 ### Camera — expected warnings (harmless)
 
 ```
-[WARN] slow conversion: yuv422_yuy2 => rgb8   ← expected, YUYV 1280×720→rgb8 conversion
+[WARN] slow conversion: yuv422_yuy2 => rgb8   ← expected, YUYV 1280×960→rgb8 conversion
 [ERROR] Camera calibration file ... not found  ← harmless, AnyLoc doesn't need intrinsics
 ```
 Confirm images flow: `ros2 topic hz /drone/camera/image_raw` → expect ~30 Hz

@@ -2,7 +2,7 @@
 """
 Extract geo-tagged frames from a field recording for AnyLoc database building.
 
-Reads the output of record_field.py (video.mp4 + telemetry.csv + meta.json)
+Reads the output of record_field.py (video.mkv + telemetry.csv + meta.json)
 and produces:
   frames/000000.jpg, frames/000001.jpg, …
   frames.csv   — path, lat, lon, alt_amsl, alt_agl, heading_deg
@@ -80,7 +80,7 @@ def main():
 
     d = args.session_dir
     meta_path  = os.path.join(d, 'meta.json')
-    video_path = os.path.join(d, 'video.mp4')
+    video_path = os.path.join(d, 'video.mkv')
     telem_path = os.path.join(d, 'telemetry.csv')
 
     for p in (meta_path, video_path, telem_path):

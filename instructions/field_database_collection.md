@@ -27,7 +27,7 @@ Video goes **directly to the V4L2 device, not through ROS**. This means:
 
 - `launch_camera.sh` must **not** be running during collection — it also opens `/dev/video0` and will conflict
 - AnyLoc and YOLO nodes must also be stopped for the same reason
-- Only MAVROS + hw_bridge are needed (they don't touch the camera)
+- Only MAVROS is needed (it doesn't touch the camera)
 
 ---
 
@@ -75,9 +75,10 @@ The inference node publishes at **1280×960** (4:3) to preserve the full FOV —
 
 ```
 Terminal 1   bash control/launch_mavros_real.sh
-Terminal 2   source /opt/ros/humble/setup.bash && python3 control/hw_bridge.py
-Terminal 3   source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1
+Terminal 2   source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
 ```
+
+The recorder reads GPS, AGL, and heading **directly from MAVROS** (`/mavros/global_position/global`, `/mavros/global_position/rel_alt`, `/mavros/global_position/compass_hdg`) — `hw_bridge.py` is not needed for collection.
 
 Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for `/dev/video0`.
 
@@ -87,19 +88,43 @@ Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_nod
 
 ```bash
 source /opt/ros/humble/setup.bash
+
+# Without stream
 python3 tools/record_field.py --output field_data/survey1
+
+# With live preview streamed to ground station
+python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
 ```
 
-Live status while recording:
+The stream sends a 1280×720 H.265/RTP preview with a black telemetry bar at the bottom showing lat/lon/AGL/heading. Receive on the ground station:
+
+```bash
+gst-launch-1.0 udpsrc port=5000 ! \
+  application/x-rtp,encoding-name=H265,payload=96 ! \
+  rtph265depay ! h265parse ! avdec_h265 ! \
+  videoconvert ! autovideosink sync=false
+```
+
+Options:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--stream-host` | off | Ground station IP — enables the preview stream |
+| `--stream-port` | 5000 | UDP port |
+| `--stream-bitrate` | 2000000 | H.265 stream bitrate in bps |
+| `--bitrate` | 8000000 | H.264 recording bitrate in bps |
+| `--duration` | 0 | Stop after N seconds (0 = Ctrl+C) |
+
+Live status printed to terminal:
 ```
 [REC]    42s  lat=23.451234  lon=120.287654  agl=65.2 m  hdg=045°
 ```
 
-Press **Ctrl+C** to stop (or `--duration SECONDS` for a fixed length).
+Press **Ctrl+C** to stop.
 
 Output in `field_data/survey1/`:
 ```
-video.mp4       H.264, 2048×1536 30fps
+video.mkv       H.264, 2048×1536 30fps (MKV — stays playable after power-off)
 telemetry.csv   unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
 meta.json       video_start_unix, fps, width, height
 ```
@@ -188,6 +213,6 @@ ln -sfn database_vits14 anyloc/database
 | `tools/extract_frames.py` | Extract geo-tagged frames from the recording |
 | `anyloc/build_database_real.py` | Build AnyLoc database from extracted frames |
 | `control/launch_camera.sh` | **Do not run during collection** — conflicts with recorder |
-| `field_data/<session>/video.mp4` | Raw recording (keep until DB verified) |
+| `field_data/<session>/video.mkv` | Raw recording (keep until DB verified) |
 | `field_data/<session>/frames.csv` | Frame index with GPS + heading |
 | `anyloc/database_real/` | Ready-to-use database (activate with symlink) |

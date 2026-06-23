@@ -35,6 +35,7 @@ if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
 
 import rclpy
 import rclpy.node
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from sensor_msgs.msg import Image, NavSatFix
 from std_msgs.msg import Float64
@@ -151,7 +152,7 @@ class AnyLocNode(rclpy.node.Node):
         self.create_subscription(Image,       "/drone/camera/image_raw",          self._cb_image, 1)
         self.create_subscription(PoseStamped, "/drone/pose",                       self._cb_pose,  10)
         self.create_subscription(Float64,     "/drone/agl",                        self._cb_agl,   10)
-        self.create_subscription(NavSatFix,   "/mavros/global_position/global",   self._cb_gps,   10)
+        self.create_subscription(NavSatFix,   "/mavros/global_position/global",   self._cb_gps,   qos_profile_sensor_data)
 
         # Publishers
         self.pub_est = self.create_publisher(

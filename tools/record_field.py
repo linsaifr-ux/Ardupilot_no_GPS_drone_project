@@ -2,24 +2,36 @@
 """
 Field database collection recorder.
 
-Records 2048×1536 30fps H.264 video alongside a telemetry CSV containing
-GPS position, AGL, and compass heading — all synchronized by Unix timestamp.
+Records 2048×1536 30fps H.264 video alongside a telemetry CSV, and
+optionally streams a 1280×720 H.265 preview with a telemetry overlay
+to a ground station.
 
-Requires MAVROS + ardupilot_commander running (they publish /drone/agl and
-/drone/pose).  The camera must be on /dev/video0.
+Video and stream share a single OpenCV capture of /dev/video0.
+Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
+
+Requires MAVROS + hw_bridge.py (publishes /drone/agl and /drone/pose).
 
 Usage:
     source /opt/ros/humble/setup.bash
     python3 tools/record_field.py [OPTIONS]
 
-    --output DIR       output directory  (default: field_data/<timestamp>)
-    --bitrate BPS      H.264 bitrate     (default: 8000000)
-    --duration SECS    stop after N s    (default: 0 = Ctrl+C)
+    --output DIR           output directory  (default: field_data/<timestamp>)
+    --bitrate BPS          H.264 record bitrate (default: 8000000)
+    --duration SECS        stop after N s    (default: 0 = Ctrl+C)
+    --stream-host IP       stream preview to this ground station IP
+    --stream-port PORT     UDP port          (default: 5000)
+    --stream-bitrate BPS   H.265 stream bitrate (default: 2000000)
 
 Output files in DIR/:
-    video.mp4          H.264, 2048×1536 30fps
-    telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg
+    video.mkv          H.264, 2048×1536 30fps (MKV — crash-safe)
+    telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
     meta.json          video_start_unix, fps, width, height
+
+Ground station receiver:
+    gst-launch-1.0 udpsrc port=5000 ! \\
+      application/x-rtp,encoding-name=H265,payload=96 ! \\
+      rtph265depay ! h265parse ! avdec_h265 ! \\
+      videoconvert ! autovideosink sync=false
 
 Post-processing:
     python3 tools/extract_frames.py field_data/<timestamp>/
@@ -30,24 +42,31 @@ import csv
 import json
 import math
 import os
-import signal
-import subprocess
 import sys
 import threading
 import time
 from datetime import datetime
 
+import cv2
+import gi
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst
+
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float64
 
+Gst.init(None)
 
-def _yaw_from_quat(qz, qw):
-    """Extract yaw (rad) from PoseStamped quaternion (same convention as ros2_node.py)."""
-    return 2.0 * math.atan2(qz, qw)
+# ── Camera / pipeline constants ────────────────────────────────────────────────
+REC_W,    REC_H,    FPS  = 2048, 1536, 30
+STREAM_W, STREAM_H       = 1280,  720
+OVERLAY_H                = 44     # height of black telemetry bar at bottom of stream
 
+
+# ── Telemetry ──────────────────────────────────────────────────────────────────
 
 class TelemetryLogger(Node):
     def __init__(self, csv_path):
@@ -58,19 +77,17 @@ class TelemetryLogger(Node):
         self._lon     = None
         self._alt_msl = None
         self._agl     = None
-        self._heading = None   # degrees, 0 = North, CW
+        self._heading = None
 
         self._file   = open(csv_path, 'w', newline='')
         self._writer = csv.writer(self._file)
         self._writer.writerow(['unix_time', 'lat', 'lon', 'alt_amsl', 'alt_agl', 'heading_deg'])
 
-        self.create_subscription(NavSatFix,   '/mavros/global_position/global', self._cb_gps,  10)
-        self.create_subscription(Float64,     '/drone/agl',                     self._cb_agl,  10)
-        self.create_subscription(PoseStamped, '/drone/pose',                    self._cb_pose, 10)
+        self.create_subscription(NavSatFix, '/mavros/global_position/global',    self._cb_gps, qos_profile_sensor_data)
+        self.create_subscription(Float64,   '/mavros/global_position/rel_alt',  self._cb_agl, qos_profile_sensor_data)
+        self.create_subscription(Float64,   '/mavros/global_position/compass_hdg', self._cb_hdg, qos_profile_sensor_data)
 
-        # Log at 5 Hz
         self.create_timer(0.2, self._log_row)
-        self.get_logger().info(f'Telemetry → {csv_path}')
 
     def _cb_gps(self, msg: NavSatFix):
         with self._lock:
@@ -82,13 +99,9 @@ class TelemetryLogger(Node):
         with self._lock:
             self._agl = msg.data
 
-    def _cb_pose(self, msg: PoseStamped):
-        q  = msg.pose.orientation
-        # /drone/pose encodes yaw as −compass_bearing_rad (same as ros2_node.py line 233)
-        yaw_rad = _yaw_from_quat(q.z, q.w)
-        heading = (-math.degrees(yaw_rad)) % 360.0
+    def _cb_hdg(self, msg: Float64):
         with self._lock:
-            self._heading = heading
+            self._heading = msg.data
 
     def _log_row(self):
         with self._lock:
@@ -104,100 +117,205 @@ class TelemetryLogger(Node):
             ])
             self._file.flush()
 
-    def status(self):
+    def snapshot(self):
+        """Return current telemetry values (thread-safe)."""
         with self._lock:
-            lat = f'{self._lat:.6f}'     if self._lat     is not None else '---'
-            lon = f'{self._lon:.6f}'     if self._lon     is not None else '---'
-            agl = f'{self._agl:.1f} m'   if self._agl     is not None else '--- m'
-            hdg = f'{self._heading:.0f}°' if self._heading is not None else '---°'
-        return f'lat={lat}  lon={lon}  agl={agl}  hdg={hdg}'
+            return (self._lat, self._lon, self._alt_msl, self._agl, self._heading)
+
+    def status(self):
+        lat, lon, _, agl, hdg = self.snapshot()
+        if lat is None:
+            return 'waiting for GPS …'
+        agl_s = f'{agl:.1f} m' if agl is not None else '---'
+        hdg_s = f'{hdg:.0f}°'  if hdg is not None else '---'
+        return f'lat={lat:.6f}  lon={lon:.6f}  agl={agl_s}  hdg={hdg_s}'
 
     def close(self):
         self._file.close()
 
 
+# ── Stream overlay ─────────────────────────────────────────────────────────────
+
+def _make_stream_frame(bgr_full, telem):
+    """Resize to stream resolution and draw telemetry bar at bottom."""
+    lat, lon, _, agl, hdg = telem
+
+    frame = cv2.resize(bgr_full, (STREAM_W, STREAM_H))
+
+    # Black bar
+    y0 = STREAM_H - OVERLAY_H
+    cv2.rectangle(frame, (0, y0), (STREAM_W, STREAM_H), (0, 0, 0), -1)
+
+    line1 = f'LAT {lat:.6f}   LON {lon:.6f}' if lat is not None else 'GPS: waiting ...'
+    line2 = (f'AGL {agl:.1f} m   HDG {hdg:.0f} deg' if agl is not None and hdg is not None
+             else f'AGL {agl:.1f} m' if agl is not None
+             else 'AGL ---   HDG ---')
+
+    cv2.putText(frame, line1, (10, y0 + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(frame, line2, (10, y0 + 34),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 220, 255), 1, cv2.LINE_AA)
+
+    return frame
+
+
+# ── GStreamer pipeline builders ────────────────────────────────────────────────
+
+def _build_rec_pipeline(video_path, bitrate):
+    # matroskamux writes clusters incrementally — the file stays playable even
+    # after a hard power-off.  mp4mux requires a clean EOS to write the moov
+    # atom; a crash leaves the file unplayable.
+    return Gst.parse_launch(
+        f'appsrc name=rec format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={REC_W},height={REC_H},framerate={FPS}/1 ! '
+        f'videoconvert ! '
+        f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'nvv4l2h264enc bitrate={bitrate} ! '
+        f'h264parse ! matroskamux ! '
+        f'filesink location={video_path}'
+    )
+
+
+def _build_stream_pipeline(host, port, bitrate):
+    return Gst.parse_launch(
+        f'appsrc name=stream format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        f'videoconvert ! '
+        f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'nvv4l2h265enc bitrate={bitrate} preset-level=UltraFastPreset '
+        f'idrinterval=30 iframeinterval=30 ! '
+        f'rtph265pay config-interval=-1 mtu=1200 ! '
+        f'udpsink host={host} port={port} sync=false'
+    )
+
+
+def _push(appsrc, frame_bgr, frame_idx):
+    buf = Gst.Buffer.new_wrapped(frame_bgr.tobytes())
+    buf.pts      = frame_idx * Gst.SECOND // FPS
+    buf.duration = Gst.SECOND // FPS
+    return appsrc.emit('push-buffer', buf)
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--output',   default='',  help='Output directory')
-    ap.add_argument('--bitrate',  type=int, default=8_000_000)
-    ap.add_argument('--duration', type=int, default=0,
-                    help='Recording duration in seconds (0 = Ctrl+C)')
+    ap.add_argument('--output',         default='')
+    ap.add_argument('--bitrate',        type=int, default=8_000_000)
+    ap.add_argument('--duration',       type=int, default=0)
+    ap.add_argument('--stream-host',    default='',    metavar='IP')
+    ap.add_argument('--stream-port',    type=int, default=5000)
+    ap.add_argument('--stream-bitrate', type=int, default=2_000_000)
     args = ap.parse_args()
 
     ts  = datetime.now().strftime('%Y%m%d_%H%M%S')
     out = args.output or os.path.join('field_data', ts)
     os.makedirs(out, exist_ok=True)
 
-    video_path = os.path.join(out, 'video.mp4')
+    video_path = os.path.join(out, 'video.mkv')
     telem_path = os.path.join(out, 'telemetry.csv')
     meta_path  = os.path.join(out, 'meta.json')
 
-    # ROS2 init
+    # ── ROS2 telemetry ─────────────────────────────────────────────────────────
     rclpy.init()
     logger = TelemetryLogger(telem_path)
-    spin_thread = threading.Thread(target=rclpy.spin, args=(logger,), daemon=True)
-    spin_thread.start()
+    threading.Thread(target=rclpy.spin, args=(logger,), daemon=True).start()
 
-    # GStreamer pipeline
-    num_buffers = args.duration * 30 if args.duration > 0 else 0
-    gst_cmd = ['gst-launch-1.0', '-e']
-    gst_cmd += ['v4l2src', 'device=/dev/video0']
-    if num_buffers:
-        gst_cmd += [f'num-buffers={num_buffers}']
-    gst_cmd += [
-        '!', 'video/x-raw,width=2048,height=1536,framerate=30/1',
-        '!', 'nvvidconv',
-        '!', 'nvv4l2h264enc', f'bitrate={args.bitrate}',
-        '!', 'h264parse',
-        '!', 'mp4mux',
-        '!', 'filesink', f'location={video_path}',
-    ]
+    # ── Camera ─────────────────────────────────────────────────────────────────
+    cap = cv2.VideoCapture('/dev/video0', cv2.CAP_V4L2)
+    cap.set(cv2.CAP_PROP_FOURCC,      cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  REC_W)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REC_H)
+    cap.set(cv2.CAP_PROP_FPS,          FPS)
+    if not cap.isOpened():
+        sys.exit('[REC] Cannot open /dev/video0')
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if actual_w != REC_W or actual_h != REC_H:
+        sys.exit(f'[REC] Camera returned {actual_w}×{actual_h}, expected {REC_W}×{REC_H}')
 
+    # ── GStreamer pipelines ────────────────────────────────────────────────────
+    rec_pipe = _build_rec_pipeline(video_path, args.bitrate)
+    rec_src  = rec_pipe.get_by_name('rec')
+    rec_pipe.set_state(Gst.State.PLAYING)
+
+    stream_pipe = None
+    stream_src  = None
+    if args.stream_host:
+        stream_pipe = _build_stream_pipeline(
+            args.stream_host, args.stream_port, args.stream_bitrate)
+        stream_src = stream_pipe.get_by_name('stream')
+        stream_pipe.set_state(Gst.State.PLAYING)
+
+    # ── Print header ───────────────────────────────────────────────────────────
     print(f'[REC] Output  → {out}/')
-    print(f'[REC] Video   → video.mp4')
-    print(f'[REC] Telem   → telemetry.csv')
-    if args.duration:
-        print(f'[REC] Duration: {args.duration} s')
-    else:
-        print('[REC] Press Ctrl+C to stop')
-    print()
+    if args.stream_host:
+        print(f'[REC] Stream  → {args.stream_host}:{args.stream_port}  (H.265 RTP)')
+    print('[REC] Press Ctrl+C to stop\n')
 
     video_start = time.time()
-    proc = subprocess.Popen(gst_cmd, stderr=subprocess.DEVNULL)
-
     with open(meta_path, 'w') as f:
         json.dump({
             'video_start_unix': video_start,
-            'fps': 30,
-            'width': 2048,
-            'height': 1536,
+            'fps': FPS, 'width': REC_W, 'height': REC_H,
             'bitrate': args.bitrate,
         }, f, indent=2)
 
-    stop_event = threading.Event()
+    # ── Frame loop ─────────────────────────────────────────────────────────────
+    stop_event  = threading.Event()
+    frame_idx   = 0
+    max_frames  = args.duration * FPS if args.duration > 0 else 0
 
-    def _stop(sig=None, frame=None):
-        if not stop_event.is_set():
-            stop_event.set()
-            print('\n[REC] Stopping …')
-            proc.send_signal(signal.SIGINT)
+    def _stop(*_):
+        stop_event.set()
 
+    import signal
     signal.signal(signal.SIGINT,  _stop)
     signal.signal(signal.SIGTERM, _stop)
 
-    # Status line while recording
     try:
-        while proc.poll() is None:
-            elapsed = time.time() - video_start
-            print(f'\r[REC] {elapsed:6.0f}s  {logger.status()}   ', end='', flush=True)
-            time.sleep(1.0)
-    except Exception:
-        pass
+        while not stop_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                print('[REC] Camera read failed')
+                break
 
-    proc.wait()
-    logger.close()
-    rclpy.shutdown()
+            # Push full-res to recording pipeline
+            flow = _push(rec_src, frame, frame_idx)
+            if flow != Gst.FlowReturn.OK:
+                print(f'[REC] Record pipeline error: {flow}')
+                break
+
+            # Push overlay frame to stream pipeline
+            if stream_src is not None:
+                telem = logger.snapshot()
+                stream_frame = _make_stream_frame(frame, telem)
+                _push(stream_src, stream_frame, frame_idx)
+
+            frame_idx += 1
+
+            if frame_idx % FPS == 0:
+                elapsed = frame_idx // FPS
+                print(f'\r[REC] {elapsed:5d}s  {logger.status()}   ', end='', flush=True)
+
+            if max_frames and frame_idx >= max_frames:
+                break
+
+    finally:
+        cap.release()
+        rec_src.emit('end-of-stream')
+        # Wait for EOS to propagate so matroskamux flushes the final cluster
+        # before the pipeline goes to NULL.
+        rec_bus = rec_pipe.get_bus()
+        rec_bus.timed_pop_filtered(10 * Gst.SECOND,
+                                   Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        rec_pipe.set_state(Gst.State.NULL)
+        if stream_pipe:
+            stream_src.emit('end-of-stream')
+            stream_pipe.set_state(Gst.State.NULL)
+        logger.close()
+        rclpy.shutdown()
 
     print()
     size_mb = os.path.getsize(video_path) / 1e6 if os.path.exists(video_path) else 0

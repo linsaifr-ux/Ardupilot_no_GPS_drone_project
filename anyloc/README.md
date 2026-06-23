@@ -44,6 +44,8 @@ Exception: `--test` mode publishes directly to MAVROS so the commander is not ne
 
 ## 1. Build the Image Database
 
+### Option A — Satellite tiles (default, no flight needed)
+
 ```bash
 /home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --model vits14
 ```
@@ -54,7 +56,36 @@ Database lands in `anyloc/database_vits14/`. Create the symlink once:
 ln -s database_vits14 anyloc/database
 ```
 
-Verify:
+### Option B — Real drone footage (better match at inference time)
+
+Fly a grid survey with the recorder, extract frames, then build:
+
+```bash
+# 1. Record survey flight
+source /opt/ros/humble/setup.bash
+python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+
+# 2. Extract geo-tagged frames
+python3 tools/extract_frames.py field_data/survey1/ --rotate --min-dist 25
+
+# 3. Build database
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database_real.py field_data/survey1/
+
+# 4. Activate
+ln -sfn database_real anyloc/database
+```
+
+See `instructions/field_database_collection.md` for the full guide including flight plan, FOV/overlap analysis, and terminal setup.
+
+### Switching databases
+
+```bash
+ln -sfn database_vits14 anyloc/database   # satellite
+ln -sfn database_real   anyloc/database   # real-field
+```
+
+### Verify
+
 ```bash
 ls anyloc/database/database_vlads.pt && echo "DB OK"
 ```
@@ -115,7 +146,7 @@ Then flip RC aux switch to HIGH (SRC2 = ExternalNav) and watch for `✓ POS_ABS 
 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
-| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1280×720, 30 fps |
+| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1280×960, 30 fps |
 | Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | WGS84 (lat, lon, alt_msl) from hw_bridge |
 | Subscribe | `/drone/agl` | `std_msgs/Float64` | AGL from hw_bridge (barometer) |
 | Publish | `/anyloc/pose_estimate` | `geometry_msgs/PoseWithCovarianceStamped` | WGS84 estimate (monitoring) |
