@@ -68,17 +68,27 @@ On real hardware, position comes from MAVROS:
 
 | Hardware | Connection | Notes |
 |---|---|---|
-| ArduPilot FC (e.g. SDMODELH7V2) | `/dev/ttyTHS1` @ 921600 baud | Jetson 40-pin UART (pins 8 TX, 10 RX, 6 GND) |
-| Camera (AP-IMX900-Mini-USB3-I5) | USB3 port | UVC-compatible; `v4l2_camera` ROS2 driver |
+| ArduPilot FC (e.g. SDMODELH7V2) | USB-to-TTL adapter → `/dev/ttyUSB0` @ 921600 baud | CP2102/CH340/FT232 adapter; TX→RX, RX→TX, GND→GND |
+| Camera (AP-IMX900-Mini-USB3-I5) | USB3 port → `/dev/video0` | UVC-compatible; `v4l2_camera` ROS2 driver |
 | GPS jammer | Attached by contest organizers | Always on during flight — expected |
 
-Verify UART before proceeding:
+Verify USB-TTL device before proceeding:
 ```bash
-ls -la /dev/ttyTHS1
-sudo chmod 666 /dev/ttyTHS1
-# Permanent permission fix:
+# Find the adapter (plug/unplug to confirm):
+ls /dev/ttyUSB*          # typically /dev/ttyUSB0
+dmesg | tail -20         # look for "cp210x" / "ch341" / "FTDI" converter attached
+
+# Check baud rate communication:
+sudo chmod 666 /dev/ttyUSB0
+# or permanent:
 sudo usermod -aG dialout $USER   # logout + login after
+
+# If multiple USB-serial devices, identify the FC adapter by unplugging it and comparing:
+ls /dev/ttyUSB* before and after plugging in the adapter
 ```
+
+If two USB-serial devices are present simultaneously (e.g. adapter on USB0, something else on USB1),
+set `FCU_DEV=/dev/ttyUSB1` before launching (see `launch_mavros_real.sh` below).
 
 ---
 
@@ -564,22 +574,26 @@ def main():
 
 ```bash
 #!/bin/bash
-# MAVROS2 connected to real ArduPilot FC via /dev/ttyTHS1:921600
+# MAVROS2 connected to real ArduPilot FC via USB-to-TTL adapter.
+# Default device: /dev/ttyUSB0 — override with: FCU_DEV=/dev/ttyUSB1 bash launch_mavros_real.sh
 set -e
 source /opt/ros/jazzy/setup.bash
 
-if [ ! -c /dev/ttyTHS1 ]; then
-    echo "[mavros_real] ERROR: /dev/ttyTHS1 not found — check UART wiring"
+FCU_DEV="${FCU_DEV:-/dev/ttyUSB0}"
+
+if [ ! -c "$FCU_DEV" ]; then
+    echo "[mavros_real] ERROR: $FCU_DEV not found"
+    echo "  Plug in USB-to-TTL adapter and check: ls /dev/ttyUSB*"
     exit 1
 fi
-sudo chmod 666 /dev/ttyTHS1
+sudo chmod 666 "$FCU_DEV"
 
 pkill -f mavros_node 2>/dev/null; sleep 1
 
-echo "[mavros_real] Connecting to ArduPilot FC at /dev/ttyTHS1:921600 ..."
+echo "[mavros_real] Connecting to ArduPilot FC at $FCU_DEV:921600 ..."
 ros2 run mavros mavros_node \
     --ros-args \
-    -p fcu_url:="serial:///dev/ttyTHS1:921600" \
+    -p fcu_url:="serial://${FCU_DEV}:921600" \
     -p tgt_system:=1 \
     -p tgt_component:=1 \
     -p log_output:="screen" \
@@ -934,8 +948,9 @@ RC override: flip transmitter to STABILIZE → manual control
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ttyTHS1` permission denied | Missing group membership | `sudo chmod 666 /dev/ttyTHS1` or add to `dialout` group |
-| MAVROS not connecting | Wrong baud or FC not powered | Verify 921600 baud; check FC powered and connected |
+| `ttyUSB0` permission denied | Missing group membership | `sudo chmod 666 /dev/ttyUSB0` or `sudo usermod -aG dialout $USER` |
+| `/dev/ttyUSB0` not found | Adapter not plugged in or driver missing | `dmesg | tail -20` to check; try `ls /dev/ttyUSB*` |
+| MAVROS not connecting | Wrong device or baud rate | Set `FCU_DEV=/dev/ttyUSB1` if multiple adapters; verify 921600 baud matches FC SERIAL config |
 | Arm rejected: Safety Switch | Safety button not pressed | Press physical button until LED is green |
 | Arm rejected: Need Position | VPE not publishing or EKF not converged | Check `/mavros/vision_pose/pose_cov` Hz; wait 30 s |
 | `/drone/state` not published | hw_bridge not running | Start `python3 control/hw_bridge.py` before commander |
