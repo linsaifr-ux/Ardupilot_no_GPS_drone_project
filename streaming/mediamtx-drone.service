@@ -1,0 +1,13 @@
+[Unit]
+Description=MediaMTX drone relay server
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/frank/Ardupilot_no_GPS_drone_project/streaming
+ExecStart=/home/frank/Ardupilot_no_GPS_drone_project/streaming/mediamtx /home/frank/Ardupilot_no_GPS_drone_project/streaming/mediamtx.yml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

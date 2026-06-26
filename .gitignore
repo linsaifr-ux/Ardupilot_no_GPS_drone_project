@@ -63,6 +63,7 @@ mav.tlog.raw
 *.bin
 *.parm
 !control/no_gps.parm
+!control/real_hw.parm
 terrain/
 
 # AnyLoc runtime output (written each anchor frame, read by run_vision.py)
@@ -128,3 +129,11 @@ detection/torch
 *.ulg
 parameters*.bson
 rootfs/
+
+# MediaMTX relay server — binary and generated files (re-downloadable)
+streaming/mediamtx
+streaming/mediamtx.yml.default
+streaming/LICENSE
+streaming/auto.crt
+streaming/auto.key
+streaming/recordings/

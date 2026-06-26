@@ -1,0 +1,32 @@
+###############################################
+# MediaMTX — Drone relay server config
+# Jetson pushes RTSP → this server
+# Ground station pulls RTSP / WebRTC / HLS
+###############################################
+
+# RTSP — Jetson pushes and ground station pulls on port 8554
+rtsp: yes
+rtspAddress: :8554
+rtpAddress: :8000
+rtcpAddress: :8001
+
+# SRT — alternative push for lossy LTE links
+srt: yes
+srtAddress: :8890
+
+# WebRTC — ground station can watch in browser (low latency)
+webrtc: yes
+webrtcAddress: :8889
+
+# HLS — fallback browser view (~5 s latency)
+hls: yes
+hlsAddress: :8888
+hlsSegmentCount: 3
+hlsSegmentDuration: 1s
+
+logLevel: info
+logDestinations: [stdout]
+
+paths:
+  drone:
+    source: publisher
