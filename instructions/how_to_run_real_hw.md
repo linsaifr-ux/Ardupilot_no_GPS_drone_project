@@ -105,8 +105,12 @@ ls -lh anyloc/database_vits14/   # expect database.pt, database_vlads.pt, db_met
 To build a **real-field database** from actual drone footage (better match at inference time):
 ```bash
 # 1. Record survey flight (MAVROS only, no launch_camera.sh)
+# Frames are rotated 180° automatically.
 source /opt/ros/humble/setup.bash
+# Direct UDP to ground station:
 python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+# Or push RTSP to MediaMTX relay (watch in VLC/browser, no GStreamer on ground station):
+python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
 # → writes field_data/survey1/video.mkv  telemetry.csv  meta.json
 # MKV format: stays playable even after power-off mid-flight
 

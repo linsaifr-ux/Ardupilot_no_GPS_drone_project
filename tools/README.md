@@ -6,7 +6,7 @@ Standalone tools for monitoring, streaming, and analysing drone flights.
 
 ## record_field.py — Field database collection recorder
 
-Records 2048×1536 30fps H.264 video from `/dev/video0` directly (via OpenCV + GStreamer `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading at 5 Hz via ROS2). Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station.
+Records 2048×1536 30fps H.264 video from `/dev/video0` directly (via OpenCV + GStreamer `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading at 5 Hz via ROS2). Frames are rotated 180° after capture. Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server.
 
 **Do NOT run `launch_camera.sh` at the same time** — both open `/dev/video0`.  
 Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*`. `hw_bridge.py` is not needed.
@@ -19,12 +19,16 @@ bash control/launch_mavros_real.sh
 source /opt/ros/humble/setup.bash
 python3 tools/record_field.py --output field_data/survey1
 
-# Terminal 2 — record + stream preview to ground station
+# Terminal 2 — record + stream direct to ground station (UDP)
 source /opt/ros/humble/setup.bash
 python3 tools/record_field.py --output field_data/survey1 --stream-host 10.181.156.237
+
+# Terminal 2 — record + stream via MediaMTX relay server (RTSP)
+source /opt/ros/humble/setup.bash
+python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
 ```
 
-**Ground station receiver:**
+**Stream mode A — ground station receiver (UDP):**
 ```bash
 gst-launch-1.0 udpsrc port=5000 ! \
     application/x-rtp,encoding-name=H265,payload=96 ! \
@@ -32,14 +36,25 @@ gst-launch-1.0 udpsrc port=5000 ! \
     videoconvert ! autovideosink sync=false
 ```
 
+**Stream mode B — viewers (MediaMTX relay):**
+```
+VLC:     rtsp://118.232.160.227:8554/drone
+Browser: http://118.232.160.227:8889/drone  (WebRTC, ~200 ms)
+Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
+```
+
 | Flag | Default | Description |
 |---|---|---|
 | `--output DIR` | `field_data/<timestamp>` | Output directory |
-| `--stream-host IP` | off | Ground station IP — enables preview stream |
-| `--stream-port N` | 5000 | UDP port |
+| `--stream-host IP` | off | Ground station IP — direct UDP preview stream |
+| `--stream-port N` | 5000 | UDP port (mode A only) |
+| `--stream-server IP` | off | MediaMTX relay server IP — RTSP push stream |
+| `--stream-rtsp-path P` | `/drone` | RTSP path (mode B only) |
+| `--stream-bitrate N` | 2000000 | H.265 stream bitrate (bps, both modes) |
 | `--bitrate N` | 8000000 | H.264 recording bitrate (bps) |
-| `--stream-bitrate N` | 2000000 | H.265 stream bitrate (bps) |
 | `--duration N` | 0 | Stop after N seconds (0 = Ctrl+C) |
+
+`--stream-host` and `--stream-server` are mutually exclusive.
 
 **Output:** `video.mkv`, `telemetry.csv`, `meta.json` in the output directory.  
 **Storage:** ~58 MB/min at default bitrate.

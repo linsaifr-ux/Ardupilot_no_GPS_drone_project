@@ -76,6 +76,8 @@ The inference node publishes at **1280×960** (4:3) to preserve the full FOV —
 ```
 Terminal 1   bash control/launch_mavros_real.sh
 Terminal 2   source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+             # or stream via MediaMTX relay server (no GStreamer needed on ground station):
+             source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
 ```
 
 The recorder reads GPS, AGL, and heading **directly from MAVROS** (`/mavros/global_position/global`, `/mavros/global_position/rel_alt`, `/mavros/global_position/compass_hdg`) — `hw_bridge.py` is not needed for collection.
@@ -86,18 +88,22 @@ Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_nod
 
 ## Step 1 — Record
 
+All frames are **rotated 180°** after capture before recording and streaming.
+
 ```bash
 source /opt/ros/humble/setup.bash
 
 # Without stream
 python3 tools/record_field.py --output field_data/survey1
 
-# With live preview streamed to ground station
+# Mode A — live preview streamed directly to ground station (UDP, requires GStreamer on GS)
 python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+
+# Mode B — live preview pushed to MediaMTX relay server (RTSP, watch in VLC or browser)
+python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
 ```
 
-The stream sends a 1280×720 H.265/RTP preview with a black telemetry bar at the bottom showing lat/lon/AGL/heading. Receive on the ground station:
-
+**Mode A — receive on ground station:**
 ```bash
 gst-launch-1.0 udpsrc port=5000 ! \
   application/x-rtp,encoding-name=H265,payload=96 ! \
@@ -105,13 +111,22 @@ gst-launch-1.0 udpsrc port=5000 ! \
   videoconvert ! autovideosink sync=false
 ```
 
+**Mode B — watch from MediaMTX relay (no setup needed on ground station):**
+```
+VLC:     rtsp://118.232.160.227:8554/drone
+Browser: http://118.232.160.227:8889/drone  (WebRTC, ~200 ms)
+Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile)
+```
+
 Options:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--stream-host` | off | Ground station IP — enables the preview stream |
-| `--stream-port` | 5000 | UDP port |
-| `--stream-bitrate` | 2000000 | H.265 stream bitrate in bps |
+| `--stream-host` | off | Ground station IP — direct UDP stream (mode A) |
+| `--stream-port` | 5000 | UDP port (mode A) |
+| `--stream-server` | off | MediaMTX relay server IP — RTSP push (mode B) |
+| `--stream-rtsp-path` | `/drone` | RTSP path (mode B) |
+| `--stream-bitrate` | 2000000 | H.265 stream bitrate in bps (both modes) |
 | `--bitrate` | 8000000 | H.264 recording bitrate in bps |
 | `--duration` | 0 | Stop after N seconds (0 = Ctrl+C) |
 

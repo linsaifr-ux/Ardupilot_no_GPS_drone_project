@@ -4,7 +4,7 @@ Field database collection recorder.
 
 Records 2048×1536 30fps H.264 video alongside a telemetry CSV, and
 optionally streams a 1280×720 H.265 preview with a telemetry overlay
-to a ground station.
+to a ground station or a MediaMTX relay server.
 
 Video and stream share a single OpenCV capture of /dev/video0.
 Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
@@ -18,8 +18,15 @@ Usage:
     --output DIR           output directory  (default: field_data/<timestamp>)
     --bitrate BPS          H.264 record bitrate (default: 8000000)
     --duration SECS        stop after N s    (default: 0 = Ctrl+C)
+
+  Stream mode A — direct UDP to ground station:
     --stream-host IP       stream preview to this ground station IP
     --stream-port PORT     UDP port          (default: 5000)
+    --stream-bitrate BPS   H.265 stream bitrate (default: 2000000)
+
+  Stream mode B — RTSP push to MediaMTX relay server:
+    --stream-server IP     push RTSP to this server IP (e.g. 118.232.160.227)
+    --stream-rtsp-path P   RTSP stream path  (default: /drone)
     --stream-bitrate BPS   H.265 stream bitrate (default: 2000000)
 
 Output files in DIR/:
@@ -27,11 +34,16 @@ Output files in DIR/:
     telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
     meta.json          video_start_unix, fps, width, height
 
-Ground station receiver:
+Stream mode A receiver (ground station):
     gst-launch-1.0 udpsrc port=5000 ! \\
       application/x-rtp,encoding-name=H265,payload=96 ! \\
       rtph265depay ! h265parse ! avdec_h265 ! \\
       videoconvert ! autovideosink sync=false
+
+Stream mode B viewers (MediaMTX server):
+    VLC:     rtsp://118.232.160.227:8554/drone
+    Browser: http://118.232.160.227:8889/drone  (WebRTC, ~200 ms)
+    Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 
 Post-processing:
     python3 tools/extract_frames.py field_data/<timestamp>/
@@ -189,6 +201,20 @@ def _build_stream_pipeline(host, port, bitrate):
     )
 
 
+def _build_server_pipeline(server, rtsp_path, bitrate):
+    """Push H.265 RTSP stream to a MediaMTX relay server via TCP."""
+    return Gst.parse_launch(
+        f'appsrc name=stream format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        f'videoconvert ! '
+        f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'nvv4l2h265enc bitrate={bitrate} preset-level=UltraFastPreset '
+        f'idrinterval=30 iframeinterval=30 ! '
+        f'h265parse ! '
+        f'rtspclientsink location=rtsp://{server}:8554{rtsp_path} protocols=tcp'
+    )
+
+
 def _push(appsrc, frame_bgr, frame_idx):
     buf = Gst.Buffer.new_wrapped(frame_bgr.tobytes())
     buf.pts      = frame_idx * Gst.SECOND // FPS
@@ -201,13 +227,21 @@ def _push(appsrc, frame_bgr, frame_idx):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--output',         default='')
-    ap.add_argument('--bitrate',        type=int, default=8_000_000)
-    ap.add_argument('--duration',       type=int, default=0)
-    ap.add_argument('--stream-host',    default='',    metavar='IP')
-    ap.add_argument('--stream-port',    type=int, default=5000)
-    ap.add_argument('--stream-bitrate', type=int, default=2_000_000)
+    ap.add_argument('--output',           default='')
+    ap.add_argument('--bitrate',          type=int, default=8_000_000)
+    ap.add_argument('--duration',         type=int, default=0)
+    # Stream mode A — direct UDP to ground station
+    ap.add_argument('--stream-host',      default='',    metavar='IP')
+    ap.add_argument('--stream-port',      type=int, default=5000)
+    # Stream mode B — RTSP push to MediaMTX relay server
+    ap.add_argument('--stream-server',    default='',    metavar='IP')
+    ap.add_argument('--stream-rtsp-path', default='/drone', metavar='PATH')
+    # Shared stream option
+    ap.add_argument('--stream-bitrate',   type=int, default=2_000_000)
     args = ap.parse_args()
+
+    if args.stream_host and args.stream_server:
+        ap.error('--stream-host and --stream-server are mutually exclusive')
 
     ts  = datetime.now().strftime('%Y%m%d_%H%M%S')
     out = args.output or os.path.join('field_data', ts)
@@ -247,11 +281,20 @@ def main():
             args.stream_host, args.stream_port, args.stream_bitrate)
         stream_src = stream_pipe.get_by_name('stream')
         stream_pipe.set_state(Gst.State.PLAYING)
+    elif args.stream_server:
+        stream_pipe = _build_server_pipeline(
+            args.stream_server, args.stream_rtsp_path, args.stream_bitrate)
+        stream_src = stream_pipe.get_by_name('stream')
+        stream_pipe.set_state(Gst.State.PLAYING)
 
     # ── Print header ───────────────────────────────────────────────────────────
     print(f'[REC] Output  → {out}/')
     if args.stream_host:
-        print(f'[REC] Stream  → {args.stream_host}:{args.stream_port}  (H.265 RTP)')
+        print(f'[REC] Stream  → {args.stream_host}:{args.stream_port}  (H.265 RTP/UDP)')
+    elif args.stream_server:
+        url = f'rtsp://{args.stream_server}:8554{args.stream_rtsp_path}'
+        print(f'[REC] Stream  → {url}  (H.265 RTSP push)')
+        print(f'[REC] Watch   → http://{args.stream_server}:8889{args.stream_rtsp_path}  (WebRTC browser)')
     print('[REC] Press Ctrl+C to stop\n')
 
     video_start = time.time()
@@ -280,6 +323,8 @@ def main():
             if not ret:
                 print('[REC] Camera read failed')
                 break
+
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
 
             # Push full-res to recording pipeline
             flow = _push(rec_src, frame, frame_idx)

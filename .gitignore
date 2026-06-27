@@ -37,6 +37,8 @@ anyloc/database
 anyloc/database/
 anyloc/database_vits14
 anyloc/database_vits14/
+anyloc/database_real
+anyloc/database_real/
 
 # AnyLoc test / debug output
 anyloc/test_output/
@@ -135,3 +137,13 @@ detection/torch
 *.ulg
 parameters*.bson
 rootfs/
+
+# Field data — video, extracted frames, and telemetry (large binary, generated on-drone)
+# Keep .waypoints mission files and meta.json; exclude everything else
+field_data/**/video.mkv
+field_data/**/frames/
+field_data/**/frames.csv
+field_data/**/telemetry.csv
+
+# GStreamer / MediaMTX streaming runtime files
+streaming/
