@@ -11,9 +11,9 @@ Layout (1280×720):
     ├─ Slot 1 (640×240): 2nd most recent                  ├ class / conf / lat / lon
     └─ Slot 2 (640×240): 3rd most recent                 ─┘
 
-Opens /dev/video0 directly (replaces launch_camera.sh) and publishes
-/drone/camera/image_raw so yolo/ros2_node.py and anyloc/ros2_node.py can
-subscribe. Do NOT run launch_camera.sh at the same time.
+Subscribes to /drone/camera/image_raw (published by v4l2_camera_node or
+launch_camera.sh). Does NOT open /dev/video0 directly — run launch_camera.sh
+or v4l2_camera_node separately.
 
 Stream mode A — direct UDP to ground station (ZeroTier / same LAN):
     python3 tools/ground_view_stream.py --host <GS_IP>
@@ -64,9 +64,8 @@ from vision_msgs.msg import Detection2DArray
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-GROUND_IP     = os.environ.get("GROUND_IP", "10.181.156.237")
-CAM_W, CAM_H  = 2048, 1536
-FPS           = 30
+GROUND_IP = os.environ.get("GROUND_IP", "10.181.156.237")
+FPS       = 30
 
 STREAM_W  = 1280
 STREAM_H  = 720
@@ -180,13 +179,19 @@ class GroundViewNode(rclpy.node.Node):
         # Deque of detection crop dicts, newest at index 0
         self._crops: collections.deque = collections.deque(maxlen=MAX_CROPS)
 
-        self.pub_img = self.create_publisher(Image, "/drone/camera/image_raw", 1)
-
-        self.create_subscription(PoseStamped,      "/drone/pose",       self._cb_pose, _SENSOR_QOS)
-        self.create_subscription(Float64,          "/drone/agl",        self._cb_agl,  _SENSOR_QOS)
-        self.create_subscription(Detection2DArray, "/yolo/detections",  self._cb_det,  1)
+        self.create_subscription(Image,           "/drone/camera/image_raw", self._cb_img,  _SENSOR_QOS)
+        self.create_subscription(PoseStamped,     "/drone/pose",             self._cb_pose, _SENSOR_QOS)
+        self.create_subscription(Float64,         "/drone/agl",              self._cb_agl,  _SENSOR_QOS)
+        self.create_subscription(Detection2DArray, "/yolo/detections",       self._cb_det,  1)
 
     # ── subscribers ───────────────────────────────────────────────────────────
+
+    def _cb_img(self, msg: Image):
+        arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
+        # v4l2_camera_node publishes rgb8; convert to BGR for OpenCV
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        with self._lock:
+            self._latest_bgr = bgr
 
     def _cb_pose(self, msg):
         with self._lock:
@@ -235,23 +240,6 @@ class GroundViewNode(rclpy.node.Node):
             self._latest_bboxes = bboxes
             for crop in new_crops:
                 self._crops.appendleft(crop)
-
-    # ── camera publisher ──────────────────────────────────────────────────────
-
-    def push_frame(self, bgr: np.ndarray):
-        """Store the latest camera frame and publish it as /drone/camera/image_raw."""
-        with self._lock:
-            self._latest_bgr = bgr
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        msg             = Image()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "camera"
-        msg.height   = bgr.shape[0]
-        msg.width    = bgr.shape[1]
-        msg.encoding = "rgb8"
-        msg.step     = bgr.shape[1] * 3
-        msg.data     = rgb.tobytes()
-        self.pub_img.publish(msg)
 
     # ── composite builder ─────────────────────────────────────────────────────
 
@@ -356,7 +344,6 @@ def main():
     ap.add_argument('--rtsp-path',     default='/drone', metavar='PATH',
                     help='RTSP stream path on server (default: /drone)')
     # Common
-    ap.add_argument('--camera',  type=int, default=0)
     ap.add_argument('--bitrate', type=int, default=1_000_000)
     args = ap.parse_args()
 
@@ -378,29 +365,16 @@ def main():
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
-    cap = cv2.VideoCapture(args.camera, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-    cap.set(cv2.CAP_PROP_FPS, FPS)
-    if not cap.isOpened():
-        rclpy.shutdown()
-        sys.exit('[!] Cannot open camera — is /dev/video0 held by another process?')
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if actual_w != CAM_W or actual_h != CAM_H:
-        print(f'[!] Camera returned {actual_w}×{actual_h}, expected {CAM_W}×{CAM_H} — continuing anyway')
-
     if args.stream_server:
         url = f'rtsp://{args.stream_server}:8554{args.rtsp_path}'
-        print(f'[stream] Camera {args.camera}: {actual_w}×{actual_h}  →  {STREAM_W}×{STREAM_H} H.265 → {url}')
+        print(f'[stream] /drone/camera/image_raw  →  {STREAM_W}×{STREAM_H} H.265 → {url}')
         print()
         print('Watch on ground station (no install needed):')
         print(f'  VLC:     {url}')
         print(f'  Browser: http://{args.stream_server}:8889{args.rtsp_path}  (WebRTC ~200 ms)')
         print(f'  Browser: http://{args.stream_server}:8888{args.rtsp_path}  (HLS ~5 s)')
     else:
-        print(f'[stream] Camera {args.camera}: {actual_w}×{actual_h}  →  {STREAM_W}×{STREAM_H} H.265 → {args.host}:{args.port}')
+        print(f'[stream] /drone/camera/image_raw  →  {STREAM_W}×{STREAM_H} H.265 → {args.host}:{args.port}')
         print()
         print('Receive on ground station:')
         print(f'  gst-launch-1.0 udpsrc port={args.port} ! \\')
@@ -408,16 +382,23 @@ def main():
         print( '      rtph265depay ! h265parse ! avdec_h265 ! \\')
         print( '      videoconvert ! autovideosink sync=false')
     print()
+    print('[stream] Waiting for /drone/camera/image_raw …')
 
-    frame_count = 0
+    frame_interval = 1.0 / FPS
+    next_frame_t   = time.monotonic()
+    frame_count    = 0
+    warned_no_cam  = False
+
     try:
         while True:
-            ret, bgr = cap.read()
-            if not ret:
-                print('[!] Camera read failed — exiting.')
-                break
-            node.push_frame(bgr)
             composite = node.build_composite()
+
+            if frame_count == 0 and node._latest_bgr is None and not warned_no_cam:
+                pass  # still waiting — silence until first frame arrives
+            elif frame_count == 0 and node._latest_bgr is not None:
+                print('[stream] First camera frame received — streaming.')
+                warned_no_cam = True
+
             buf          = Gst.Buffer.new_wrapped(composite.tobytes())
             buf.pts      = frame_count * Gst.SECOND // FPS
             buf.duration = Gst.SECOND // FPS
@@ -426,10 +407,18 @@ def main():
                 print(f'[!] GStreamer pipeline error: {flow}')
                 break
             frame_count += 1
+
+            next_frame_t += frame_interval
+            sleep_t = next_frame_t - time.monotonic()
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+            else:
+                # fell behind; reset to avoid spiral
+                next_frame_t = time.monotonic()
+
     except KeyboardInterrupt:
         print('\n[stream] Stopping …')
     finally:
-        cap.release()
         appsrc.emit('end-of-stream')
         pipeline.set_state(Gst.State.NULL)
         rclpy.shutdown()
