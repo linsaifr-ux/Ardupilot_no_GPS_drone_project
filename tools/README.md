@@ -61,6 +61,33 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 
 ---
 
+## gen_survey_waypoints.py — Field survey waypoint generator
+
+Generates Mission Planner QGC WPL 110 `.waypoints` files for the AnyLoc database collection lawnmower. Strips run **E-W (long side ~1 743 m)**, advancing N-S between strips.
+
+```bash
+python3 tools/gen_survey_waypoints.py                 # full mission → field_data/survey_mission_full.waypoints
+python3 tools/gen_survey_waypoints.py --split 4       # 4 equal N-S sub-missions
+python3 tools/gen_survey_waypoints.py --spacing 35    # 35 m spacing (72 % sidelap, denser)
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--spacing M` | 62.75 m | Strip spacing in metres (62.75 m = 50 % sidelap) |
+| `--split N` | 1 | Split into N equal-width N-S sub-missions |
+| `--outdir DIR` | `field_data` | Output directory |
+
+Default output (18 strips, 62.75 m spacing, 50 % sidelap):
+```
+Survey area  : 2091 m (E-W) × 1025 m (N-S)  = 2.14 km²
+Strip spacing: 62.75 m  →  50 % sidelap
+Total distance: 38.7 km  ~215 min  (~11 batteries @ 20 min each)
+```
+
+Load the output `.waypoints` file in Mission Planner or pass it directly to `ardupilot_commander.py --waypoint-file`.
+
+---
+
 ## extract_frames.py — Geo-tagged frame extractor
 
 Reads a `record_field.py` session directory and extracts one frame every N metres of ground track, matched to GPS position and heading from the telemetry CSV.

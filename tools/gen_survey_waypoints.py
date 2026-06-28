@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 Generate Mission Planner lawnmower waypoints for AnyLoc database collection.
+Strips run E-W (long side ~1 743 m), advancing N-S.
 
 Usage:
   python3 tools/gen_survey_waypoints.py                 # one full file
-  python3 tools/gen_survey_waypoints.py --split 4       # 4 equal-width sub-missions
-  python3 tools/gen_survey_waypoints.py --spacing 35    # 35 m strip spacing (72 % sidelap)
+  python3 tools/gen_survey_waypoints.py --split 4       # 4 equal-width N-S sub-missions
+  python3 tools/gen_survey_waypoints.py --spacing 62.75 # 62.75 m strip spacing (50 % sidelap)
 """
 
 import argparse, math, sys
@@ -25,20 +26,21 @@ SPEED_MS       = 3.0    # m/s, ≤ 3 reduces motion blur
 MARGIN_PCT     = 0.10   # 10 % each side = 20 % total expansion
 
 def build_waypoints(slat_min, slat_max, slon_min, slon_max,
-                    strip_spacing_m, m_lon, altitude, speed):
-    step_deg = strip_spacing_m / m_lon
-    ew_m = (slon_max - slon_min) * m_lon
-    n_strips = math.ceil(ew_m / strip_spacing_m) + 1
+                    strip_spacing_m, m_lat, altitude, speed):
+    # Strips run E-W (long side); advance N-S between strips
+    step_deg = strip_spacing_m / m_lat
+    ns_m = (slat_max - slat_min) * m_lat
+    n_strips = math.ceil(ns_m / strip_spacing_m) + 1
 
     wpts = []
     for i in range(n_strips):
-        lon = min(slon_min + i * step_deg, slon_max)
+        lat = min(slat_min + i * step_deg, slat_max)
         if i % 2 == 0:
-            wpts.append((slat_min, lon))
-            wpts.append((slat_max, lon))
+            wpts.append((lat, slon_min))
+            wpts.append((lat, slon_max))
         else:
-            wpts.append((slat_max, lon))
-            wpts.append((slat_min, lon))
+            wpts.append((lat, slon_max))
+            wpts.append((lat, slon_min))
 
     rows = ["QGC WPL 110"]
     rows.append("0\t1\t0\t16\t0\t0\t0\t0\t0.000000\t0.000000\t0.000000\t1")
@@ -61,8 +63,8 @@ def stats(rows, m_lat, m_lon, speed):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--split',   type=int, default=1,    help='split into N sub-missions')
-    ap.add_argument('--spacing', type=float, default=50.0, help='strip spacing in metres (default 50)')
+    ap.add_argument('--split',   type=int, default=1,       help='split into N N-S sub-missions')
+    ap.add_argument('--spacing', type=float, default=62.75, help='strip spacing in metres (default 62.75 = 50 %% sidelap)')
     ap.add_argument('--outdir',  default='field_data',   help='output directory')
     args = ap.parse_args()
 
@@ -91,15 +93,15 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    lon_width = (slon_max - slon_min) / args.split
+    lat_width = (slat_max - slat_min) / args.split
     total_dist = 0.0
 
     for seg in range(args.split):
-        seg_lon_min = slon_min + seg * lon_width
-        seg_lon_max = slon_min + (seg + 1) * lon_width
+        seg_lat_min = slat_min + seg * lat_width
+        seg_lat_max = slat_min + (seg + 1) * lat_width
         rows, n_strips = build_waypoints(
-            slat_min, slat_max, seg_lon_min, seg_lon_max,
-            args.spacing, m_lon, ALTITUDE_M, SPEED_MS)
+            seg_lat_min, seg_lat_max, slon_min, slon_max,
+            args.spacing, m_lat, ALTITUDE_M, SPEED_MS)
         dist_m, t_min = stats(rows, m_lat, m_lon, SPEED_MS)
         total_dist += dist_m
 
