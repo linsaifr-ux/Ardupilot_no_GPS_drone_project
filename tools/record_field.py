@@ -373,7 +373,8 @@ def main():
                 break
 
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
         rec_src.emit('end-of-stream')
         # Wait for EOS to propagate so matroskamux flushes the final cluster
         # before the pipeline goes to NULL.
@@ -383,8 +384,12 @@ def main():
         rec_pipe.set_state(Gst.State.NULL)
         if stream_pipe:
             stream_src.emit('end-of-stream')
+            stream_bus = stream_pipe.get_bus()
+            stream_bus.timed_pop_filtered(5 * Gst.SECOND,
+                                          Gst.MessageType.EOS | Gst.MessageType.ERROR)
             stream_pipe.set_state(Gst.State.NULL)
         logger.close()
+        logger.destroy_node()
         rclpy.shutdown()
 
     print()
