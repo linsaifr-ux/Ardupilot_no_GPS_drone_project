@@ -149,10 +149,14 @@ class TelemetryLogger(Node):
 # ── Stream overlay ─────────────────────────────────────────────────────────────
 
 def _make_stream_frame(bgr_full, telem):
-    """Resize to stream resolution and draw telemetry bar at bottom."""
+    """Center-crop 4:3 → 16:9, resize to stream resolution, draw telemetry bar."""
     lat, lon, _, agl, hdg = telem
 
-    frame = cv2.resize(bgr_full, (STREAM_W, STREAM_H))
+    # Crop vertically to 16:9 before resizing (avoids horizontal stretch)
+    src_h, src_w = bgr_full.shape[:2]
+    crop_h = src_w * 9 // 16          # e.g. 2048 → 1152
+    y0c = (src_h - crop_h) // 2       # 192 px off top and bottom
+    frame = cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
 
     # Black bar
     y0 = STREAM_H - OVERLAY_H
