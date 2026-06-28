@@ -30,7 +30,7 @@ def build_waypoints(slat_min, slat_max, slon_min, slon_max,
     # Strips run E-W (long side); advance N-S between strips
     step_deg = strip_spacing_m / m_lat
     ns_m = (slat_max - slat_min) * m_lat
-    n_strips = math.ceil(ns_m / strip_spacing_m) + 1
+    n_strips = math.ceil(ns_m / strip_spacing_m)
 
     wpts = []
     for i in range(n_strips):

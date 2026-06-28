@@ -77,11 +77,11 @@ python3 tools/gen_survey_waypoints.py --spacing 35    # 35 m spacing (72 % sidel
 | `--split N` | 1 | Split into N equal-width N-S sub-missions |
 | `--outdir DIR` | `field_data` | Output directory |
 
-Default output (18 strips, 62.75 m spacing, 50 % sidelap):
+Default output (17 strips, 62.75 m spacing, 50 % sidelap):
 ```
 Survey area  : 2091 m (E-W) × 1025 m (N-S)  = 2.14 km²
 Strip spacing: 62.75 m  →  50 % sidelap
-Total distance: 38.7 km  ~215 min  (~11 batteries @ 20 min each)
+Total distance: 36.5 km  ~203 min  (~11 batteries @ 20 min each)
 ```
 
 Load the output `.waypoints` file in Mission Planner or pass it directly to `ardupilot_commander.py --waypoint-file`.
