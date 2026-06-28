@@ -22,12 +22,12 @@ Usage:
   Stream mode A — direct UDP to ground station:
     --stream-host IP       stream preview to this ground station IP
     --stream-port PORT     UDP port          (default: 5000)
-    --stream-bitrate BPS   H.265 stream bitrate (default: 2000000)
+    --stream-bitrate BPS   H.265 stream bitrate (default: 1000000)
 
   Stream mode B — RTSP push to MediaMTX relay server:
     --stream-server IP     push RTSP to this server IP (e.g. 118.232.160.227)
     --stream-rtsp-path P   RTSP stream path  (default: /drone)
-    --stream-bitrate BPS   H.265 stream bitrate (default: 2000000)
+    --stream-bitrate BPS   H.265 stream bitrate (default: 1000000)
 
 Output files in DIR/:
     video.mkv          H.264, 2048×1536 30fps (MKV — crash-safe)
@@ -171,6 +171,27 @@ def _make_stream_frame(bgr_full, telem):
     return frame
 
 
+# ── Camera helpers ────────────────────────────────────────────────────────────
+
+def _open_camera(retries=10, delay=2.0):
+    """Open /dev/video0 at REC_W×REC_H. Returns cap or None after all retries."""
+    for attempt in range(retries):
+        cap = cv2.VideoCapture('/dev/video0', cv2.CAP_V4L2)
+        cap.set(cv2.CAP_PROP_FOURCC,      cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  REC_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REC_H)
+        cap.set(cv2.CAP_PROP_FPS,          FPS)
+        if cap.isOpened():
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if w == REC_W and h == REC_H:
+                return cap
+        cap.release()
+        if attempt < retries - 1:
+            time.sleep(delay)
+    return None
+
+
 # ── GStreamer pipeline builders ────────────────────────────────────────────────
 
 def _build_rec_pipeline(video_path, bitrate):
@@ -237,7 +258,7 @@ def main():
     ap.add_argument('--stream-server',    default='',    metavar='IP')
     ap.add_argument('--stream-rtsp-path', default='/drone', metavar='PATH')
     # Shared stream option
-    ap.add_argument('--stream-bitrate',   type=int, default=2_000_000)
+    ap.add_argument('--stream-bitrate',   type=int, default=1_000_000)
     args = ap.parse_args()
 
     if args.stream_host and args.stream_server:
@@ -257,17 +278,15 @@ def main():
     threading.Thread(target=rclpy.spin, args=(logger,), daemon=True).start()
 
     # ── Camera ─────────────────────────────────────────────────────────────────
-    cap = cv2.VideoCapture('/dev/video0', cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FOURCC,      cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  REC_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REC_H)
-    cap.set(cv2.CAP_PROP_FPS,          FPS)
-    if not cap.isOpened():
-        sys.exit('[REC] Cannot open /dev/video0')
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if actual_w != REC_W or actual_h != REC_H:
-        sys.exit(f'[REC] Camera returned {actual_w}×{actual_h}, expected {REC_W}×{REC_H}')
+    cap = _open_camera()
+    if cap is None:
+        rclpy.shutdown()
+        import subprocess
+        holders = subprocess.run(['fuser', '/dev/video0'],
+                                 capture_output=True, text=True).stdout.strip()
+        hint = (f' — PIDs holding /dev/video0: {holders} (kill them first)'
+                if holders else ' — no other process holds it; try replugging')
+        sys.exit(f'[REC] Cannot open camera at {REC_W}×{REC_H}{hint}')
 
     # ── GStreamer pipelines ────────────────────────────────────────────────────
     rec_pipe = _build_rec_pipeline(video_path, args.bitrate)
@@ -321,8 +340,14 @@ def main():
         while not stop_event.is_set():
             ret, frame = cap.read()
             if not ret:
-                print('[REC] Camera read failed')
-                break
+                print('\n[REC] Camera dropout — reconnecting...', flush=True)
+                cap.release()
+                cap = _open_camera()
+                if cap is None:
+                    print('[REC] Camera could not be recovered — stopping')
+                    break
+                print('[REC] Camera reconnected', flush=True)
+                continue
 
             frame = cv2.rotate(frame, cv2.ROTATE_180)
 

@@ -13,12 +13,16 @@
 Mission Planner (PC)
   └─ survey.waypoints ──scp──▶  Jetson Orin NX
                                   launch_real_hw.sh
-                                  ├─ [1] launch_mavros_real.sh    → serial:///dev/ttyUSB0:921600
-                                  ├─ [2] launch_camera.sh         → /dev/video0 (YUYV 1280×960 @ 30fps → rgb8) → /drone/camera/image_raw
-                                  ├─ [3] hw_bridge.py             → /mavros/local_position/pose → /drone/state /drone/pose /drone/agl
-                                  ├─ [4] anyloc/ros2_node.py      → venv/anyloc → /drone/camera/image_raw → AnyLoc VPE
-                                  ├─ [5] detection/ros2_node.py   → venv/yolo   → /drone/camera/image_raw → detections.csv
-                                  └─ [6] ardupilot_commander.py   → VPE → GUIDED → survey
+                                  ├─ [1] launch_mavros_real.sh       → serial:///dev/ttyUSB0:921600
+                                  ├─ [2a] launch_camera.sh           → /dev/video0 → /drone/camera/image_raw   (no ground stream)
+                                  │  OR
+                                  │  [2b] ground_view_stream.py      → /dev/video0 → /drone/camera/image_raw   (+ H.265 stream)
+                                  │         --stream-host GS_IP      →   RTP/UDP → ground station
+                                  │         --stream-server SERVER_IP →   RTSP push → MediaMTX relay
+                                  ├─ [3] hw_bridge.py                → /mavros/local_position/pose → /drone/state /drone/pose /drone/agl
+                                  ├─ [4] anyloc/ros2_node.py         → venv/anyloc → /drone/camera/image_raw → AnyLoc VPE
+                                  ├─ [5] detection/ros2_node.py      → venv/yolo   → /drone/camera/image_raw → detections.csv
+                                  └─ [6] ardupilot_commander.py      → VPE → GUIDED → survey
                                          ↕ MAVLink
                               /dev/ttyUSB0:921600
                                          ↕
@@ -188,21 +192,27 @@ pkill -f v4l2_camera_node 2>/dev/null; echo "camera clear"
 
 ```bash
 cd ~/Ardupilot_no_GPS_drone_project
-bash control/launch_real_hw.sh
-```
 
-With waypoint file and manual-takeoff mode (GPS arm → VPE survey):
-
-```bash
+# No ground stream (camera only)
 bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.waypoints
+
+# With ground view stream — direct UDP to ground station (ZeroTier / LAN)
+bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.waypoints \
+    --stream-host 10.181.156.237
+
+# With ground view stream — RTSP push to MediaMTX relay (LTE / internet)
+bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.waypoints \
+    --stream-server 118.232.160.227
 ```
+
+`--stream-host` and `--stream-server` are mutually exclusive. Both replace `launch_camera.sh` with `ground_view_stream.py`, which opens the camera and also publishes `/drone/camera/image_raw`.
 
 Launch order with waits:
 
 | Step | Process | Python | Wait |
 |---|---|---|---|
 | 1 | `launch_mavros_real.sh` → MAVROS @ ttyUSB0:921600 | system | 6 s |
-| 2 | `launch_camera.sh` → v4l2 YUYV→rgb8 → `/drone/camera/image_raw` | system | 3 s |
+| 2 | `launch_camera.sh` **or** `ground_view_stream.py` → `/drone/camera/image_raw` (+ optional stream) | system / python3 | 3 s |
 | 3 | `hw_bridge.py` → `/drone/state`, `/drone/pose`, `/drone/agl` | system python3 | 2 s |
 | 4 | `anyloc/ros2_node.py --headless` → AnyLoc VPE | `venv/anyloc` | 4 s |
 | 5 | `detection/ros2_node.py --headless` → YOLO | `venv/yolo` | 2 s |
@@ -220,8 +230,21 @@ bash control/launch_mavros_real.sh
 
 # Ctrl-B " to split panes. In each new pane:
 
-# Pane 1: Camera
+# Pane 1: Camera — choose ONE of the following:
+
+#   No stream (camera driver only)
 bash control/launch_camera.sh
+
+#   OR: Ground view stream — direct UDP (ZeroTier / LAN)
+#   Shows YOLO live + AnyLoc match + 3 most recent detection crops at 1280×720
+#   Receive: gst-launch-1.0 udpsrc port=5000 ! ... (see tools/README.md)
+source /opt/ros/humble/setup.bash
+python3 tools/ground_view_stream.py --host <GROUND_IP>
+
+#   OR: Ground view stream — RTSP push to MediaMTX relay (LTE / internet)
+#   Watch: vlc rtsp://118.232.160.227:8554/drone  OR  http://118.232.160.227:8889/drone
+source /opt/ros/humble/setup.bash
+python3 tools/ground_view_stream.py --stream-server 118.232.160.227
 
 # Pane 2: HW Bridge
 source /opt/ros/humble/setup.bash
@@ -233,14 +256,11 @@ bash anyloc/run_ros2_localizer.sh --headless
 # Pane 4: YOLO
 bash detection/run_ros2_detector.sh --headless
 
-# Pane 5: GStreamer (optional — stream to ground station)
-bash control/launch_gstreamer.sh --host <GROUND_IP>
-
-# Pane 6: Commander
+# Pane 5: Commander
 source /opt/ros/humble/setup.bash
 python3 control/ardupilot_commander.py --manual-takeoff --waypoint-file control/survey.waypoints
 
-# Pane 7: EKF monitor (optional — separate terminal)
+# Pane 6: EKF monitor (optional — separate terminal)
 source /opt/ros/humble/setup.bash
 python3 tools/ekf_monitor.py
 ```
@@ -369,23 +389,21 @@ flags=0x037  ✓ POS_ABS accepted
 
 `POS_ABS` in active list + `pos_h` variance < 0.5 = EKF healthy.
 
-### GStreamer — live video to ground station
+### Ground view stream — composite YOLO + AnyLoc viewport
 
-Streams the drone camera (with telemetry overlay) to a ground station PC over UDP H.265:
+`tools/ground_view_stream.py` streams a 1280×720 composite viewport showing YOLO live detection feed, AnyLoc match tile, and the last 3 detection crops with class/location labels. It also publishes `/drone/camera/image_raw` — so it **replaces** `launch_camera.sh` (do not run both).
 
+**Mode A — direct UDP (ZeroTier / LAN):**
 ```bash
-# In a separate tmux pane (after camera is running):
-bash control/launch_gstreamer.sh --host 192.168.1.50    # use your ground station IP
+# Replace Pane 1 (camera) with:
+source /opt/ros/humble/setup.bash
+python3 tools/ground_view_stream.py --host 192.168.1.50
 
-# Or set env var:
-GROUND_IP=192.168.1.50 bash control/launch_gstreamer.sh
-
-# Raw stream (no overlay):
-bash control/launch_gstreamer.sh --host 192.168.1.50 --no-overlay
+# Or via launch script:
+bash control/launch_real_hw.sh --stream-host 192.168.1.50 --manual-takeoff
 ```
 
-Receive on the ground station (Linux/Mac with GStreamer):
-
+Receive on ground station:
 ```bash
 gst-launch-1.0 udpsrc port=5000 ! \
     application/x-rtp,encoding-name=H265,payload=96 ! \
@@ -393,10 +411,29 @@ gst-launch-1.0 udpsrc port=5000 ! \
     videoconvert ! autovideosink sync=false
 ```
 
-Or open in VLC: **Media → Open Network Stream → `rtp://@:5000`**
+**Mode B — RTSP push to MediaMTX relay (LTE / internet, no GStreamer on receiver):**
+```bash
+source /opt/ros/humble/setup.bash
+python3 tools/ground_view_stream.py --stream-server 118.232.160.227
 
-Overlay shows: AGL, VPE phase, North/East estimate, match confidence, VPE age, timestamp.
-Overlay reads from `anyloc/latest_estimate.json` (updated by AnyLoc node).
+# Or via launch script:
+bash control/launch_real_hw.sh --stream-server 118.232.160.227 --manual-takeoff
+```
+
+Watch on any device — no install needed:
+```
+VLC:     rtsp://118.232.160.227:8554/drone
+Browser: http://118.232.160.227:8889/drone  (WebRTC ~200 ms)
+Browser: http://118.232.160.227:8888/drone  (HLS ~5 s, works on mobile)
+```
+
+Bitrate: 1 Mbps H.265, keyframe every 1 s. Override with `--bitrate N`.
+
+**Simple camera-only stream** (no YOLO, no detection crops — `gstreamer_stream.py`):
+```bash
+# Only if running launch_camera.sh separately (not ground_view_stream.py):
+bash control/launch_gstreamer.sh --host 192.168.1.50
+```
 
 ### VPE topic verify
 
@@ -495,6 +532,11 @@ Emergency
 | GStreamer stream no video on receiver | Firewall or wrong IP | Check `--host` matches ground PC IP; open port 5000/udp |
 | GStreamer "Camera not running" | Camera pane not started | Start `launch_camera.sh` before `launch_gstreamer.sh` |
 | GStreamer "appsrc push returned GST_FLOW_ERROR" | Ground IP unreachable | Ping ground station first; udpsink drops silently |
+| `ground_view_stream.py` "Cannot open camera" | `launch_camera.sh` already running | Kill it first — both cannot open `/dev/video0` simultaneously |
+| `ground_view_stream.py` YOLO panel shows no boxes | YOLO node not started yet | Wait for YOLO node to load model (~30 s); boxes appear once AGL > 50 m |
+| `ground_view_stream.py` AnyLoc panel black | AnyLoc node not running or no match yet | Wait for first AnyLoc match; `anyloc/latest_match.jpg` must exist |
+| `ground_view_stream.py` RTSP: `rtspclientsink not found` | Missing GStreamer RTSP plugin | `sudo apt install gstreamer1.0-rtsp` |
+| `ground_view_stream.py` RTSP: connection refused | MediaMTX server not running | Start `./mediamtx mediamtx.yml` on Frank's PC; verify port 8554 open |
 
 ---
 

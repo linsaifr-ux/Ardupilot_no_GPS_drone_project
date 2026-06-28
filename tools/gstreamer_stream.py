@@ -135,8 +135,8 @@ def main():
                     help=f'Ground station IP (default: GROUND_IP env or {GROUND_IP})')
     ap.add_argument('--port',    type=int, default=5000, help='UDP port (default: 5000)')
     ap.add_argument('--camera',  type=int, default=0,    help='Camera index (default: 0)')
-    ap.add_argument('--bitrate', type=int, default=2_000_000,
-                    help='H.265 bitrate bits/s (default: 2000000)')
+    ap.add_argument('--bitrate', type=int, default=1_000_000,
+                    help='H.265 bitrate bits/s (default: 1000000)')
     args = ap.parse_args()
 
     Gst.init(None)

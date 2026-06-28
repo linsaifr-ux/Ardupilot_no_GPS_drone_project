@@ -138,12 +138,15 @@ detection/torch
 parameters*.bson
 rootfs/
 
-# Field data — video, extracted frames, and telemetry (large binary, generated on-drone)
-# Keep .waypoints mission files and meta.json; exclude everything else
+# Field data — video, extracted frames, telemetry, and metadata (large/generated on-drone)
+# Keep .waypoints mission files only; exclude everything else
 field_data/**/video.mkv
 field_data/**/frames/
 field_data/**/frames.csv
 field_data/**/telemetry.csv
+field_data/**/meta.json
 
-# GStreamer / MediaMTX streaming runtime files
-streaming/
+# Streaming directory — ignore only the MediaMTX binary (large, download separately)
+# Source files, docs, and config in streaming/ are tracked normally
+streaming/mediamtx
+streaming/*.log

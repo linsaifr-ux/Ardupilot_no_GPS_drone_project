@@ -131,9 +131,72 @@ and confirm `POS_ABS` appears in the active list with `pos_h` variance < 0.5.
 
 ---
 
-## gstreamer_stream.py — H.265 camera stream to ground station
+## ground_view_stream.py — Composite ground view stream (YOLO + AnyLoc)
 
-Opens the camera directly with OpenCV and streams a 1280×480 two-panel view to a ground station PC via H.265/RTP/UDP.
+Opens the camera directly, publishes `/drone/camera/image_raw` (replacing `launch_camera.sh`), and streams a 1280×720 composite viewport. Two stream modes: direct UDP to a ground station, or RTSP push to the MediaMTX relay server (no GStreamer needed on the receiver).
+
+```
+Left  (640×720)
+  ├─ Top    (640×360): live camera with YOLO bounding boxes + drone lat/lon/AGL
+  └─ Bottom (640×360): AnyLoc latest match satellite tile + localizer telemetry
+Right (640×720)
+  ├─ Slot 0 (640×240): most recent YOLO detection crop ─┐
+  ├─ Slot 1 (640×240): 2nd most recent                  ├ class / conf / lat / lon / age
+  └─ Slot 2 (640×240): 3rd most recent                 ─┘
+```
+
+**Do NOT run `launch_camera.sh` at the same time** — both open `/dev/video0`.  
+Because this script publishes `/drone/camera/image_raw`, YOLO and AnyLoc receive camera frames normally.
+
+```bash
+# Mode A — direct UDP to ground station (ZeroTier / LAN)
+source /opt/ros/humble/setup.bash
+python3 tools/ground_view_stream.py --host 10.181.156.237
+
+# Mode B — RTSP push to MediaMTX relay server (LTE / internet)
+source /opt/ros/humble/setup.bash
+python3 tools/ground_view_stream.py --stream-server 118.232.160.227
+```
+
+**Mode A — receive on ground station:**
+```bash
+gst-launch-1.0 udpsrc port=5000 ! \
+    application/x-rtp,encoding-name=H265,payload=96 ! \
+    rtph265depay ! h265parse ! avdec_h265 ! \
+    videoconvert ! autovideosink sync=false
+```
+
+**Mode B — watch on ground station (no install needed):**
+```
+VLC:     rtsp://118.232.160.227:8554/drone
+Browser: http://118.232.160.227:8889/drone  (WebRTC, ~200 ms)
+Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--host IP` | `GROUND_IP` env or `10.181.156.237` | Ground station IP — direct UDP (mode A) |
+| `--port N` | 5000 | UDP port (mode A only) |
+| `--stream-server IP` | off | MediaMTX relay server IP — RTSP push (mode B) |
+| `--rtsp-path P` | `/drone` | RTSP stream path (mode B only) |
+| `--camera N` | 0 | Camera index (`/dev/video0`) |
+| `--bitrate N` | 1000000 | H.265 bitrate (bits/s) |
+
+`--host` and `--stream-server` are mutually exclusive. Without either, defaults to direct UDP using `GROUND_IP` env var.
+
+**Via launch script** (integrates into full flight stack):
+```bash
+bash control/launch_real_hw.sh --stream-host 10.181.156.237       # mode A
+bash control/launch_real_hw.sh --stream-server 118.232.160.227    # mode B
+```
+
+**Requires:** nvidia-l4t-gstreamer, python3-gi, ROS2 Humble with vision_msgs
+
+---
+
+## gstreamer_stream.py — Simple H.265 camera stream (camera + AnyLoc only)
+
+Opens the camera directly with OpenCV and streams a 1280×480 two-panel view via H.265/RTP/UDP. Simpler than `ground_view_stream.py` — no YOLO boxes, no detection crops, no ROS2 node.
 
 ```
 Left panel  (640×480): live camera + AnyLoc telemetry overlay
@@ -155,15 +218,14 @@ gst-launch-1.0 udpsrc port=5000 ! \
 # Or VLC: Media → Open Network Stream → rtp://@:5000
 ```
 
-**Important:** opens `/dev/video0` directly — do NOT also run `launch_camera.sh` (device busy).  
-The right panel shows `anyloc/latest_match.jpg` saved by `anyloc/ros2_node.py` on each AnyLoc match.
+**Important:** opens `/dev/video0` directly — do NOT also run `launch_camera.sh` or `ground_view_stream.py` at the same time (device busy).
 
 | Flag | Default | Description |
 |---|---|---|
 | `--host IP` | `GROUND_IP` env or `10.181.156.237` | Ground station IP |
 | `--port N` | 5000 | UDP port |
 | `--camera N` | 0 | Camera index (`/dev/video0`) |
-| `--bitrate N` | 2000000 | H.265 bitrate (bits/s) |
+| `--bitrate N` | 1000000 | H.265 bitrate (bits/s) |
 
 **Requires:** nvidia-l4t-gstreamer, python3-gi (both on JetPack 36.x)
 
