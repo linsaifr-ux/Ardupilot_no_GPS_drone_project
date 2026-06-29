@@ -41,7 +41,7 @@ from detection.detector import YOLODetector
 
 MODEL_PT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "yolov8l_visdrone.pt")
+    "Car_visdrone1280.pt")
 
 MIN_AGL = 50.0   # m — skip inference below this altitude
 
