@@ -1,6 +1,6 @@
 # How to Run — Jetson Real Hardware
 
-**Target:** Jetson Orin NX + ArduPilot FC (USB-to-TTL, `/dev/ttyUSB0`) + AP-IMX900 camera (`/dev/video0`)
+**Target:** Jetson Orin NX + ArduPilot FC (USB-to-TTL on **Serial6**, `/dev/ttyUSB0:921600`) + AP-IMX900 camera (`/dev/video0`)
 **ROS2:** Humble (`/opt/ros/humble`)
 **Python envs:** `/home/jetson/venv/anyloc` (torch + faiss) · `/home/jetson/venv/yolo` (torch + ultralytics)
 **Goal:** GPS-denied autonomous survey: takeoff 65 m → boustrophedon pattern → YOLO detection → land
@@ -340,7 +340,12 @@ Once you switch to GUIDED at altitude, commander starts the survey automatically
 [mavros_real] Connecting to ArduPilot FC at /dev/ttyUSB0:921600 ...
 [mavros_router]: link[1000] detected remote address 1.1
 [mavros.sys]: VER: 1.1: Flight software: ...
+[mavros_real] Waiting for MAVROS to connect...
+[mavros_real] Connected — requesting data streams at 10 Hz...
+[mavros_real] Data streams enabled.
 ```
+
+> **Why the stream rate step:** MAVROS sends `REQUEST_DATA_STREAM rate=0` on startup which clears ArduPilot's SR6_* flash params. The launch script re-requests all stream types individually (IDs 1–4, 6, 10–12) after connection — without this, all `/mavros/*` data topics stay silent. `stream_id=0` (ALL) alone is insufficient.
 
 ### Camera — expected warnings (harmless)
 
@@ -508,6 +513,7 @@ Emergency
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| All `/mavros/*` data topics silent (no IMU, pose, altitude) | MAVROS reset SR6_* stream rates on startup | `launch_mavros_real.sh` handles this automatically — if running manually, call `ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate "{stream_id: 6, message_rate: 10, on_off: true}"` for each stream ID 1–4, 6, 10–12 |
 | `/dev/ttyUSB0` permission denied | Not in `dialout` group | `sudo chmod 666 /dev/ttyUSB0` |
 | `/dev/ttyUSB0` not found | Adapter unplugged or driver missing | `dmesg \| tail -20` → look for cp210x/ch341 |
 | `launch_mavros_real.sh` exits with no output | `set -e` + stale pkill returning 1 | Fixed; if recurs: check script has `pkill ... \|\| true` |

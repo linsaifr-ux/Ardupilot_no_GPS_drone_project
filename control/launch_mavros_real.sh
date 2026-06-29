@@ -14,6 +14,24 @@ fi
 pkill -f mavros_node 2>/dev/null || true; sleep 1
 
 echo "[mavros_real] Connecting to ArduPilot FC at $FCU_DEV:921600 ..."
+
+# Request all data streams at 10 Hz once MAVROS connects.
+# MAVROS sends REQUEST_DATA_STREAM rate=0 on startup which overrides ArduPilot SR* params,
+# so we must explicitly re-request streams after connection is established.
+(
+  source /opt/ros/humble/setup.bash
+  echo "[mavros_real] Waiting for MAVROS to connect..."
+  until ros2 topic echo /mavros/state --once 2>/dev/null | grep -q "connected: true"; do
+    sleep 1
+  done
+  echo "[mavros_real] Connected — requesting data streams at 10 Hz..."
+  for id in 1 2 3 4 6 10 11 12; do
+    ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate \
+      "{stream_id: $id, message_rate: 10, on_off: true}" > /dev/null 2>&1
+  done
+  echo "[mavros_real] Data streams enabled."
+) &
+
 ros2 run mavros mavros_node \
     --ros-args \
     -p fcu_url:="serial://${FCU_DEV}:921600" \

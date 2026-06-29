@@ -144,6 +144,8 @@ Live status printed to terminal:
 [REC]    42s  lat=23.451234  lon=120.287654  agl=65.2 m  hdg=045°
 ```
 
+> **Known issue:** if GPS fix hasn't been acquired yet, status shows `waiting for GPS …` instead. Recording still runs — video and non-GPS telemetry columns (AGL, heading) still write to CSV. Wait for GPS lock before starting the collection flight, or accept that lat/lon columns will be empty for the first few seconds.
+
 Press **Ctrl+C** to stop.
 
 Output in `field_data/survey1/`:

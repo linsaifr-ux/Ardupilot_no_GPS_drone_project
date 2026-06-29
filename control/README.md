@@ -90,7 +90,7 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 
 | Script | Purpose |
 |--------|---------|
-| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` |
+| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (Serial6). Auto-requests all data streams at 10 Hz after connect — required because MAVROS resets SR* params to 0 on startup. |
 | `launch_camera.sh` | v4l2_camera: `/dev/video0`, YUYV 1280×960 @ 30 fps → `/drone/camera/image_raw` (rgb8) |
 | `hw_bridge.py` | Converts MAVROS EKF position to `/drone/state`, `/drone/pose`, `/drone/agl` |
 | `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera (or streamer) + hw_bridge + AnyLoc + YOLO + commander. Pass `--stream-host IP` for direct UDP ground view stream, or `--stream-server IP` for RTSP push to MediaMTX relay — either replaces `launch_camera.sh`. |

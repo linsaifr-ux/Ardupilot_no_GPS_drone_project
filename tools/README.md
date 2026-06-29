@@ -11,6 +11,8 @@ Records 2048×1536 30fps H.264 video from `/dev/video0` directly (via OpenCV + G
 **Do NOT run `launch_camera.sh` at the same time** — both open `/dev/video0`.  
 Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*`. `hw_bridge.py` is not needed.
 
+> **Known issue:** prints `waiting for GPS …` until `/mavros/global_position/global` receives a fix. On a no-GPS flight (GPS jammed), the status line stays stuck but **recording continues normally** — video and AGL/heading still write to CSV. Fix pending: replace lat/lon source with AnyLoc pose.
+
 ```bash
 # Terminal 1
 bash control/launch_mavros_real.sh
