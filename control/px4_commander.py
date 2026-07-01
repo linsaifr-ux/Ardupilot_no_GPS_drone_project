@@ -122,11 +122,11 @@ ZONE_VERTS = [
     (121.0, -1293.0),   # SW'
 ]
 
-# Camera parameters (AP-IMX900-Mini-USB3-I5 at 1280×960 publish resolution)
-CAM_W     = 1024
-CAM_H     = 768
-HFOV_DEG  = 88.0
-VFOV_DEG  = 65.1
+# Camera parameters (IMX219 CSI, publish resolution matches csi_camera_node.py)
+CAM_W     = 1640
+CAM_H     = 1232
+HFOV_DEG  = 62.2
+VFOV_DEG  = 48.8
 
 VEHICLE_CLASSES = {"car", "van", "truck", "bus"}
 

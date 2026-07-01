@@ -2,7 +2,7 @@
 
 Build a real-imagery AnyLoc database by flying a grid survey, recording video + telemetry, then running the offline pipeline.
 
-**Hardware:** Jetson Orin NX · AP-IMX900-Mini-USB3-I5 (`/dev/video0`, 2048×1536 native) · ArduPilot FC  
+**Hardware:** Jetson Orin NX · IMX219 CSI camera (nvarguscamerasrc, sensor-id 0; raw node `/dev/video0`) · ArduPilot FC  
 **Scripts:** `tools/record_field.py` · `tools/extract_frames.py` · `anyloc/build_database_real.py`
 
 ---
@@ -20,12 +20,12 @@ A real-imagery database uses the actual camera, actual lighting, and actual terr
 
 | Stream | Transport | Source |
 |---|---|---|
-| Video | GStreamer → `/dev/video0` directly | H.264, 2048×1536 30fps, ~58 MB/min |
+| Video | GStreamer (nvarguscamerasrc/ISP) → OpenCV, not through ROS | H.264, 1640×1232 30fps, ~60 MB/min (8 Mbps default) |
 | Telemetry | ROS2 subscriptions | lat/lon/AGL/heading at 5 Hz → CSV |
 
-Video goes **directly to the V4L2 device, not through ROS**. This means:
+Video goes **directly through Argus, not through ROS**. This means:
 
-- `launch_camera.sh` must **not** be running during collection — it also opens `/dev/video0` and will conflict
+- `launch_camera.sh` must **not** be running during collection — it also opens an Argus CaptureSession on the same sensor and only one is allowed at a time
 - AnyLoc and YOLO nodes must also be stopped for the same reason
 - Only MAVROS is needed (it doesn't touch the camera)
 
@@ -33,13 +33,11 @@ Video goes **directly to the V4L2 device, not through ROS**. This means:
 
 ## Camera FOV at 65 m AGL
 
-The camera spec is HFOV=88° × VFOV=65.1° at native 4:3 (2048×1536).  
-The inference node publishes at **1280×960** (4:3) to preserve the full FOV — do not change it to 1280×720 (16:9 crops the sensor vertically and reduces VFOV to ~57°).
+The camera spec is HFOV=62.2° × VFOV=48.8° at native 4:3. Both recording (`record_field.py`) and live inference (`csi_camera_node.py`) publish at **1640×1232** (full-FOV, 2×2-binned sensor mode) — do not switch to a 16:9 mode like 1280×720, which crops the sensor vertically and reduces VFOV.
 
 | | Ground width | Ground height | GSD |
 |---|---|---|---|
-| Recording 2048×1536 | 125.5 m | 83.0 m | 6.1 × 5.4 cm/px |
-| Inference 1280×960 | 125.5 m | 83.0 m | 9.8 × 8.7 cm/px |
+| 1640×1232 (recording + inference) | 78.4 m | 59.0 m | 4.78 × 4.79 cm/px |
 
 ---
 
@@ -54,7 +52,7 @@ The inference node publishes at **1280×960** (4:3) to preserve the full FOV —
 - **Area:** full operational zone + 20% margin
 - **Lighting:** fly at the same time of day as planned GPS-denied missions (shadows are strong VLAD features and shift between morning and afternoon)
 
-**Estimated storage:** ~58 MB/min → ≈ 1.2 GB for a 20-minute survey  
+**Estimated storage:** ~60 MB/min → ≈ 1.2 GB for a 20-minute survey  
 **Estimated flight:** ~203 min total at 3 m/s (~11 batteries @ 20 min each) — use `--split N` to divide into sub-missions
 
 Generate waypoints:
@@ -91,7 +89,7 @@ Terminal 2   source /opt/ros/humble/setup.bash && python3 tools/record_field.py 
 
 The recorder reads GPS, AGL, and heading **directly from MAVROS** (`/mavros/global_position/global`, `/mavros/global_position/rel_alt`, `/mavros/global_position/compass_hdg`) — `hw_bridge.py` is not needed for collection.
 
-Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for `/dev/video0`.
+Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for the same Argus CaptureSession.
 
 ---
 
@@ -150,7 +148,7 @@ Press **Ctrl+C** to stop.
 
 Output in `field_data/survey1/`:
 ```
-video.mkv       H.264, 2048×1536 30fps (MKV — stays playable after power-off)
+video.mkv       H.264, 1640×1232 30fps (MKV — stays playable after power-off)
 telemetry.csv   unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
 meta.json       video_start_unix, fps, width, height
 ```

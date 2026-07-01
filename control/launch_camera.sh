@@ -1,17 +1,9 @@
 #!/bin/bash
-# Launch USB camera driver on Jetson
+# Launch CSI camera driver on Jetson (IMX219, nvarguscamerasrc/ISP).
 source /opt/ros/humble/setup.bash
 
-# Find camera device — AP-IMX900 typically appears as /dev/video0
-CAMERA_DEV="${CAMERA_DEV:-/dev/video0}"
-echo "[camera] Using $CAMERA_DEV"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SENSOR_ID="${CAMERA_SENSOR_ID:-0}"
+echo "[camera] Using CSI sensor-id=$SENSOR_ID (IMX219)"
 
-ros2 run v4l2_camera v4l2_camera_node \
-    --ros-args \
-    -p video_device:="$CAMERA_DEV" \
-    -p image_size:=[1280,960] \
-    -p pixel_format:="YUYV" \
-    -p output_encoding:="rgb8" \
-    -p camera_frame_rate:=30.0 \
-    -r /image_raw:=/drone/camera/image_raw \
-    -r /camera_info:=/drone/camera/camera_info
+exec python3 "$SCRIPT_DIR/csi_camera_node.py" --sensor-id "$SENSOR_ID" --width 1640 --height 1232 --fps 30

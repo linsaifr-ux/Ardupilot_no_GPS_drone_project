@@ -11,9 +11,9 @@ Layout (1280×720):
     ├─ Slot 1 (640×240): 2nd most recent                  ├ class / conf / lat / lon
     └─ Slot 2 (640×240): 3rd most recent                 ─┘
 
-Subscribes to /drone/camera/image_raw (published by v4l2_camera_node or
-launch_camera.sh). Does NOT open /dev/video0 directly — run launch_camera.sh
-or v4l2_camera_node separately.
+Subscribes to /drone/camera/image_raw (published by control/launch_camera.sh,
+i.e. csi_camera_node.py). Does NOT open the camera directly — run
+launch_camera.sh separately (handled automatically by launch_real_hw.sh).
 
 Stream mode A — direct UDP to ground station (ZeroTier / same LAN):
     python3 tools/ground_view_stream.py --host <GS_IP>
@@ -188,7 +188,7 @@ class GroundViewNode(rclpy.node.Node):
 
     def _cb_img(self, msg: Image):
         arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
-        # v4l2_camera_node publishes rgb8; convert to BGR for OpenCV
+        # csi_camera_node.py publishes rgb8; convert to BGR for OpenCV
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
         with self._lock:
             self._latest_bgr = bgr

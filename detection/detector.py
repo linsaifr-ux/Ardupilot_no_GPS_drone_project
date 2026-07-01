@@ -61,7 +61,7 @@ class YOLODetector:
 
         Args:
             pil_img  input image (any resolution; YOLO letterboxes internally)
-            imgsz    YOLO inference size (default 1280 for IMX900 2064×1552 input;
+            imgsz    YOLO inference size (default 1280 for IMX219 1640×1232 input;
                      use 640 for faster inference at lower accuracy)
 
         Returns list of dicts:

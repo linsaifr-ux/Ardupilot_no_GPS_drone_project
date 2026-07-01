@@ -2,11 +2,12 @@
 """
 Field database collection recorder.
 
-Records 2048×1536 30fps H.264 video alongside a telemetry CSV, and
+Records 1640×1232 30fps H.264 video alongside a telemetry CSV, and
 optionally streams a 1280×720 H.265 preview with a telemetry overlay
 to a ground station or a MediaMTX relay server.
 
-Video and stream share a single OpenCV capture of /dev/video0.
+Video and stream share a single OpenCV capture of the IMX219 CSI camera
+(nvarguscamerasrc, sensor-id=0).
 Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
 
 Requires MAVROS + hw_bridge.py (publishes /drone/agl and /drone/pose).
@@ -30,7 +31,7 @@ Usage:
     --stream-bitrate BPS   H.265 stream bitrate (default: 1000000)
 
 Output files in DIR/:
-    video.mkv          H.264, 2048×1536 30fps (MKV — crash-safe)
+    video.mkv          H.264, 1640×1232 30fps (MKV — crash-safe)
     telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
     meta.json          video_start_unix, fps, width, height
 
@@ -73,7 +74,7 @@ from std_msgs.msg import Float64
 Gst.init(None)
 
 # ── Camera / pipeline constants ────────────────────────────────────────────────
-REC_W,    REC_H,    FPS  = 2048, 1536, 30
+REC_W,    REC_H,    FPS  = 1640, 1232, 30
 STREAM_W, STREAM_H       = 1280,  720
 OVERLAY_H                = 44     # height of black telemetry bar at bottom of stream
 
@@ -154,8 +155,8 @@ def _make_stream_frame(bgr_full, telem):
 
     # Crop vertically to 16:9 before resizing (avoids horizontal stretch)
     src_h, src_w = bgr_full.shape[:2]
-    crop_h = src_w * 9 // 16          # e.g. 2048 → 1152
-    y0c = (src_h - crop_h) // 2       # 192 px off top and bottom
+    crop_h = src_w * 9 // 16          # e.g. 1640 → 922
+    y0c = (src_h - crop_h) // 2
     frame = cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
 
     # Black bar
@@ -178,18 +179,22 @@ def _make_stream_frame(bgr_full, telem):
 # ── Camera helpers ────────────────────────────────────────────────────────────
 
 def _open_camera(retries=10, delay=2.0):
-    """Open /dev/video0 at REC_W×REC_H. Returns cap or None after all retries."""
+    """Open the IMX219 CSI camera (nvarguscamerasrc/ISP) at REC_W×REC_H.
+
+    Returns cap or None after all retries. Raw V4L2 open of /dev/video0 won't
+    work here — the IMX219 exposes raw Bayer (RG10), not YUYV; nvarguscamerasrc
+    goes through the ISP for debayering/AWB/AE.
+    """
+    pipeline = (
+        f'nvarguscamerasrc sensor-id=0 ! '
+        f'video/x-raw(memory:NVMM),width={REC_W},height={REC_H},framerate={FPS}/1,format=NV12 ! '
+        f'nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! '
+        f'appsink drop=true max-buffers=1 sync=false'
+    )
     for attempt in range(retries):
-        cap = cv2.VideoCapture('/dev/video0', cv2.CAP_V4L2)
-        cap.set(cv2.CAP_PROP_FOURCC,      cv2.VideoWriter_fourcc('Y', 'U', 'Y', 'V'))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  REC_W)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REC_H)
-        cap.set(cv2.CAP_PROP_FPS,          FPS)
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if cap.isOpened():
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            if w == REC_W and h == REC_H:
-                return cap
+            return cap
         cap.release()
         if attempt < retries - 1:
             time.sleep(delay)
@@ -288,8 +293,9 @@ def main():
         import subprocess
         holders = subprocess.run(['fuser', '/dev/video0'],
                                  capture_output=True, text=True).stdout.strip()
-        hint = (f' — PIDs holding /dev/video0: {holders} (kill them first)'
-                if holders else ' — no other process holds it; try replugging')
+        hint = (f' — PIDs holding /dev/video0: {holders} (kill them first)' if holders else
+                ' — no local fd holders; a stale Argus CaptureSession is the likely cause '
+                '(sudo systemctl restart nvargus-daemon), or the ribbon cable is unseated')
         sys.exit(f'[REC] Cannot open camera at {REC_W}×{REC_H}{hint}')
 
     # ── GStreamer pipelines ────────────────────────────────────────────────────

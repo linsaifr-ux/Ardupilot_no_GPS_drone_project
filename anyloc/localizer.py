@@ -28,8 +28,8 @@ _CENTER_LON = 120.286135
 _RADIUS_M   = 2000.0
 _COS_LAT    = math.cos(math.radians(_CENTER_LAT))
 _SAT_ZOOM   = 18
-_HFOV_DEG   = 88.0    # AP-IMX900-Mini-USB3-I5 spec: 88°(H)
-_VFOV_DEG   = 65.1    # AP-IMX900-Mini-USB3-I5 spec: 65.1°(V)
+_HFOV_DEG   = 62.2    # IMX219 CSI spec: 62.2°(H)
+_VFOV_DEG   = 48.8    # IMX219 CSI spec: 48.8°(V)
 
 
 # ── PIL → tensor (avoids numpy dual-install conflict) ─────────────────────────

@@ -50,21 +50,24 @@ MAVROS_PID=$!
 echo "[launch] MAVROS PID=$MAVROS_PID; waiting 6 s ..."
 sleep 6
 
-# 2. Camera — plain ROS2 driver OR ground view streamer (not both)
+# 2. Camera driver — always required. ground_view_stream.py only *subscribes*
+#    to /drone/camera/image_raw (it does not open the camera), so it runs
+#    alongside launch_camera.sh, not instead of it.
+echo "[launch] Starting camera driver ..."
+bash "$SCRIPT_DIR/launch_camera.sh" &
+CAMERA_PID=$!
+sleep 3
+
+STREAM_PID=""
 if [[ -n "$STREAM_HOST" ]]; then
     echo "[launch] Starting ground view streamer (UDP) → $STREAM_HOST ..."
     python3 -u "$PROJECT_DIR/tools/ground_view_stream.py" --host "$STREAM_HOST" &
-    CAMERA_PID=$!
+    STREAM_PID=$!
 elif [[ -n "$STREAM_SERVER" ]]; then
     echo "[launch] Starting ground view streamer (RTSP) → $STREAM_SERVER ..."
     python3 -u "$PROJECT_DIR/tools/ground_view_stream.py" --stream-server "$STREAM_SERVER" &
-    CAMERA_PID=$!
-else
-    echo "[launch] Starting camera driver ..."
-    bash "$SCRIPT_DIR/launch_camera.sh" &
-    CAMERA_PID=$!
+    STREAM_PID=$!
 fi
-sleep 3
 
 # 3. Hardware bridge
 echo "[launch] Starting hardware bridge ..."
@@ -90,5 +93,5 @@ python3 "$SCRIPT_DIR/ardupilot_commander.py" "${COMMANDER_ARGS[@]}"
 CMD_EXIT=$?
 
 echo "[launch] Commander exited ($CMD_EXIT) — shutting down ..."
-kill $YOLO_PID $ANYLOC_PID $BRIDGE_PID $CAMERA_PID $MAVROS_PID 2>/dev/null || true
+kill $YOLO_PID $ANYLOC_PID $BRIDGE_PID $STREAM_PID $CAMERA_PID $MAVROS_PID 2>/dev/null || true
 exit $CMD_EXIT

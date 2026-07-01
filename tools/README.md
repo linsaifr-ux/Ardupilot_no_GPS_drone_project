@@ -6,9 +6,9 @@ Standalone tools for monitoring, streaming, and analysing drone flights.
 
 ## record_field.py — Field database collection recorder
 
-Records 2048×1536 30fps H.264 video from `/dev/video0` directly (via OpenCV + GStreamer `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading at 5 Hz via ROS2). Frames are rotated 180° after capture. Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server.
+Records 1640×1232 30fps H.264 video from the IMX219 CSI camera directly (via OpenCV + GStreamer `nvarguscamerasrc`/ISP + `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading at 5 Hz via ROS2). Frames are rotated 180° after capture. Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server.
 
-**Do NOT run `launch_camera.sh` at the same time** — both open `/dev/video0`.  
+**Do NOT run `launch_camera.sh` at the same time** — both open an Argus CaptureSession on the same sensor.  
 Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*`. `hw_bridge.py` is not needed.
 
 > **Known issue:** prints `waiting for GPS …` until `/mavros/global_position/global` receives a fix. On a no-GPS flight (GPS jammed), the status line stays stuck but **recording continues normally** — video and AGL/heading still write to CSV. Fix pending: replace lat/lon source with AnyLoc pose.
@@ -147,8 +147,7 @@ Right (640×720)
   └─ Slot 2 (640×240): 3rd most recent                 ─┘
 ```
 
-**Do NOT run `launch_camera.sh` at the same time** — both open `/dev/video0`.  
-Because this script publishes `/drone/camera/image_raw`, YOLO and AnyLoc receive camera frames normally.
+This script only **subscribes** to `/drone/camera/image_raw` — it does not open the camera. `launch_camera.sh` must already be running (handled automatically by `launch_real_hw.sh --stream-host/--stream-server`); YOLO and AnyLoc receive camera frames from the same topic normally.
 
 ```bash
 # Mode A — direct UDP to ground station (ZeroTier / LAN)
@@ -181,7 +180,6 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 | `--port N` | 5000 | UDP port (mode A only) |
 | `--stream-server IP` | off | MediaMTX relay server IP — RTSP push (mode B) |
 | `--rtsp-path P` | `/drone` | RTSP stream path (mode B only) |
-| `--camera N` | 0 | Camera index (`/dev/video0`) |
 | `--bitrate N` | 1000000 | H.265 bitrate (bits/s) |
 
 `--host` and `--stream-server` are mutually exclusive. Without either, defaults to direct UDP using `GROUND_IP` env var.
@@ -198,7 +196,7 @@ bash control/launch_real_hw.sh --stream-server 118.232.160.227    # mode B
 
 ## gstreamer_stream.py — Simple H.265 camera stream (camera + AnyLoc only)
 
-Opens the camera directly with OpenCV and streams a 1280×480 two-panel view via H.265/RTP/UDP. Simpler than `ground_view_stream.py` — no YOLO boxes, no detection crops, no ROS2 node.
+Opens the IMX219 CSI camera directly with OpenCV/GStreamer (`nvarguscamerasrc`) and streams a 1280×480 two-panel view via H.265/RTP/UDP. Simpler than `ground_view_stream.py` — no YOLO boxes, no detection crops, no ROS2 node.
 
 ```
 Left panel  (640×480): live camera + AnyLoc telemetry overlay
@@ -220,13 +218,13 @@ gst-launch-1.0 udpsrc port=5000 ! \
 # Or VLC: Media → Open Network Stream → rtp://@:5000
 ```
 
-**Important:** opens `/dev/video0` directly — do NOT also run `launch_camera.sh` or `ground_view_stream.py` at the same time (device busy).
+**Important:** opens an Argus CaptureSession directly — do NOT also run `launch_camera.sh` (only one CaptureSession is allowed on the sensor at a time). `ground_view_stream.py` doesn't open the camera itself, so it's fine to run alongside this one.
 
 | Flag | Default | Description |
 |---|---|---|
 | `--host IP` | `GROUND_IP` env or `10.181.156.237` | Ground station IP |
 | `--port N` | 5000 | UDP port |
-| `--camera N` | 0 | Camera index (`/dev/video0`) |
+| `--camera N` | 0 | Argus sensor-id |
 | `--bitrate N` | 1000000 | H.265 bitrate (bits/s) |
 
 **Requires:** nvidia-l4t-gstreamer, python3-gi (both on JetPack 36.x)

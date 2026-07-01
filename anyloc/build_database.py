@@ -38,10 +38,9 @@ R_EARTH    = 6_371_000.0
 COS_LAT    = math.cos(math.radians(CENTER_LAT))
 SAT_ZOOM   = 18   # ~0.60 m/px effective after MAX_TEX=16384 downsample
 
-# Drone camera: AP-IMX900-Mini-USB3-I5, EFL 3.1 mm, 113.1°(D)×88°(H)×65.1°(V)
-# GSD ≈ 75 mm/px @ 80 m AGL
-HFOV_DEG = 88.0
-VFOV_DEG = 65.1
+# Drone camera: IMX219 CSI, 77.6°(D)×62.2°(H)×48.8°(V)
+HFOV_DEG = 62.2
+VFOV_DEG = 48.8
 
 # AnyLoc VLAD settings
 DINO_IMG_W = 448    # must be divisible by 14 (ViT-B/14 patch size)

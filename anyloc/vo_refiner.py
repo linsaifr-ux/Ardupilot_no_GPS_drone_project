@@ -48,8 +48,8 @@ class VORefiner:
         accum_dlat = accum_dlon = 0.0
     """
 
-    def __init__(self, cam_w: int = 1024, cam_h: int = 768,
-                 hfov_deg: float = 88.0, vfov_deg: float = 65.1):
+    def __init__(self, cam_w: int = 1640, cam_h: int = 1232,
+                 hfov_deg: float = 62.2, vfov_deg: float = 48.8):
         self._cam_w    = cam_w
         self._cam_h    = cam_h
         self._hfov_deg = hfov_deg

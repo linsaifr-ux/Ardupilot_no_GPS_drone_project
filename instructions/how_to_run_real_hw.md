@@ -1,6 +1,6 @@
 # How to Run — Jetson Real Hardware
 
-**Target:** Jetson Orin NX + ArduPilot FC (USB-to-TTL on **Serial6**, `/dev/ttyUSB0:921600`) + AP-IMX900 camera (`/dev/video0`)
+**Target:** Jetson Orin NX + ArduPilot FC (USB-to-TTL on **Serial6**, `/dev/ttyUSB0:921600`) + IMX219 CSI camera (nvarguscamerasrc, sensor-id 0; raw node `/dev/video0`)
 **ROS2:** Humble (`/opt/ros/humble`)
 **Python envs:** `/home/jetson/venv/anyloc` (torch + faiss) · `/home/jetson/venv/yolo` (torch + ultralytics)
 **Goal:** GPS-denied autonomous survey: takeoff 65 m → boustrophedon pattern → YOLO detection → land
@@ -14,9 +14,9 @@ Mission Planner (PC)
   └─ survey.waypoints ──scp──▶  Jetson Orin NX
                                   launch_real_hw.sh
                                   ├─ [1] launch_mavros_real.sh       → serial:///dev/ttyUSB0:921600
-                                  ├─ [2a] launch_camera.sh           → /dev/video0 → /drone/camera/image_raw   (no ground stream)
+                                  ├─ [2a] launch_camera.sh           → CSI (nvarguscamerasrc) → /drone/camera/image_raw   (no ground stream)
                                   │  OR
-                                  │  [2b] ground_view_stream.py      → /dev/video0 → /drone/camera/image_raw   (+ H.265 stream)
+                                  │  [2b] ground_view_stream.py      → subscribes /drone/camera/image_raw (needs 2a running) (+ H.265 stream)
                                   │         --stream-host GS_IP      →   RTP/UDP → ground station
                                   │         --stream-server SERVER_IP →   RTSP push → MediaMTX relay
                                   ├─ [3] hw_bridge.py                → /mavros/local_position/pose → /drone/state /drone/pose /drone/agl
@@ -45,9 +45,9 @@ EKF source switching (real_hw.parm):
 
 ```bash
 sudo usermod -aG dialout $USER   # serial access — logout + login after
+sudo usermod -aG video $USER     # CSI/nvargus camera access — logout + login after
 # Or per-session:
 sudo chmod 666 /dev/ttyUSB0
-sudo chmod 666 /dev/video0
 ```
 
 ### 2. Verify ROS2 and MAVROS
@@ -174,14 +174,17 @@ print(f'{len(wps)} waypoints loaded')
 # FC adapter
 ls /dev/ttyUSB*       # expect /dev/ttyUSB0
 
-# Camera
-ls /dev/video*        # expect /dev/video0 and /dev/video1 (video1 is metadata — use video0)
+# Camera (CSI — check the sensor is detected by the Argus/tegra-camera stack)
+v4l2-ctl --list-devices 2>&1 | grep -i imx219   # expect "vi-output, imx219 ..." → /dev/video0
 
 # AnyLoc database
 ls anyloc/database/database_vlads.pt && echo "DB OK" || echo "DB MISSING — rebuild"
 
 # Kill any stale camera processes before starting
-pkill -f v4l2_camera_node 2>/dev/null; echo "camera clear"
+pkill -f csi_camera_node.py 2>/dev/null; echo "camera clear"
+# If capture still fails with "Device 0 (of 1) is in use" / "Failed to create
+# CaptureSession", a stale Argus session is held by nvargus-daemon — clear it:
+#   sudo systemctl restart nvargus-daemon
 ```
 
 ---
@@ -350,8 +353,8 @@ Once you switch to GUIDED at altitude, commander starts the survey automatically
 ### Camera — expected warnings (harmless)
 
 ```
-[WARN] slow conversion: yuv422_yuy2 => rgb8   ← expected, YUYV 1280×960→rgb8 conversion
-[ERROR] Camera calibration file ... not found  ← harmless, AnyLoc doesn't need intrinsics
+GST_ARGUS: Available Sensor modes: ...             ← expected, ISP mode enumeration on startup
+[ WARN:0] ... Cannot query video position ...       ← harmless, OpenCV GStreamer backend quirk
 ```
 Confirm images flow: `ros2 topic hz /drone/camera/image_raw` → expect ~30 Hz
 
@@ -396,11 +399,11 @@ flags=0x037  ✓ POS_ABS accepted
 
 ### Ground view stream — composite YOLO + AnyLoc viewport
 
-`tools/ground_view_stream.py` streams a 1280×720 composite viewport showing YOLO live detection feed, AnyLoc match tile, and the last 3 detection crops with class/location labels. It also publishes `/drone/camera/image_raw` — so it **replaces** `launch_camera.sh` (do not run both).
+`tools/ground_view_stream.py` streams a 1280×720 composite viewport showing YOLO live detection feed, AnyLoc match tile, and the last 3 detection crops with class/location labels. It only **subscribes** to `/drone/camera/image_raw` — it does not open the camera — so `launch_camera.sh` must already be running (handled automatically by `launch_real_hw.sh --stream-host/--stream-server`).
 
 **Mode A — direct UDP (ZeroTier / LAN):**
 ```bash
-# Replace Pane 1 (camera) with:
+# In addition to Pane 1 (launch_camera.sh), add a new pane:
 source /opt/ros/humble/setup.bash
 python3 tools/ground_view_stream.py --host 192.168.1.50
 
@@ -475,11 +478,11 @@ T-30 min
 
 T-15 min
   [ ] Power on Jetson, connect USB-to-TTL adapter and camera
-  [ ] Verify /dev/ttyUSB0 and /dev/video0 present
-  [ ] pkill -f v4l2_camera_node (clear stale camera processes)
+  [ ] Verify /dev/ttyUSB0 present and `v4l2-ctl --list-devices` shows imx219
+  [ ] pkill -f csi_camera_node.py (clear stale camera processes)
   [ ] Start: bash control/launch_real_hw.sh --manual-takeoff (or tmux layout)
   [ ] MAVROS pane: "detected remote address 1.1" ✓
-  [ ] Camera pane: running (slow conversion warning OK)
+  [ ] Camera pane: running (Argus sensor-mode enumeration on startup is OK)
   [ ] ros2 topic hz /drone/camera/image_raw → ~30 Hz ✓
   [ ] HW Bridge pane: "HW bridge ready" ✓
   [ ] AnyLoc pane: "AnyLoc node ready" ✓
@@ -518,9 +521,8 @@ Emergency
 | `/dev/ttyUSB0` not found | Adapter unplugged or driver missing | `dmesg \| tail -20` → look for cp210x/ch341 |
 | `launch_mavros_real.sh` exits with no output | `set -e` + stale pkill returning 1 | Fixed; if recurs: check script has `pkill ... \|\| true` |
 | MAVROS not connecting | Wrong baud or device | Try `FCU_DEV=/dev/ttyUSB1 bash control/launch_mavros_real.sh`; verify FC serial baud = 921600 |
-| Camera "Device or resource busy" | Stale v4l2 instance | `pkill -f v4l2_camera_node; sleep 1; bash control/launch_camera.sh` |
+| Camera "Failed to create CaptureSession" / "Device 0 (of 1) is in use" | Stale Argus session (nvargus-daemon) | `pkill -f csi_camera_node.py; sudo systemctl restart nvargus-daemon; bash control/launch_camera.sh` |
 | Camera calibration file not found | No intrinsics YAML | Harmless — AnyLoc doesn't use camera intrinsics |
-| AnyLoc cv_bridge error "Unrecognized encoding" | Wrong pixel_format in launch_camera.sh | Verify `pixel_format:=YUYV` and `output_encoding:=rgb8` in launch_camera.sh |
 | Arm rejected: Safety Switch | Safety button not pressed | Press physical button; LED must go green |
 | Arm rejected: Need Position | VPE not publishing or EKF not converged | Check `ros2 topic hz /mavros/vision_pose/pose_cov` (expect 20 Hz); wait 30 s |
 | EKF never reaches POS_ABS on SRC2 | ExternalNav params wrong | Verify `VISO_TYPE=1`, `EK3_SRC2_POSXY=6` in FC params; check VPE topic hz |
@@ -538,7 +540,8 @@ Emergency
 | GStreamer stream no video on receiver | Firewall or wrong IP | Check `--host` matches ground PC IP; open port 5000/udp |
 | GStreamer "Camera not running" | Camera pane not started | Start `launch_camera.sh` before `launch_gstreamer.sh` |
 | GStreamer "appsrc push returned GST_FLOW_ERROR" | Ground IP unreachable | Ping ground station first; udpsink drops silently |
-| `ground_view_stream.py` "Cannot open camera" | `launch_camera.sh` already running | Kill it first — both cannot open `/dev/video0` simultaneously |
+| `gstreamer_stream.py` "Cannot open CSI camera" | `launch_camera.sh` already running | Kill it first — both open an Argus CaptureSession on the same sensor and only one is allowed |
+| `ground_view_stream.py` stuck at "Waiting for /drone/camera/image_raw" | `launch_camera.sh` not running | Start it first — `ground_view_stream.py` only subscribes, it doesn't open the camera (fixed automatically by `launch_real_hw.sh`) |
 | `ground_view_stream.py` YOLO panel shows no boxes | YOLO node not started yet | Wait for YOLO node to load model (~30 s); boxes appear once AGL > 50 m |
 | `ground_view_stream.py` AnyLoc panel black | AnyLoc node not running or no match yet | Wait for first AnyLoc match; `anyloc/latest_match.jpg` must exist |
 | `ground_view_stream.py` RTSP: `rtspclientsink not found` | Missing GStreamer RTSP plugin | `sudo apt install gstreamer1.0-rtsp` |
@@ -558,4 +561,4 @@ Emergency
 8. **hw_bridge before commander**: commander waits for `/drone/state`; hw_bridge must be running first.
 9. **AnyLoc fuses at ≥ 50 m only**: `MIN_LOCALISATION_AGL=50.0` in commander and `MIN_AGL=50.0` in anyloc node must match.
 10. **venv/anyloc for AnyLoc, venv/yolo for YOLO**: system Python3 lacks torch/faiss/ultralytics. Do not use `conda run`.
-11. **Kill stale camera processes**: running `launch_camera.sh` twice causes "Device busy" — always `pkill -f v4l2_camera_node` first.
+11. **Kill stale camera processes**: running `launch_camera.sh` twice causes an Argus "CaptureSession" conflict — always `pkill -f csi_camera_node.py` first (and `sudo systemctl restart nvargus-daemon` if the session is stuck).

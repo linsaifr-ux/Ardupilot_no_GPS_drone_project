@@ -41,7 +41,6 @@ GROUND_IP  = os.environ.get("GROUND_IP", "10.181.156.237")
 CAM_W      = 1280
 CAM_H      = 720
 FPS        = 30
-CAM_FOURCC = cv2.VideoWriter_fourcc(*'MJPG')
 PANEL_W    = 640
 PANEL_H    = 480
 STREAM_W   = PANEL_W * 2   # 1280
@@ -134,7 +133,7 @@ def main():
     ap.add_argument('--host',    default=GROUND_IP,
                     help=f'Ground station IP (default: GROUND_IP env or {GROUND_IP})')
     ap.add_argument('--port',    type=int, default=5000, help='UDP port (default: 5000)')
-    ap.add_argument('--camera',  type=int, default=0,    help='Camera index (default: 0)')
+    ap.add_argument('--camera',  type=int, default=0,    help='Argus sensor-id (default: 0)')
     ap.add_argument('--bitrate', type=int, default=1_000_000,
                     help='H.265 bitrate bits/s (default: 1000000)')
     args = ap.parse_args()
@@ -152,14 +151,16 @@ def main():
     print( "    videoconvert ! autovideosink sync=false")
     print()
 
-    cap = cv2.VideoCapture(args.camera, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FOURCC, CAM_FOURCC)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  CAM_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-    cap.set(cv2.CAP_PROP_FPS, FPS)
+    cap_pipeline = (
+        f'nvarguscamerasrc sensor-id={args.camera} ! '
+        f'video/x-raw(memory:NVMM),width={CAM_W},height={CAM_H},framerate={FPS}/1,format=NV12 ! '
+        f'nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! '
+        f'appsink drop=true max-buffers=1 sync=false'
+    )
+    cap = cv2.VideoCapture(cap_pipeline, cv2.CAP_GSTREAMER)
     if not cap.isOpened():
-        sys.exit(f"[!] Cannot open camera {args.camera}")
-    print(f"[stream] Camera {args.camera} ready  ({CAM_W}×{CAM_H} MJPG). Press Ctrl-C to stop.")
+        sys.exit(f"[!] Cannot open CSI camera sensor-id={args.camera}")
+    print(f"[stream] Camera sensor-id={args.camera} ready  ({CAM_W}×{CAM_H}). Press Ctrl-C to stop.")
 
     frame_count = 0
     fps_t0      = time.perf_counter()
