@@ -110,7 +110,11 @@ def _build_udp_pipeline(host: str, port: int, bitrate: int):
 
 
 def _build_server_pipeline(server: str, rtsp_path: str, bitrate: int):
-    """Mode B — RTSP push to MediaMTX relay server via TCP."""
+    """Mode B — RTSP push to MediaMTX relay server via TCP.
+
+    Requires the `gstreamer1.0-rtsp` apt package (provides rtspclientsink) —
+    it's not part of gstreamer1.0-plugins-bad on Ubuntu.
+    """
     pipeline = Gst.parse_launch(
         _APPSRC +
         _ENC + f'bitrate={bitrate} ! '

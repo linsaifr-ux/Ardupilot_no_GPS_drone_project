@@ -121,8 +121,14 @@ class AnyLocLocalizer:
             )
         db = torch.load(db_file, map_location='cpu', weights_only=False)
         if db.get('_split'):
-            meta  = torch.load(db['meta'],   map_location='cpu', weights_only=False)
-            vlads = torch.load(db['vlads'],  map_location='cpu', weights_only=False)
+            # database.pt stores absolute paths baked in at build time — not
+            # portable across machines (e.g. built on a dev PC, copied to the
+            # Jetson). Resolve by filename relative to db_dir instead of
+            # trusting the stored path.
+            meta_path  = os.path.join(self.db_dir, os.path.basename(db['meta']))
+            vlads_path = os.path.join(self.db_dir, os.path.basename(db['vlads']))
+            meta  = torch.load(meta_path,  map_location='cpu', weights_only=False)
+            vlads = torch.load(vlads_path, map_location='cpu', weights_only=False)
             db = {**meta, 'vlads': vlads}
         self.model_name = self._model_name_override or \
             db.get('model_name', 'dinov2_vitb14')

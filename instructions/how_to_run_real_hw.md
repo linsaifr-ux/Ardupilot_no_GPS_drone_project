@@ -208,7 +208,7 @@ bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.w
     --stream-server 118.232.160.227
 ```
 
-`--stream-host` and `--stream-server` are mutually exclusive. Both replace `launch_camera.sh` with `ground_view_stream.py`, which opens the camera and also publishes `/drone/camera/image_raw`.
+`--stream-host` and `--stream-server` are mutually exclusive. Either adds `ground_view_stream.py` alongside `launch_camera.sh` (not instead of it) — `ground_view_stream.py` only subscribes to `/drone/camera/image_raw`, it doesn't open the camera.
 
 Launch order with waits:
 
@@ -533,7 +533,7 @@ Emergency
 | AnyLoc database error | Wrong path | Check symlink: `ls -la anyloc/database` → should point to `database_vits14` |
 | Survey strips curved | Wrong setpoint type | `go_to_ned()` uses velocity setpoints — don't switch to position setpoints during survey |
 | Drone drifts in hover | `PSC_NE_VEL_I` non-zero | Verify `PSC_NE_VEL_I=0.0` in uploaded params |
-| No detections logged | YOLO not running or AGL < 50 m | Check YOLO pane; verify `MIN_AGL=50.0` in `detection/ros2_node.py` |
+| No detections logged | YOLO not running, or `/drone/camera/image_raw` not flowing | Check YOLO pane started; `ros2 topic hz /drone/camera/image_raw` (YOLO runs at any AGL — no altitude gate) |
 | Wrong survey area | `home_elevation.json` mismatch | Update lat/lon/elev to actual takeoff point |
 | Commander hangs at "waiting for drone state" | `hw_bridge.py` not running | hw_bridge must start before commander |
 | GStreamer "no such element: nvv4l2h265enc" | Missing Jetson GStreamer plugins | `sudo apt install nvidia-l4t-gstreamer` |
@@ -544,7 +544,7 @@ Emergency
 | `ground_view_stream.py` stuck at "Waiting for /drone/camera/image_raw" | `launch_camera.sh` not running | Start it first — `ground_view_stream.py` only subscribes, it doesn't open the camera (fixed automatically by `launch_real_hw.sh`) |
 | `ground_view_stream.py` YOLO panel shows no boxes | YOLO node not started yet | Wait for YOLO node to load model (~30 s); boxes appear once AGL > 50 m |
 | `ground_view_stream.py` AnyLoc panel black | AnyLoc node not running or no match yet | Wait for first AnyLoc match; `anyloc/latest_match.jpg` must exist |
-| `ground_view_stream.py` RTSP: `rtspclientsink not found` | Missing GStreamer RTSP plugin | `sudo apt install gstreamer1.0-rtsp` |
+| `ground_view_stream.py` / `record_field.py` RTSP: `no element "rtspclientsink"` | `gstreamer1.0-rtsp` not installed — it's a separate package from `gstreamer1.0-plugins-bad` on Ubuntu | `sudo apt install gstreamer1.0-rtsp` (verified fix — confirms `gst-inspect-1.0 rtspclientsink` afterward) |
 | `ground_view_stream.py` RTSP: connection refused | MediaMTX server not running | Start `./mediamtx mediamtx.yml` on Frank's PC; verify port 8554 open |
 
 ---
@@ -559,6 +559,6 @@ Emergency
 6. **`home_elevation.json` must match takeoff point**: all waypoints are ENU offsets from this origin.
 7. **`real_hw.parm` not `no_gps.parm`**: `no_gps.parm` has SITL-only entries — never upload to real FC.
 8. **hw_bridge before commander**: commander waits for `/drone/state`; hw_bridge must be running first.
-9. **AnyLoc fuses at ≥ 50 m only**: `MIN_LOCALISATION_AGL=50.0` in commander and `MIN_AGL=50.0` in anyloc node must match.
+9. **AnyLoc fuses at ≥ 50 m only**: `MIN_LOCALISATION_AGL=50.0` in commander and `MIN_AGL=50.0` in anyloc node must match. (YOLO has no altitude gate — it runs at any AGL.)
 10. **venv/anyloc for AnyLoc, venv/yolo for YOLO**: system Python3 lacks torch/faiss/ultralytics. Do not use `conda run`.
 11. **Kill stale camera processes**: running `launch_camera.sh` twice causes an Argus "CaptureSession" conflict — always `pkill -f csi_camera_node.py` first (and `sudo systemctl restart nvargus-daemon` if the session is stuck).

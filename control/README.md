@@ -44,14 +44,14 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - Vision injection: 20 Hz `PoseWithCovarianceStamped` to `/mavros/vision_pose/pose_cov` + velocity to `/mavros/vision_speed/speed_twist`
 - Two-phase VPE: Phase 1 (AGL < 50 m) = kinematic truth, cov=0.1 m²; Phase 2 (≥ 50 m) = AnyLoc `latest_estimate.json`, cov = max(1, err_m²)
 - VPE heading: ENU yaw = π/2 (North) in **both** phases. `/drone/pose` encodes `−_kyaw_rad` not `π/2−_kyaw_rad`, so `yaw_deg=0` in the JSON maps to East, not North. Since the drone never yaws, π/2 is always correct and avoids a 90° EKF2 heading jump at the Phase 1→2 transition.
-- **Survey mission:** climb 65 m → 7-strip E-W lawnmower at 12 m/s / 91.7 m N-S spacing (~10.2 min, ~7.36 km); strips run east-west (long axis), enter from east, boustrophedon S→N; 91.7 m spacing < 125 m swath → 33 m overlap, zero coverage gaps; YOLO vehicle detection → yaw-corrected GSD pixel projection → log to `detections.csv` (timestamp, category, confidence, lat, lon, agl_m). No divert — survey continues unbroken. Dedup: `_logged_positions` list; detections within 5 m of an already-logged entry are discarded.
+- **Survey mission:** climb 65 m → 10-strip E-W lawnmower at 12 m/s / 53.9 m N-S spacing (~10.8 min, ~7.76 km); strips run east-west (long axis), enter from east, boustrophedon S→N; 53.9 m spacing < 78.4 m swath (IMX219, HFOV 62.2°) → 24.5 m overlap (~31% sidelap), zero coverage gaps; YOLO vehicle detection → yaw-corrected GSD pixel projection → log to `detections.csv` (timestamp, category, confidence, lat, lon, agl_m). No divert — survey continues unbroken. Dedup: `_logged_positions` list; detections within 5 m of an already-logged entry are discarded. Regenerate with `tools/gen_contest_survey.py` if camera/altitude ever change again.
 - See `instructions/survey_mission_plan.md` for zone geometry, strip table, and waypoint list.
 - `HOLDTEST=1`: 3 m hold gate (Phase 3 regression test)
 - `TAKEOFF_ALT=<m>`: override cruise altitude (default 65 m)
 - In-air restart: detects AGL > 5 m at startup and skips takeoff
 
 **`ardupilot_commander.py`** — ArduPilot/MAVROS2 full mission commander (ported from `px4_commander.py`).
-- STABILIZE → arm → GUIDED → EKF origin → `EKF_POS_HORIZ_ABS` wait → NAV_TAKEOFF → 7-strip E-W survey 12 m/s → LAND
+- STABILIZE → arm → GUIDED → EKF origin → `EKF_POS_HORIZ_ABS` wait → NAV_TAKEOFF → 10-strip E-W survey 12 m/s → LAND
 - ENU setpoints (identical to `px4_commander.py`); MAVROS converts to NED for ArduPilot
 - Two-phase VPE: Phase 1 (AGL < 50 m) = home anchor, Phase 2 (≥ 50 m) = AnyLoc `latest_estimate.json`
 - After reaching cruise altitude: switches EKF source to SRC2 (ExternalNav) via `MAV_CMD_DO_AUX_FUNCTION`
@@ -93,7 +93,7 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 | `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (Serial6). Auto-requests all data streams at 10 Hz after connect — required because MAVROS resets SR* params to 0 on startup. |
 | `launch_camera.sh` | `csi_camera_node.py`: IMX219 CSI (nvarguscamerasrc, sensor-id 0), 1640×1232 @ 30 fps → `/drone/camera/image_raw` (rgb8) |
 | `hw_bridge.py` | Converts MAVROS EKF position to `/drone/state`, `/drone/pose`, `/drone/agl` |
-| `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera (or streamer) + hw_bridge + AnyLoc + YOLO + commander. Pass `--stream-host IP` for direct UDP ground view stream, or `--stream-server IP` for RTSP push to MediaMTX relay — either replaces `launch_camera.sh`. |
+| `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera + hw_bridge + AnyLoc + YOLO + commander. Pass `--stream-host IP` for direct UDP ground view stream, or `--stream-server IP` for RTSP push to MediaMTX relay — either adds `ground_view_stream.py` alongside `launch_camera.sh` (both always run). |
 | `launch_gstreamer.sh` | Simple H.265 camera stream to ground station — camera + AnyLoc tile only, no YOLO. Opens camera directly — don't run with `launch_camera.sh` or `ground_view_stream.py`. |
 
 **Simulation (SITL):**

@@ -51,26 +51,33 @@ TARGET_AGL = 65.0
 WP_RADIUS  = 8.0
 
 # (north_m, east_m) — mirror of SURVEY_WPS in ardupilot_commander.py
-# 7-strip boundary-parallel boustrophedon; −10.63° from east; 86.3 m spacing; 14 WPs.
+# 10-strip boundary-parallel boustrophedon; −10.5° from east; 53.9 m spacing; 20 WPs.
+# Spacing recomputed 2026-07-02 for the IMX219 camera swap — see ardupilot_commander.py.
 SURVEY_WPS = [
-    (  -6.0,   -591.0),  # 0  ENTRY  : E end strip 1  → fly W
-    ( 124.0,  -1288.0),  # 1  WP01   : W end strip 1
-    ( 210.0,  -1275.0),  # 2  WP02   : W boundary → fly NE
-    (  78.0,   -575.0),  # 3  WP03   : E end strip 2  → fly E
-    ( 163.0,   -559.0),  # 4  WP04   : E boundary → fly NE
-    ( 295.0,  -1262.0),  # 5  WP05   : W end strip 3  → fly W
-    ( 381.0,  -1249.0),  # 6  WP06   : W boundary → fly NE
-    ( 248.0,   -543.0),  # 7  WP07   : E end strip 4  → fly E
-    ( 333.0,   -527.0),  # 8  WP08   : E boundary → fly NE
-    ( 466.0,  -1236.0),  # 9  WP09   : W end strip 5  → fly W
-    ( 551.0,  -1224.0),  # 10 WP10   : W boundary → fly NE
-    ( 418.0,   -511.0),  # 11 WP11   : E end strip 6  → fly E
-    ( 502.0,   -495.0),  # 12 WP12   : E boundary → fly NE
-    ( 637.0,  -1211.0),  # 13 WP13   : W end strip 7  → fly W (final)
+    (   -7.1,   -585.9),  # 0  ENTRY  : E end strip 1  → fly W
+    (  124.2,  -1292.5),  # 1  WP01   : W end strip 1
+    (  177.5,  -1284.5),  # 2  WP02   : W boundary → fly NE
+    (   45.9,   -575.9),  # 3  WP03   : E end strip 2  → fly E
+    (   98.8,   -565.9),  # 4  WP04   : E boundary → fly NW
+    (  230.8,  -1276.6),  # 5  WP05   : W end strip 3  → fly W
+    (  284.2,  -1268.6),  # 6  WP06   : W boundary → fly NE
+    (  151.8,   -555.9),  # 7  WP07   : E end strip 4  → fly E
+    (  204.8,   -546.0),  # 8  WP08   : E boundary → fly NW
+    (  337.5,  -1260.6),  # 9  WP09   : W end strip 5  → fly W
+    (  390.8,  -1252.6),  # 10 WP10   : W boundary → fly NE
+    (  257.7,   -536.0),  # 11 WP11   : E end strip 6  → fly E
+    (  310.7,   -526.0),  # 12 WP12   : E boundary → fly NW
+    (  444.2,  -1244.6),  # 13 WP13   : W end strip 7  → fly W
+    (  497.5,  -1236.6),  # 14 WP14   : W boundary → fly NE
+    (  363.7,   -516.0),  # 15 WP15   : E end strip 8  → fly E
+    (  416.6,   -506.0),  # 16 WP16   : E boundary → fly NW
+    (  550.9,  -1228.6),  # 17 WP17   : W end strip 9  → fly W
+    (  604.2,  -1220.7),  # 18 WP18   : W boundary → fly NE
+    (  469.6,   -496.0),  # 19 WP19   : E end strip 10  (final)
 ]
 
 # Corner (TURN) indices — marked differently on the map
-_CORNER_IDX = {2, 4, 6, 8, 10, 12}
+_CORNER_IDX = {2, 4, 6, 8, 10, 12, 14, 16, 18}
 
 # Raw detection zone boundary (actual area corners), CW: NW→NE→SE→SW
 RAW_ZONE_VERTS = [

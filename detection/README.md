@@ -119,8 +119,9 @@ conda run -n isaac_sim_test --no-capture-output python3 detection/ros2_node.py
 |---|---|---|---|
 | Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1024×768 |
 | Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | ENU pose (for geo-tagging) |
-| Subscribe | `/drone/agl` | `std_msgs/Float64` | AGL in metres — inference gated on AGL ≥ 50 m |
 | Publish | `/yolo/detections` | `vision_msgs/Detection2DArray` | bounding boxes + class + confidence |
+
+Inference runs on every frame regardless of altitude — no AGL gate (unlike AnyLoc, which only fuses ≥ 50 m).
 
 **Survey mission integration:** Both `px4_commander.py` and `ardupilot_commander.py` subscribe to `/yolo/detections`. On vehicle detection each commander projects the bounding-box centre to world coordinates via yaw-corrected GSD, deduplicates within 5 m, and appends to `detections.csv` (timestamp, category, confidence, lat, lon, agl_m). The survey route is never interrupted.
 

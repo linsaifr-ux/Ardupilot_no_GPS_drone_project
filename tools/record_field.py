@@ -55,6 +55,7 @@ import csv
 import json
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -232,7 +233,11 @@ def _build_stream_pipeline(host, port, bitrate):
 
 
 def _build_server_pipeline(server, rtsp_path, bitrate):
-    """Push H.265 RTSP stream to a MediaMTX relay server via TCP."""
+    """Push H.265 RTSP stream to a MediaMTX relay server via TCP.
+
+    Requires the `gstreamer1.0-rtsp` apt package (provides rtspclientsink) —
+    it's not part of gstreamer1.0-plugins-bad on Ubuntu.
+    """
     return Gst.parse_launch(
         f'appsrc name=stream format=time is-live=true block=true '
         f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
@@ -290,7 +295,6 @@ def main():
     cap = _open_camera()
     if cap is None:
         rclpy.shutdown()
-        import subprocess
         holders = subprocess.run(['fuser', '/dev/video0'],
                                  capture_output=True, text=True).stdout.strip()
         hint = (f' — PIDs holding /dev/video0: {holders} (kill them first)' if holders else

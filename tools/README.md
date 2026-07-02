@@ -59,7 +59,7 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 `--stream-host` and `--stream-server` are mutually exclusive.
 
 **Output:** `video.mkv`, `telemetry.csv`, `meta.json` in the output directory.  
-**Storage:** ~58 MB/min at default bitrate.
+**Storage:** ~60 MB/min at default bitrate.
 
 ---
 
@@ -70,20 +70,20 @@ Generates Mission Planner QGC WPL 110 `.waypoints` files for the AnyLoc database
 ```bash
 python3 tools/gen_survey_waypoints.py                 # full mission → field_data/survey_mission_full.waypoints
 python3 tools/gen_survey_waypoints.py --split 4       # 4 equal N-S sub-missions
-python3 tools/gen_survey_waypoints.py --spacing 35    # 35 m spacing (72 % sidelap, denser)
+python3 tools/gen_survey_waypoints.py --spacing 22    # 22 m spacing (72 % sidelap, denser)
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--spacing M` | 62.75 m | Strip spacing in metres (62.75 m = 50 % sidelap) |
+| `--spacing M` | 39.2 m | Strip spacing in metres (39.2 m = 50 % sidelap of the IMX219's 78.4 m footprint @ 65 m AGL) |
 | `--split N` | 1 | Split into N equal-width N-S sub-missions |
 | `--outdir DIR` | `field_data` | Output directory |
 
-Default output (17 strips, 62.75 m spacing, 50 % sidelap):
+Default output (27 strips, 39.2 m spacing, 50 % sidelap):
 ```
 Survey area  : 2091 m (E-W) × 1025 m (N-S)  = 2.14 km²
-Strip spacing: 62.75 m  →  50 % sidelap
-Total distance: 36.5 km  ~203 min  (~11 batteries @ 20 min each)
+Strip spacing: 39 m  →  50 % sidelap
+Total distance: 57.5 km  ~319 min  (~16 batteries @ 20 min each)
 ```
 
 Load the output `.waypoints` file in Mission Planner or pass it directly to `ardupilot_commander.py --waypoint-file`.
@@ -135,7 +135,7 @@ and confirm `POS_ABS` appears in the active list with `pos_h` variance < 0.5.
 
 ## ground_view_stream.py — Composite ground view stream (YOLO + AnyLoc)
 
-Opens the camera directly, publishes `/drone/camera/image_raw` (replacing `launch_camera.sh`), and streams a 1280×720 composite viewport. Two stream modes: direct UDP to a ground station, or RTSP push to the MediaMTX relay server (no GStreamer needed on the receiver).
+Subscribes to `/drone/camera/image_raw` (`launch_camera.sh` must already be running — this script doesn't open the camera) and streams a 1280×720 composite viewport. Two stream modes: direct UDP to a ground station, or RTSP push to the MediaMTX relay server (no GStreamer needed on the receiver).
 
 ```
 Left  (640×720)

@@ -6,7 +6,7 @@ Strips run E-W (long side ~1 743 m), advancing N-S.
 Usage:
   python3 tools/gen_survey_waypoints.py                 # one full file
   python3 tools/gen_survey_waypoints.py --split 4       # 4 equal-width N-S sub-missions
-  python3 tools/gen_survey_waypoints.py --spacing 62.75 # 62.75 m strip spacing (50 % sidelap)
+  python3 tools/gen_survey_waypoints.py --spacing 39.2  # 39.2 m strip spacing (50 % sidelap)
 """
 
 import argparse, math, sys
@@ -24,6 +24,10 @@ CORNERS = [
 ALTITUDE_M     = 65.0   # AGL – must match operational mission altitude
 SPEED_MS       = 3.0    # m/s, ≤ 3 reduces motion blur
 MARGIN_PCT     = 0.10   # 10 % each side = 20 % total expansion
+
+# Camera ground footprint at ALTITUDE_M — IMX219 CSI, HFOV=62.2°
+FOOTPRINT_W_M  = 2.0 * ALTITUDE_M * math.tan(math.radians(62.2 / 2.0))
+DEFAULT_SPACING_M = FOOTPRINT_W_M * 0.5   # 50 % sidelap
 
 def build_waypoints(slat_min, slat_max, slon_min, slon_max,
                     strip_spacing_m, m_lat, altitude, speed):
@@ -64,7 +68,9 @@ def stats(rows, m_lat, m_lon, speed):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--split',   type=int, default=1,       help='split into N N-S sub-missions')
-    ap.add_argument('--spacing', type=float, default=62.75, help='strip spacing in metres (default 62.75 = 50 %% sidelap)')
+    ap.add_argument('--spacing', type=float, default=DEFAULT_SPACING_M,
+                     help=f'strip spacing in metres (default {DEFAULT_SPACING_M:.1f} = 50%% sidelap '
+                          f'of the {FOOTPRINT_W_M:.1f} m footprint at {ALTITUDE_M:.0f} m AGL)')
     ap.add_argument('--outdir',  default='field_data',   help='output directory')
     args = ap.parse_args()
 
@@ -84,7 +90,7 @@ def main():
     ns_m = (slat_max - slat_min) * m_lat
     ew_m = (slon_max - slon_min) * m_lon
 
-    sidelap = (1 - args.spacing / 125.5) * 100
+    sidelap = (1 - args.spacing / FOOTPRINT_W_M) * 100
     print(f"Survey area  : {ew_m:.0f} m (E-W) × {ns_m:.0f} m (N-S)  = {ew_m*ns_m/1e6:.2f} km²", file=sys.stderr)
     print(f"Expanded box : lat [{slat_min:.6f}, {slat_max:.6f}]", file=sys.stderr)
     print(f"               lon [{slon_min:.6f}, {slon_max:.6f}]", file=sys.stderr)

@@ -12,9 +12,15 @@ Capture defaults to 1640x1232 — the sensor's full-FOV 2x2-binned mode
 (matches the 62.2°x48.8° HFOV/VFOV spec used for GSD/AnyLoc math elsewhere;
 narrower 16:9 modes like 1280x720 crop the vertical FOV).
 
+Publishes with sensor-data QoS (BEST_EFFORT) — correct semantics for a live
+feed (no point retransmitting a stale frame), and all subscribers must match
+it or delivery silently fails. This alone is NOT what fixes throughput,
+though — see read_and_publish() for the real bottleneck.
+
 Run: python3 control/csi_camera_node.py [--sensor-id 0] [--width 1640] [--height 1232] [--fps 30]
 """
 import argparse
+import array
 import os
 import sys
 
@@ -25,6 +31,7 @@ if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
 import cv2
 import rclpy
 import rclpy.node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 
@@ -42,7 +49,7 @@ def build_pipeline(sensor_id: int, width: int, height: int, fps: int) -> str:
 class CsiCameraNode(rclpy.node.Node):
     def __init__(self, sensor_id: int, width: int, height: int, fps: int):
         super().__init__('csi_camera_node')
-        self._pub = self.create_publisher(Image, '/drone/camera/image_raw', 1)
+        self._pub = self.create_publisher(Image, '/drone/camera/image_raw', qos_profile_sensor_data)
         self._width, self._height = width, height
 
         pipeline = build_pipeline(sensor_id, width, height, fps)
@@ -71,7 +78,11 @@ class CsiCameraNode(rclpy.node.Node):
         msg.encoding = 'rgb8'
         msg.is_bigendian = 0
         msg.step = self._width * 3
-        msg.data = rgb.tobytes()
+        # rosidl_generator_py's uint8[] setter validates every element in a
+        # Python loop when given plain bytes — ~870ms for a 6 MB frame,
+        # measured. array.array('B', ...) matches the field's expected type
+        # exactly, so the setter skips validation entirely: ~4ms.
+        msg.data = array.array('B', rgb.tobytes())
         self._pub.publish(msg)
         return True
 

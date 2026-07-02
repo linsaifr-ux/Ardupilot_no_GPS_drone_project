@@ -36,7 +36,7 @@ DINOv2+VLAD localisation  YOLOv8 detection
  ── ArduPilot path ────────────────────────────────────────────────────
  MAVProxy (TCP 5760) → UDP 14550 → MAVROS2
  /mavros/vision_pose/pose_cov → EKF3 (ExternalNav)
- ardupilot_commander.py: STABILIZE→arm→GUIDED→NAV_TAKEOFF→7-strip E-W survey 12m/s→LAND
+ ardupilot_commander.py: STABILIZE→arm→GUIDED→NAV_TAKEOFF→10-strip E-W survey 12m/s→LAND
 
  ── PX4 path (active) ─────────────────────────────────────────────────
  PX4 SITL (TCP 4560 HIL) → UDP 14540/14580 → MAVROS2
@@ -61,7 +61,7 @@ no_GPS_drone_project/
 │   ├── px4_sim_bridge.py         # PX4 HIL bridge (TCP 4560, pymavlink)
 │   ├── sitl_bridge.py            # ArduPilot SIM_JSON bridge (UDP 9002)
 │   ├── px4_commander.py          # PX4 survey: OFFBOARD→65m→7-strip E-W 12m/s lawnmower (91.7m spacing, 33m overlap, ~10.2 min); YOLO logs via yaw-corrected pixel projection→fly home→AUTO.LAND
-│   ├── ardupilot_commander.py    # ArduPilot survey: GUIDED→NAV_TAKEOFF→65m→7-strip E-W 12m/s lawnmower→LAND (ported from px4_commander.py; ENU setpoint fix)
+│   ├── ardupilot_commander.py    # ArduPilot survey: GUIDED→NAV_TAKEOFF→65m→10-strip E-W 12m/s lawnmower (53.9m spacing, IMX219 camera)→LAND (ported from px4_commander.py; ENU setpoint fix)
 │   ├── flight_commander.py       # ArduPilot mission (reference archive; superseded by ardupilot_commander.py)
 │   ├── px4_no_gps.params         # PX4: EKF2_EV_CTRL=15, GPS off, no RC
 │   ├── no_gps.parm               # ArduPilot: EK3 ExternalNav, GPS off, WPNAV_SPEED=1200 cm/s
@@ -375,7 +375,7 @@ python3 tools/live_trace.py              # auto-attach to latest trace
 DISPLAY=:2 python3 tools/live_trace.py  # headless display
 ```
 
-Overlays: planned 7-strip E-W survey route, raw zone boundary (solid white), buffered zone
+Overlays: planned 10-strip E-W survey route, raw zone boundary (solid white), buffered zone
 boundary 30 m inward (orange dashed), sim car positions (yellow squares), detection markers
 from `detections.csv` (refreshed live, filtered to current flight only), 65 m AGL target line.
 Status bar shows nearest WP name + distance and running detection count.

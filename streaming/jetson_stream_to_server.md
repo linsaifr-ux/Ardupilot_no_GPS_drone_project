@@ -3,6 +3,17 @@
 **Replace ZeroTier VPN with a relay server on Frank's PC.**  
 Jetson pushes RTSP to the server. Ground station pulls from the server URL — no VPN, no direct P2P.
 
+> **Superseded / not implemented:** `streaming/jetson_streamer.py`, `launch_stream.sh`, and
+> `mediamtx-drone.service` described below were never created — this is a standalone proposal,
+> not existing code. The same MediaMTX-relay push already works today via
+> `tools/gstreamer_stream.py` (`bash control/launch_gstreamer.sh --host <ground_ip>`, camera +
+> AnyLoc tile only) or `tools/ground_view_stream.py --stream-server <server_ip>` (adds YOLO
+> boxes + detection crops). Both already target the CSI/IMX219 camera correctly — the
+> `cv2.VideoCapture(device)` example in this doc would not work on the current camera (it
+> exposes raw Bayer over CSI, not USB/YUYV; needs `nvarguscamerasrc`, see `control/csi_camera_node.py`).
+> Kept for reference (server-side MediaMTX setup below is still accurate) but don't build the
+> Jetson-side script as written.
+
 > **For field recording with telemetry overlay, use `record_field.py` directly:**  
 > `python3 tools/record_field.py --stream-server 118.232.160.227`  
 > This document covers the standalone `streaming/jetson_streamer.py` (no ROS2/telemetry).
