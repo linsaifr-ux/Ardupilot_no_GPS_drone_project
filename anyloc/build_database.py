@@ -272,6 +272,10 @@ def main():
     ap.add_argument('--db-dir', default='',
                     help='Output database directory (default: anyloc/database for vitb14, '
                          'anyloc/database_vits14 for vits14)')
+    ap.add_argument('--n-min', type=float, default=None, help='Rectangular grid bound: min north_m from CENTER_LAT/LON')
+    ap.add_argument('--n-max', type=float, default=None, help='Rectangular grid bound: max north_m from CENTER_LAT/LON')
+    ap.add_argument('--e-min', type=float, default=None, help='Rectangular grid bound: min east_m from CENTER_LAT/LON')
+    ap.add_argument('--e-max', type=float, default=None, help='Rectangular grid bound: max east_m from CENTER_LAT/LON')
     args = ap.parse_args()
 
     model_name = f'dinov2_{args.model}'
@@ -301,12 +305,20 @@ def main():
           f"{bounds['nw_lon']:.5f}°E – {bounds['se_lon']:.5f}°E")
 
     # Grid positions (same XY grid reused for every AGL level)
-    step  = args.grid_step
-    limit = RADIUS_M * 0.75
-    coords = [(x, y)
-              for x in np.arange(-limit, limit + 1, step)
-              for y in np.arange(-limit, limit + 1, step)
-              if math.hypot(x, y) <= limit]
+    step = args.grid_step
+    use_rect = None not in (args.n_min, args.n_max, args.e_min, args.e_max)
+    if use_rect:
+        coords = [(x, y)
+                  for x in np.arange(args.e_min, args.e_max + 1e-6, step)
+                  for y in np.arange(args.n_min, args.n_max + 1e-6, step)]
+        print(f"[DB] Rectangular grid: N=[{args.n_min:.0f},{args.n_max:.0f}]  "
+              f"E=[{args.e_min:.0f},{args.e_max:.0f}]")
+    else:
+        limit = RADIUS_M * 0.75
+        coords = [(x, y)
+                  for x in np.arange(-limit, limit + 1, step)
+                  for y in np.arange(-limit, limit + 1, step)
+                  if math.hypot(x, y) <= limit]
     print(f"[DB] Grid step={step} m  →  {len(coords)} positions × {len(agl_levels)} AGL = "
           f"{len(coords) * len(agl_levels)} entries max")
 

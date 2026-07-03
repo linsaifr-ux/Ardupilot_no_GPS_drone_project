@@ -35,10 +35,8 @@ simulator/flight_traces/
 # AnyLoc generated databases (rebuild with: python anyloc/build_database.py [--model vits14])
 anyloc/database
 anyloc/database/
-anyloc/database_vits14
-anyloc/database_vits14/
-anyloc/database_real
-anyloc/database_real/
+anyloc/database_*
+anyloc/database_*/
 
 # AnyLoc test / debug output
 anyloc/test_output/
