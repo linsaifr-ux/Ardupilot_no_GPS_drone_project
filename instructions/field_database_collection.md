@@ -226,7 +226,8 @@ print(f'entries={vlads.shape[0]}  vlad_dim={vlads.shape[1]}  model={meta[\"model
 ## Switching back to satellite database
 
 ```bash
-ln -sfn database_vits14 anyloc/database
+ln -sfn database_zone_vits14 anyloc/database   # active — zone-sized (882 entries)
+# ln -sfn database_vits14 anyloc/database      # old full-radius fallback (2821 entries)
 ```
 
 ---

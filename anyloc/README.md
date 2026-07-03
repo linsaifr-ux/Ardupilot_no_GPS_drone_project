@@ -3,7 +3,7 @@
 Visual place recognition for GPS-denied drone navigation.  
 Uses **DINOv2** patch features + **VLAD** aggregation + **FAISS** nearest-neighbour search against a geo-tagged satellite image database.
 
-Active backbone: **ViT-S/14** (`dinov2_vits14`) — database lives in `anyloc/database_vits14/` with a symlink `anyloc/database → anyloc/database_vits14`. The localizer reads `model_name` from the database metadata automatically.
+Active backbone: **ViT-S/14** (`dinov2_vits14`) — database lives in `anyloc/database_zone_vits14/` (right-sized to the mission zone, 882 entries) with a symlink `anyloc/database → anyloc/database_zone_vits14`. The localizer reads `model_name` from the database metadata automatically. The old full-radius `anyloc/database_vits14/` (2821 entries, covers a 1502 m circle around home) is kept on disk as a fallback.
 
 **Platform:** Jetson Orin NX, JetPack 36.x, ROS2 Humble, Python 3.10  
 **Python env:** `/home/jetson/venv/anyloc` (torch + faiss + pillow)
@@ -47,14 +47,21 @@ Exception: `--test` mode publishes directly to MAVROS so the commander is not ne
 ### Option A — Satellite tiles (default, no flight needed)
 
 ```bash
+# Zone-sized (recommended — matches the active database):
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --model vits14 \
+    --db-dir anyloc/database_zone_vits14 \
+    --n-min -262 --n-max 762 --e-min -1501 --e-max 589
+# Full-radius circle around CENTER_LAT/LON (larger, mostly wasted — old default):
 /home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --model vits14
 ```
 
-Database lands in `anyloc/database_vits14/`. Create the symlink once:
+The zone-sized build lands in `anyloc/database_zone_vits14/`; the plain command lands in `anyloc/database_vits14/`. Create the symlink once:
 
 ```bash
-ln -s database_vits14 anyloc/database
+ln -s database_zone_vits14 anyloc/database
 ```
+
+The `--n-min/--n-max/--e-min/--e-max` bounds above are specific to the current mission zone + 20% margin — recompute them if the zone changes (see `tools/gen_contest_survey.py`'s bounding-box math).
 
 ### Option B — Real drone footage (better match at inference time)
 
@@ -80,8 +87,9 @@ See `instructions/field_database_collection.md` for the full guide including fli
 ### Switching databases
 
 ```bash
-ln -sfn database_vits14 anyloc/database   # satellite
-ln -sfn database_real   anyloc/database   # real-field
+ln -sfn database_zone_vits14 anyloc/database   # satellite, zone-sized (active)
+ln -sfn database_vits14      anyloc/database   # satellite, old full-radius fallback
+ln -sfn database_real        anyloc/database   # real-field
 ```
 
 ### Verify
@@ -196,6 +204,6 @@ The commander also switches EKF source from GPS (SRC1) to ExternalNav (SRC2) aut
 | `[PostView] Waiting for first frame` / black window | Camera not running — start `launch_camera.sh` first |
 | `ImportError: No module named 'faiss'` | Use `/home/jetson/venv/anyloc/bin/python3`, not system python |
 | `latest_estimate.json` not updating | Normal below 50 m AGL in normal mode; use `--test` to bypass |
-| Database not found | Check symlink: `ls -la anyloc/database` → should point to `database_vits14` |
+| Database not found | Check symlink: `ls -la anyloc/database` → should point to `database_zone_vits14` |
 | Wrong model loaded | `model_name` is in `database_meta.pt`; localizer reads it automatically |
 | Postview window black on Jetson screen | Use `--stream-host` to stream to ground PC, or `ssh -X` for X11 forwarding |

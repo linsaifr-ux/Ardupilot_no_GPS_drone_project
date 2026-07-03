@@ -79,7 +79,8 @@ no_GPS_drone_project/
 │   ├── localizer.py              # AnyLocLocalizer (DINOv2 ViT-S/14 + VLAD + FAISS)
 │   ├── ros2_node.py              # ROS2: pub /mavros/vision_pose/pose_cov
 │   ├── test_vit_comparison.py    # speed + accuracy benchmark: ViT-B vs ViT-S
-│   ├── database_vits14/          # active database (ViT-S/14, ~265 MB VLADs)
+│   ├── database_zone_vits14/     # active database (ViT-S/14, zone-sized, 882 entries, ~87 MB VLADs)
+│   ├── database_vits14/          # old full-radius database (ViT-S/14, 2821 entries, ~265 MB VLADs) — inactive, kept as fallback
 │   └── run_ros2_localizer.sh     # launch script
 ├── detection/                    # object detection
 │   ├── detector.py               # YOLODetector (auto class-map COCO/VisDrone)
@@ -186,7 +187,7 @@ python3 tools/live_trace.py
 ```
 Overlays the survey route, zone boundary, sim car positions, and YOLO detections in real time.
 
-> **AnyLoc startup:** ~2,820-entry ViT-S/14 database (`database_vits14/`, 265 MB). Load time is much shorter than the old 36,673-entry ViT-B database. The localizer reads `model_name` from the database and loads the correct DINOv2 backbone automatically.
+> **AnyLoc startup:** 882-entry ViT-S/14 database (`database_zone_vits14/`, 87 MB), right-sized to the mission zone rather than the old full-radius circle (`database_vits14/`, 2821 entries, 265 MB). Load time is much shorter than the old 36,673-entry ViT-B database. The localizer reads `model_name` from the database and loads the correct DINOv2 backbone automatically.
 
 ### Run — distributed (PC = sim only, Jetson = everything that runs on real drone)
 
