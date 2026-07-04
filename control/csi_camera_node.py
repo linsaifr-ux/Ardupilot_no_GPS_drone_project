@@ -40,7 +40,11 @@ def build_pipeline(sensor_id: int, width: int, height: int, fps: int) -> str:
         f'nvarguscamerasrc sensor-id={sensor_id} ! '
         f'video/x-raw(memory:NVMM),width={width},height={height},'
         f'framerate={fps}/1,format=NV12 ! '
-        f'nvvidconv ! video/x-raw,format=BGRx ! '
+        # flip-method=2 (rotate 180) corrects the camera's physical mount
+        # orientation in the ISP, before any downstream consumer (YOLO,
+        # AnyLoc, ground-view stream, and the vision_pose feed into mavros)
+        # ever sees a frame.
+        f'nvvidconv flip-method=2 ! video/x-raw,format=BGRx ! '
         f'videoconvert ! video/x-raw,format=BGR ! '
         f'appsink drop=true max-buffers=1 sync=false'
     )

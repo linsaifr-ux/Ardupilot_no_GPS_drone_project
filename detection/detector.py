@@ -7,6 +7,9 @@ model's own class names and mapping them to four canonical labels:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+import torch
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
@@ -41,10 +44,27 @@ class YOLODetector:
         annotated  = det.draw(pil_img, detections)
     """
 
-    def __init__(self, model_name: str = 'yolov8n.pt', conf: float = 0.35):
-        print(f"[YOLO] Loading {model_name} …")
-        self.model = YOLO(model_name)
+    def __init__(self, model_name: str = 'yolov8n.pt', conf: float = 0.35,
+                 imgsz: int = 1280, use_tensorrt: bool = True):
         self.conf  = conf
+        self.imgsz = imgsz
+
+        # Eager PyTorch fp32 at imgsz=1280 is GPU-bound on Jetson (~8 fps for
+        # yolov8s). A fp16 TensorRT engine fuses the conv/NMS graph and uses
+        # the tensor cores properly, ~3x faster for the same weights. Export
+        # once per (weights, imgsz) and cache the .engine next to the .pt.
+        load_path = model_name
+        if use_tensorrt and model_name.endswith('.pt') and torch.cuda.is_available():
+            engine_path = Path(model_name).with_suffix('.engine')
+            if not engine_path.exists():
+                print(f"[YOLO] No TensorRT engine at {engine_path} — exporting "
+                      f"from {model_name} (imgsz={imgsz}, fp16). This takes "
+                      f"a few minutes on first run …")
+                YOLO(model_name).export(format='engine', imgsz=imgsz, half=True, device=0)
+            load_path = str(engine_path)
+
+        print(f"[YOLO] Loading {load_path} …")
+        self.model = YOLO(load_path)
 
         # Build {class_id: canonical_label} from the model's own class names
         self._filter: dict[int, str] = {
@@ -55,14 +75,16 @@ class YOLODetector:
         print(f"[YOLO] Model ready  classes={list(self._filter.values())}  "
               f"conf_threshold={conf}")
 
-    def detect(self, pil_img: Image.Image, imgsz: int = 1280) -> list[dict]:
+    def detect(self, pil_img: Image.Image, imgsz: int | None = None) -> list[dict]:
         """
         Run inference on a PIL image.
 
         Args:
             pil_img  input image (any resolution; YOLO letterboxes internally)
-            imgsz    YOLO inference size (default 1280 for IMX219 1640×1232 input;
-                     use 640 for faster inference at lower accuracy)
+            imgsz    YOLO inference size; defaults to the size this detector
+                     was constructed/exported with. If a TensorRT engine is
+                     loaded, it is only valid at its export imgsz — pass a
+                     different value only when using a .pt model.
 
         Returns list of dicts:
             label  str    — 'car', 'motorcycle', 'bus', or 'truck'
@@ -70,7 +92,7 @@ class YOLODetector:
             x1 y1 x2 y2  float — bounding box pixels (xyxy, top-left origin)
         """
         results = self.model(pil_img, conf=self.conf, verbose=False,
-                             imgsz=imgsz)[0]
+                             imgsz=imgsz or self.imgsz)[0]
         out = []
         for box in results.boxes:
             cls_id = int(box.cls[0])

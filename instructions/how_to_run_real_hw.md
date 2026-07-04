@@ -136,6 +136,19 @@ ln -sfn database_real anyloc/database
 ```
 See `instructions/field_database_collection.md` for the complete guide (flight plan, FOV/overlap analysis, terminal setup).
 
+### 6. YOLO TensorRT engine
+
+`YOLODetector` (`detection/detector.py`) runs the model as a TensorRT FP16 engine, not the raw `.pt` file. The engine is auto-exported next to the `.pt` weights the first time `detection/ros2_node.py` loads them — takes ~15 min on Orin NX and blocks that pane's startup. Pre-build it once so contest-day launches don't stall:
+
+```bash
+/home/jetson/venv/yolo/bin/python3 -c "from detection.detector import YOLODetector; YOLODetector('Car_visdrone1280.pt', conf=0.50)"
+ls -lh Car_visdrone1280.engine   # confirm it exists before flight day
+```
+
+Re-run this (or just delete `Car_visdrone1280.engine`) any time the `.pt` weights are retrained/replaced — a stale engine built from old weights will silently keep being used since the cache check is by filename only.
+
+**`sudo jetson_clocks` matters more than the engine.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force max clocks. Without `jetson_clocks`, DVFS throttling gives back most of the TensorRT speedup (measured 47 ms/frame vs 18.6 ms/frame with clocks locked). Run `sudo jetson_clocks` once per boot, before flying.
+
 ---
 
 ## Before Every Flight
@@ -485,7 +498,9 @@ T-30 min
 
 T-15 min
   [ ] Power on Jetson, connect USB-to-TTL adapter and camera
+  [ ] sudo jetson_clocks (locks GPU/EMC to max — without this YOLO loses most of its TensorRT speedup)
   [ ] Verify /dev/ttyUSB0 present and `v4l2-ctl --list-devices` shows imx219
+  [ ] ls Car_visdrone1280.engine (pre-built — if missing, first YOLO launch will stall ~15 min exporting it)
   [ ] pkill -f csi_camera_node.py (clear stale camera processes)
   [ ] Start: bash control/launch_real_hw.sh --manual-takeoff (or tmux layout)
   [ ] MAVROS pane: "detected remote address 1.1" ✓

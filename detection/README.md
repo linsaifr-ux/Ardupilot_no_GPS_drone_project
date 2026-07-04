@@ -2,6 +2,8 @@
 
 Real-time vehicle detection from the drone's nadir camera. Uses YOLO with VisDrone-trained models and automatically maps model-specific class names to four canonical vehicle labels.
 
+**Inference backend:** `YOLODetector` runs on a TensorRT FP16 engine, not raw PyTorch. On first load for a given `.pt` file it auto-exports a sibling `.engine` (one-time cost, ~15 min on Jetson Orin NX) and loads that on every run after. Eager PyTorch fp32 at `imgsz=1280` was GPU-bound at ~8 fps on Orin NX; the FP16 TensorRT engine gets ~17 fps for the same weights — but only if `sudo jetson_clocks` has been run, otherwise DVFS throttling gives back most of the gain. See [Performance](#performance) below.
+
 ---
 
 ## Files
@@ -40,7 +42,25 @@ Weights are saved to `detection/runs/<name>/weights/best.pt`.
 conda run -n Drone_NV_Isaac_sim pip install ultralytics
 ```
 
-ROS2 Jazzy + `ros-jazzy-vision-msgs` for the ROS2 node.
+ROS2 Jazzy + `ros-jazzy-vision-msgs` for the ROS2 node. TensorRT + ONNX come from JetPack (not pip) on the Jetson — confirm with `python3 -c "import tensorrt, onnx"`.
+
+---
+
+## Performance
+
+`YOLODetector.__init__` (in `detector.py`) exports `<model>.engine` next to any `.pt` weights the first time they're loaded, then loads the engine on every subsequent run (skips re-export if the `.engine` file already exists). Delete the `.engine` file to force a re-export, e.g. after retraining the weights.
+
+**Jetson clocks matter more than the engine itself.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force the GPU/EMC to run at max. Without `sudo jetson_clocks`, DVFS keeps clocks low between bursts and inference stays close to fp32 speeds even with the FP16 engine loaded (measured 47 ms/frame). After `sudo jetson_clocks`, inference dropped to ~18.6 ms/frame. Run `sudo jetson_clocks` once per boot (or wire it into the launch script) before flying.
+
+Measured on `Car_visdrone1280.pt` at `imgsz=1280` on Jetson Orin NX:
+
+| Backend | ms/frame | fps |
+|---|---|---|
+| PyTorch fp32 (old default) | ~121 | ~8.3 |
+| TensorRT fp16, clocks not locked | ~83 | ~12 |
+| TensorRT fp16, `jetson_clocks` run | ~58 | ~17.3 |
+
+Preprocessing (CPU-side letterbox resize) is ~18 ms/frame — now roughly equal to inference time. If more headroom is needed later, that's the next thing to optimize, not the model itself.
 
 ---
 
@@ -117,8 +137,8 @@ conda run -n isaac_sim_test --no-capture-output python3 detection/ros2_node.py
 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
-| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1024×768 |
-| Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | ENU pose (for geo-tagging) |
+| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1640×1232 (IMX219 native) |
+| Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | WGS84, `frame_id="wgs84"` — `position.x/y` = lat/lon (for geo-tagging) |
 | Publish | `/yolo/detections` | `vision_msgs/Detection2DArray` | bounding boxes + class + confidence |
 
 Inference runs on every frame regardless of altitude — no AGL gate (unlike AnyLoc, which only fuses ≥ 50 m).

@@ -1,5 +1,21 @@
 # Project History
 
+## 2026-07-04 — YOLO TensorRT engine: 6.6 fps → ~17 fps
+
+**Symptom:** `detection/ros2_node.py` running `Car_visdrone1280.pt` (YOLOv8s, imgsz=1280) at ~6.6 fps in production.
+
+**Root cause:** `YOLODetector` (`detector.py`) ran the model as raw eager PyTorch fp32 via `ultralytics.YOLO(model_name)` — no TensorRT, no half precision. Isolated benchmark on the Jetson confirmed ~121 ms/frame (~8.3 fps) ceiling for this backend alone, before ROS overhead (decode, box drawing, publish). fp16 alone (`half=True`, still eager PyTorch) barely helped (~106 ms/frame) — eager execution doesn't exploit Orin's tensor cores well without a compiled graph.
+
+**Fix:** `YOLODetector.__init__` (`detector.py`) now auto-exports any `.pt` model to a sibling `.engine` (TensorRT, FP16, same imgsz) on first load, and loads the engine instead when CUDA is available. Cache check is by filename (`<model>.engine` next to `<model>.pt`) — skips re-export if the engine already exists. `detect()` now defaults its `imgsz` to whatever the detector was constructed with, instead of a hardcoded `1280`.
+
+**Second finding — `jetson_clocks`:** the TensorRT engine alone only got to ~12 fps (83 ms/frame) — far short of expected. Cause: `nvpmodel MAXN_SUPER` only raises the power-mode clock *ceiling*, it doesn't force the GPU/EMC to run at max; DVFS kept clocks low between inference bursts. After `sudo jetson_clocks`, inference time dropped from 47 ms to 18.6 ms per frame, for ~17.3 fps end-to-end. `jetson_clocks` must be run once per boot — added to the contest-day T-15 checklist in `instructions/how_to_run_real_hw.md`.
+
+**Remaining bottleneck:** CPU-side preprocessing (letterbox resize) is now ~18 ms/frame, roughly equal to inference. Not addressed this session — flagged in `detection/README.md` as the next thing to attack if more fps is needed.
+
+**Files touched:** `detection/detector.py`, `detection/README.md`, `instructions/how_to_run_real_hw.md`.
+
+---
+
 ## 2026-06-19 — ArduPilot AP-6 full stack passed (Isaac Sim + AnyLoc + YOLO, 14 WPs, landed ✓)
 
 **Result:** Full pipeline — Isaac Sim (cesium_scene.py), AnyLoc localizer (DINOv2 ViT-B/14 + VLAD, Phase 2 active above 50m AGL), YOLO detection (4 fps, 96 detections logged). All 14 WPs at 65.0 m AGL. Returned home, disarmed cleanly.

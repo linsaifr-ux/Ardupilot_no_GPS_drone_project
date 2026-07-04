@@ -233,8 +233,36 @@ class GroundViewNode(rclpy.node.Node):
             if x2 <= x1 or y2 <= y1:
                 continue
             bboxes.append(dict(x1=x1, y1=y1, x2=x2, y2=y2, label=label, conf=conf))
+
+            # Crop window: square, 20% larger than the bbox's longer side so
+            # the thumbnail shows surrounding context instead of a tight cut.
+            side = min(max(bw, bh) * 1.2, fw, fh)
+            half = side / 2
+            wx1, wy1, wx2, wy2 = cx - half, cy - half, cx + half, cy + half
+            if wx1 < 0:
+                wx2 -= wx1; wx1 = 0
+            if wy1 < 0:
+                wy2 -= wy1; wy1 = 0
+            if wx2 > fw:
+                wx1 -= (wx2 - fw); wx2 = fw
+            if wy2 > fh:
+                wy1 -= (wy2 - fh); wy2 = fh
+            wx1, wy1 = max(0, int(wx1)), max(0, int(wy1))
+            wx2, wy2 = min(fw, int(wx2)), min(fh, int(wy2))
+            if wx2 <= wx1 or wy2 <= wy1:
+                continue
+
+            crop_img = frame[wy1:wy2, wx1:wx2].copy()
+            # Mark the actual detection box within the crop, same style as
+            # the live YOLO panel.
+            bx1, by1 = x1 - wx1, y1 - wy1
+            bx2, by2 = x2 - wx1, y2 - wy1
+            cv2.rectangle(crop_img, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+            _put(crop_img, [f"{label} {conf:.0%}"],
+                 bx1, max(by1 - 4, 18), scale=0.7, thickness=2, color=(0, 255, 0))
+
             new_crops.append(dict(
-                img=frame[y1:y2, x1:x2].copy(),
+                img=crop_img,
                 label=label, conf=conf,
                 lat=lat, lon=lon,
                 ts=time.time(),

@@ -83,7 +83,7 @@ no_GPS_drone_project/
 │   ├── database_vits14/          # old full-radius database (ViT-S/14, 2821 entries, ~265 MB VLADs) — inactive, kept as fallback
 │   └── run_ros2_localizer.sh     # launch script
 ├── detection/                    # object detection
-│   ├── detector.py               # YOLODetector (auto class-map COCO/VisDrone)
+│   ├── detector.py               # YOLODetector (auto class-map COCO/VisDrone; TensorRT FP16 engine, auto-exported from .pt)
 │   ├── ros2_node.py              # ROS2: sub /drone/camera → pub /yolo/detections
 │   ├── finetune.py               # train car_s_1280 (YOLOv8s) / car_11s_1280 (YOLO11s)
 │   ├── test_map_car.py           # mAP benchmark: YOLOv8s vs YOLO11s car-only

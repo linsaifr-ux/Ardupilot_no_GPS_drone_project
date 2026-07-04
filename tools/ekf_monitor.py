@@ -5,6 +5,7 @@ _ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
     sys.path.insert(0, _ROS2_SITE)
 import rclpy, rclpy.node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from mavros_msgs.msg import Mavlink
 
 EKF_FLAGS = {
@@ -23,7 +24,9 @@ EKF_FLAGS = {
 class EKFMonitor(rclpy.node.Node):
     def __init__(self):
         super().__init__("ekf_monitor")
-        self.create_subscription(Mavlink, "/uas1/mavlink_source", self._cb, 10)
+        qos = QoSProfile(depth=50, reliability=ReliabilityPolicy.BEST_EFFORT,
+                          history=HistoryPolicy.KEEP_LAST)
+        self.create_subscription(Mavlink, "/uas1/mavlink_source", self._cb, qos)
         self.get_logger().info("Listening for EKF_STATUS_REPORT (msgid 193) ...")
 
     def _cb(self, msg):
