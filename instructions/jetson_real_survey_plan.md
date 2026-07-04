@@ -1,7 +1,7 @@
 # Jetson Real-Hardware Survey — Mission Planner Integration Plan
 
 **Date:** 2026-06-23  
-**Target:** Jetson Orin NX → real ArduPilot FC via `/dev/ttyTHS1:921600`  
+**Target:** Jetson Orin NX → real ArduPilot FC via USB-to-TTL adapter (`/dev/ttyUSB0:921600`)  
 **Goal:** GPS-denied lawnmower survey, waypoints loaded from Mission Planner export  
 **Contest:** 第二屆國防應用無人機挑戰賽 — 無GNSS自主偵蒐
 
@@ -20,7 +20,7 @@
 
 | Item | SITL | Real Hardware |
 |---|---|---|
-| MAVROS FCU URL | `udp://:14550@` | `serial:///dev/ttyTHS1:921600` |
+| MAVROS FCU URL | `udp://:14550@` | `serial:///dev/ttyUSB0:921600` (USB-to-TTL adapter) |
 | Plugin denylist | `['param']` (workaround) | Remove — enable param plugin |
 | Survey waypoints | Hardcoded `SURVEY_WPS` list | Loaded from `survey.waypoints` file |
 | Phase 1 VPE source | `/drone/state` kinematic truth | Static "home anchor" (0, 0, MSL) |
@@ -39,7 +39,7 @@ Mission Planner (PC)
   └─ survey.waypoints ──scp──▶  Jetson Orin NX
                                   ├─ launch_real_hw.sh
                                   │    ├─ launch_mavros_real.sh
-                                  │    │    └─ MAVROS /dev/ttyTHS1:921600
+                                  │    │    └─ MAVROS /dev/ttyUSB0:921600
                                   │    ├─ anyloc/run_ros2_localizer.sh
                                   │    └─ ardupilot_commander.py
                                   │         ├─ load_mission_planner_waypoints()
@@ -47,7 +47,7 @@ Mission Planner (PC)
                                   │         ├─ go_to_ned() velocity setpoints
                                   │         └─ _cb_detections() → detections.csv
                                   │
-                              /dev/ttyTHS1:921600
+                              /dev/ttyUSB0:921600
                                   │
                              ArduPilot FC
                              (GPS_TYPE=0, EK3_SRC=ExternalNav)
@@ -378,7 +378,7 @@ def main():
 #!/bin/bash
 # Launch MAVROS2 connected to real ArduPilot FC via UART on Jetson Orin NX.
 #
-# Hardware: /dev/ttyTHS1 at 921600 baud (Jetson 40-pin header)
+# Hardware: /dev/ttyUSB0 at 921600 baud (Jetson 40-pin header)
 # Run order:
 #   Terminal 1: MAVROS    (this script)
 #   Terminal 2: AnyLoc    (./anyloc/run_ros2_localizer.sh)
@@ -388,20 +388,20 @@ set -e
 source /opt/ros/jazzy/setup.bash
 
 # Verify UART is accessible
-if [ ! -c /dev/ttyTHS1 ]; then
-    echo "[mavros_real] ERROR: /dev/ttyTHS1 not found"
+if [ ! -c /dev/ttyUSB0 ]; then
+    echo "[mavros_real] ERROR: /dev/ttyUSB0 not found"
     exit 1
 fi
-sudo chmod 666 /dev/ttyTHS1
+sudo chmod 666 /dev/ttyUSB0
 
 # Kill stale MAVROS instances
 pkill -f mavros_node 2>/dev/null; sleep 1
 
-echo "[mavros_real] Connecting to ArduPilot FC at /dev/ttyTHS1:921600 ..."
+echo "[mavros_real] Connecting to ArduPilot FC at /dev/ttyUSB0:921600 ..."
 
 ros2 run mavros mavros_node \
     --ros-args \
-    -p fcu_url:="serial:///dev/ttyTHS1:921600" \
+    -p fcu_url:="serial:///dev/ttyUSB0:921600" \
     -p tgt_system:=1 \
     -p tgt_component:=1 \
     -p log_output:="screen" \
@@ -518,7 +518,7 @@ T-30 min
         print(f'{len(wps)} waypoints loaded')"
 
 T-15 min
-  [ ] Power on Jetson; verify /dev/ttyTHS1 exists
+  [ ] Power on Jetson; verify /dev/ttyUSB0 exists
   [ ] Verify camera: ros2 topic hz /drone/camera/image_raw  (expect ~30 Hz)
   [ ] Check AnyLoc database matches contest site
 
@@ -545,7 +545,7 @@ Emergency
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| MAVROS not connecting | Wrong baud or missing permissions | `ls /dev/ttyTHS1`; `sudo chmod 666 /dev/ttyTHS1` |
+| MAVROS not connecting | Wrong baud or missing permissions | `ls /dev/ttyUSB0`; `sudo chmod 666 /dev/ttyUSB0` |
 | Arm rejected: "Safety Switch" | Safety button not pressed | Press physical safety button; verify LED green |
 | Arm rejected: "Need Position" | VPE not publishing or EKF not converged | Check `/mavros/vision_pose/pose_cov` is publishing; wait 30s |
 | EKF failsafe during survey | AnyLoc covariance too large | Set `EK3_POS_ERR_LIM=100`, `EK3_GLITCH_RAD=25` |

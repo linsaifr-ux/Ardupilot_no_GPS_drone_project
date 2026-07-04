@@ -30,3 +30,12 @@ logDestinations: [stdout]
 paths:
   drone:
     source: publisher
+
+    # Record every push session to a separate MP4 file.
+    # Each time the Jetson connects a new file is created with a timestamp name.
+    # Files land in: streaming/recordings/drone/YYYY-MM-DD_HH-MM-SS.mp4
+    record: yes
+    recordPath: ./recordings/%path/%Y-%m-%d_%H-%M-%S
+    recordFormat: fmp4          # fragmented MP4 — playable immediately, seekable
+    recordSegmentDuration: 1h   # split into 1-hour segments if session is long
+    recordDeleteAfter: 0s       # never auto-delete (0s = keep forever)

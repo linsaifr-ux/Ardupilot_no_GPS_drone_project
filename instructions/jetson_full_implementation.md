@@ -39,6 +39,13 @@ Ardupilot_no_GPS_drone_project/
 │   ├── ros2_node.py             ← YOLO ROS2 node (publishes /yolo/detections)
 │   ├── detector.py              ← YOLOv8 inference wrapper
 │   └── run_ros2_detector.sh
+├── streaming/
+│   ├── mediamtx                 ← MediaMTX relay server binary (not committed — 52 MB)
+│   ├── mediamtx.yml             ← Server config (RTSP :8554, SRT :8890, WebRTC :8889, HLS :8888)
+│   ├── start_server.sh          ← Start relay server on Frank's PC
+│   ├── mediamtx-drone.service   ← systemd unit for auto-start
+│   ├── jetson_stream_to_server.md ← This streaming guide
+│   └── recordings/drone/        ← Auto-recorded MP4 per flight session (not committed)
 ├── yolov8l_visdrone.pt          ← YOLOv8-L weights (VisDrone fine-tuned)
 └── detections.csv               ← Output: detected vehicle positions
 ```
@@ -708,7 +715,7 @@ GUID_TIMEOUT    30      # 30 s GUIDED setpoint timeout (prevent failsafe on CPU 
 **Upload to FC (choose one method):**
 ```bash
 # Via MAVProxy (connect to FC via USB or telemetry first):
-mavproxy.py --master=/dev/ttyTHS1,921600
+mavproxy.py --master=/dev/ttyUSB0,921600
   > param load control/real_hw.parm
   > param save
 
@@ -733,7 +740,8 @@ mavproxy.py --master=/dev/ttyTHS1,921600
 #   Pane 2: HW Bridge      (pane 2)
 #   Pane 3: AnyLoc         (pane 3)
 #   Pane 4: YOLO           (pane 4)
-#   Pane 5: Commander      (pane 5 — foreground)
+#   Pane 5: Stream         (pane 5 — video → relay server)
+#   Pane 6: Commander      (pane 6 — foreground)
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -778,13 +786,19 @@ conda run -n isaac_sim_test --no-capture-output \
 YOLO_PID=$!
 sleep 2
 
-# 6. Commander (foreground — shows live flight log)
+# 6. Video stream → relay server (118.232.160.227)
+echo "[launch] Starting video stream to relay server ..."
+bash "$PROJECT_DIR/streaming/launch_stream.sh" "${SERVER_IP:-118.232.160.227}" &
+STREAM_PID=$!
+sleep 2
+
+# 7. Commander (foreground — shows live flight log)
 echo "[launch] Starting ArduPilot commander ..."
 python3 "$SCRIPT_DIR/ardupilot_commander.py" "$@"
 CMD_EXIT=$?
 
 echo "[launch] Commander exited ($CMD_EXIT) — shutting down ..."
-kill $YOLO_PID $ANYLOC_PID $BRIDGE_PID $CAMERA_PID $MAVROS_PID 2>/dev/null || true
+kill $STREAM_PID $YOLO_PID $ANYLOC_PID $BRIDGE_PID $CAMERA_PID $MAVROS_PID 2>/dev/null || true
 exit $CMD_EXIT
 ```
 
@@ -795,7 +809,65 @@ chmod +x control/launch_real_hw.sh control/launch_mavros_real.sh control/launch_
 
 ---
 
-### Task 11 — Rebuild AnyLoc Database for Contest Site
+### Task 11 — Set Up Video Streaming
+
+Follow `streaming/jetson_stream_to_server.md` for full detail. Summary:
+
+**Create `streaming/jetson_streamer.py`** — H.265 GStreamer push to relay server.
+
+Key constants (set at top of file):
+```python
+DEFAULT_SERVER = os.environ.get("SERVER_IP", "118.232.160.227")
+WIDTH=848, HEIGHT=480, FPS=30, BITRATE=1_000_000, IDR_INTERVAL=30
+```
+
+Pipeline (Jetson hardware encoder → RTSP push):
+```python
+pipeline_str = (
+    f'appsrc name=src format=time is-live=true block=true '
+    f'caps=video/x-raw,format=BGR,width={WIDTH},height={HEIGHT},framerate={FPS}/1 ! '
+    f'videoconvert ! '
+    f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+    f'nvv4l2h265enc bitrate={BITRATE} preset-level=UltraFastPreset '
+    f'    idrinterval={IDR_INTERVAL} iframeinterval={IDR_INTERVAL} ! '
+    f'rtph265pay config-interval=-1 mtu=1200 ! '
+    f'rtspclientsink location=rtsp://{server_ip}:8554/drone protocols=tcp'
+)
+```
+
+**Create `streaming/launch_stream.sh`:**
+```bash
+#!/bin/bash
+set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_IP="${1:-118.232.160.227}"
+source /opt/ros/jazzy/setup.bash
+echo "[launch_stream] Pushing to rtsp://${SERVER_IP}:8554/drone"
+conda run -n isaac_sim_test --no-capture-output \
+    python3 -u "$SCRIPT_DIR/jetson_streamer.py" \
+    --server "$SERVER_IP" \
+    --headless
+```
+
+```bash
+chmod +x streaming/launch_stream.sh
+```
+
+**Verify before flight:**
+```bash
+# Check relay server is reachable:
+nc -zv 118.232.160.227 8554 && echo "RTSP OK"
+
+# Start stream manually and confirm on ground station VLC:
+bash streaming/launch_stream.sh
+# On ground station: vlc rtsp://118.232.160.227:8554/drone
+```
+
+The stream is launched automatically by `control/launch_real_hw.sh` (Pane 5 in tmux layout).
+
+---
+
+### Task 12 — Rebuild AnyLoc Database for Contest Site
 
 The existing database is for the simulation site (HOME_LAT=23.450868, HOME_LON=120.286135).  
 If the contest is at a different location, rebuild it.
@@ -826,7 +898,7 @@ print(f'DB entries: {len(db[\"lats\"])}')
 
 ---
 
-### Task 12 — Mission Planner Survey Workflow (on PC)
+### Task 13 — Mission Planner Survey Workflow (on PC)
 
 1. Open Mission Planner → **Flight Plan** tab
 2. Right-click map → **Survey (Grid)**
@@ -864,7 +936,7 @@ Run these checks BEFORE every flight. All must pass.
 
 ```bash
 # 1. UART accessible
-ls /dev/ttyTHS1 && echo "UART OK" || echo "UART MISSING"
+ls /dev/ttyUSB0 && echo "UART OK" || echo "UART MISSING"
 
 # 2. Camera accessible
 ls /dev/video* && echo "Camera device OK"
@@ -910,7 +982,7 @@ ls anyloc/database/database.pt && echo "DB OK"
 ```
 T-30 min
   [ ] scp survey.waypoints from Mission Planner PC to Jetson control/
-  [ ] Verify waypoint count matches expected: python3 (see Task 12 verify command)
+  [ ] Verify waypoint count matches expected: python3 (see Task 13 verify command)
   [ ] Verify home_elevation.json has correct contest site coordinates
   [ ] Power on Jetson; connect to drone via SSH or local terminal
 

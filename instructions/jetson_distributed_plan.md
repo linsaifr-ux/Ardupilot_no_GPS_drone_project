@@ -226,7 +226,7 @@ Jetson `run_jetson.sh` is identical. Only two things change:
 
 | | Sim | Real hardware |
 |---|---|---|
-| MAVROS `fcu_url` | `udp://:14540@` (via MAVProxy) | `/dev/ttyTHS1:921600` (Pixhawk serial) |
+| MAVROS `fcu_url` | `udp://:14540@` (via MAVProxy) | `/dev/ttyUSB0:921600` (USB-to-TTL adapter) |
 | Commander Phase 1 VPE | kinematic truth from `/drone/state` | skip (EKF2 uses real IMU + baro) |
 
 Add `--real-hw` flag to commander to skip Phase 1 VPE injection.

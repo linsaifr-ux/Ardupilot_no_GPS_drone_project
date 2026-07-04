@@ -237,6 +237,29 @@ kill $STREAM_PID ...
 
 ---
 
+## Recording
+
+The server automatically records every push session to a separate MP4 file.  
+A new file is created each time the Jetson connects.
+
+```
+streaming/recordings/drone/
+  2026-07-04_09-30-15.mp4   ← flight 1
+  2026-07-04_14-05-42.mp4   ← flight 2
+  ...
+```
+
+Files are **fragmented MP4** — playable and seekable immediately while recording is in progress.  
+Sessions longer than 1 hour are split into sequential 1-hour segments automatically.  
+Files are never auto-deleted; manage disk space manually.
+
+Play a recording:
+```bash
+vlc streaming/recordings/drone/2026-07-04_09-30-15.mp4
+```
+
+---
+
 ## Ground Station — How to Watch
 
 No software installation needed on the ground station.
