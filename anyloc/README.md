@@ -84,13 +84,29 @@ ln -sfn database_real anyloc/database
 
 See `instructions/field_database_collection.md` for the full guide including flight plan, FOV/overlap analysis, and terminal setup.
 
+### Option C — Satellite tiles for a different area (testing)
+
+`build_database.py` defaults to the mission-zone `CENTER_LAT`/`CENTER_LON` baked into the script, but `--center-lat`/`--center-lon`/`--grid-radius-m` override it for a one-off test database anywhere in Taiwan (NLSC PHOTO2 coverage). `--sat-path` defaults to `<db-dir>/satellite.jpg` in this mode so it never clobbers `simulator/satellite_ground.jpg` (the mission-zone mosaic):
+
+```bash
+/home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --model vits14 \
+    --db-dir anyloc/database_test_<name>_vits14 \
+    --center-lat <lat> --center-lon <lon> \
+    --grid-radius-m 1000
+```
+
+This builds a circular grid (not the rectangular mission-zone shape) of the given radius. `--n-min/--n-max/--e-min/--e-max` still work too, measured from the new center.
+
 ### Switching databases
 
 ```bash
 ln -sfn database_zone_vits14 anyloc/database   # satellite, zone-sized (active)
 ln -sfn database_vits14      anyloc/database   # satellite, old full-radius fallback
 ln -sfn database_real        anyloc/database   # real-field
+ln -sfn database_test_<name>_vits14 anyloc/database   # ad-hoc test area (Option C)
 ```
+
+> `anyloc/database` is just a symlink — check `readlink anyloc/database` before a real flight to make sure it's not still pointed at a test database from a previous session.
 
 ### Verify
 
@@ -168,6 +184,17 @@ Then flip RC aux switch to HIGH (SRC2 = ExternalNav) and watch for `✓ POS_ABS 
 |---|---|
 | `anyloc/latest_estimate.json` | Latest AnyLoc estimate — read by `ardupilot_commander.py` VPE thread |
 | `anyloc/latest_match.jpg` | Latest matched satellite tile — read by `tools/gstreamer_stream.py` for right panel |
+| `anyloc/logs/accuracy_<timestamp>.csv` | Per-frame AnyLoc-vs-GPS log, one row per camera frame, written for the life of the run (see below) |
+
+### accuracy_<timestamp>.csv format
+
+One file per `ros2_node.py` run, created at startup (path printed as `[AnyLoc] Logging accuracy to ...`), flushed every row so no data is lost on a crash. Columns:
+
+```
+timestamp, drone_lat, drone_lon, gps_lat, gps_lon, est_lat, est_lon, err_m, score, mode_tag, agl_m, n_vo, elapsed_ms
+```
+
+`gps_lat`/`gps_lon` come from `/mavros/global_position/global` (ground truth); `err_m` is the great-circle distance to `est_lat`/`est_lon`. `mode_tag` is `ANYLOC` on retrieval frames or `VO +Nf` on the VO-propagated frames in between. Not committed to git (`anyloc/logs/` is gitignored).
 
 ### latest_estimate.json format
 

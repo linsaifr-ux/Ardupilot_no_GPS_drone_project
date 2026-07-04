@@ -10,7 +10,8 @@ Video and stream share a single OpenCV capture of the IMX219 CSI camera
 (nvarguscamerasrc, sensor-id=0).
 Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
 
-Requires MAVROS + hw_bridge.py (publishes /drone/agl and /drone/pose).
+Requires MAVROS only — reads GPS/AGL/heading directly from /mavros/global_position/*.
+hw_bridge.py is not needed.
 
 Usage:
     source /opt/ros/humble/setup.bash

@@ -475,8 +475,10 @@ ros2 topic echo /mavros/vision_pose/pose_cov --once   # check x,y,z
 
 ```bash
 cat anyloc/latest_estimate.json
-# {"north_m": ..., "east_m": ..., "error_m": ..., "agl_m": ...}
+# {"timestamp": ..., "est_lat": ..., "est_lon": ..., "alt_msl_m": ..., "agl_m": ..., "yaw_deg": ..., "score": ..., "error_m": ...}
 ```
+
+For a post-flight accuracy record (not just the current instant), `ros2_node.py` also appends one row per frame to `anyloc/logs/accuracy_<timestamp>.csv` — see `anyloc/README.md` §4 for the column layout.
 
 ### Detection output
 

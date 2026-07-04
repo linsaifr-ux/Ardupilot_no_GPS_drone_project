@@ -21,6 +21,7 @@ Run:
   DISPLAY=:2 conda run -n isaac_sim_test python3 anyloc/ros2_node.py
 """
 
+import csv
 import json
 import math
 import os
@@ -66,6 +67,7 @@ HERE          = os.path.dirname(os.path.abspath(__file__))
 DB_PATH       = os.path.join(HERE, "database")
 ESTIMATE_JSON = os.path.join(HERE, "latest_estimate.json")
 MATCH_JPG     = os.path.join(HERE, "latest_match.jpg")
+LOG_DIR       = os.path.join(HERE, "logs")
 
 
 # ── Helpers (identical to run_localizer.py) ───────────────────────────────────
@@ -141,6 +143,21 @@ class AnyLocNode(rclpy.node.Node):
         # comparison when EKF is on SRC2/ExternalNav)
         self._gps_lat = HOME_LAT
         self._gps_lon = HOME_LON
+
+        # Per-frame AnyLoc-vs-GPS accuracy log (one CSV per run, kept for
+        # post-flight analysis — latest_estimate.json only holds the
+        # current instant and gets overwritten every frame).
+        os.makedirs(LOG_DIR, exist_ok=True)
+        log_path = os.path.join(LOG_DIR,
+                                f"accuracy_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+        self._log_fh = open(log_path, "w", newline="")
+        self._log_writer = csv.writer(self._log_fh)
+        self._log_writer.writerow([
+            "timestamp", "drone_lat", "drone_lon", "gps_lat", "gps_lon",
+            "est_lat", "est_lon", "err_m", "score", "mode_tag", "agl_m",
+            "n_vo", "elapsed_ms",
+        ])
+        self.get_logger().info(f"[AnyLoc] Logging accuracy to {log_path}")
 
         # Latest results shared with postview thread
         self.lock         = threading.Lock()
@@ -286,6 +303,13 @@ class AnyLocNode(rclpy.node.Node):
         err_m      = _geo_dist_m(gps_lat, gps_lon, est_lat, est_lon)
         anchor_age = 0 if run_anyloc else (self._frame_count % ANYLOC_INTERVAL)
         mode_tag   = 'ANYLOC' if run_anyloc else f'VO +{anchor_age}f'
+
+        self._log_writer.writerow([
+            time.time(), drone_lat, drone_lon, gps_lat, gps_lon,
+            est_lat, est_lon, err_m, score, mode_tag, agl_m,
+            n_vo, elapsed_ms,
+        ])
+        self._log_fh.flush()
 
         with self.lock:
             if match_img is not None:

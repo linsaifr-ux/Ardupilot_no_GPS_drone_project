@@ -276,7 +276,27 @@ def main():
     ap.add_argument('--n-max', type=float, default=None, help='Rectangular grid bound: max north_m from CENTER_LAT/LON')
     ap.add_argument('--e-min', type=float, default=None, help='Rectangular grid bound: min east_m from CENTER_LAT/LON')
     ap.add_argument('--e-max', type=float, default=None, help='Rectangular grid bound: max east_m from CENTER_LAT/LON')
+    ap.add_argument('--center-lat', type=float, default=None,
+                    help='Override CENTER_LAT for this build (default: module constant, current mission zone)')
+    ap.add_argument('--center-lon', type=float, default=None,
+                    help='Override CENTER_LON for this build (default: module constant, current mission zone)')
+    ap.add_argument('--grid-radius-m', type=float, default=None,
+                    help='Circular grid radius in metres, implies a new --center-lat/--center-lon '
+                         '(default: RADIUS_M*0.75 = 1500m around the mission-zone center)')
+    ap.add_argument('--sat-path', default='',
+                    help='Satellite mosaic path (default: simulator/satellite_ground.jpg, or '
+                         '<db-dir>/satellite.jpg when --center-lat/--center-lon is set)')
     args = ap.parse_args()
+
+    global CENTER_LAT, CENTER_LON, RADIUS_M, COS_LAT
+    if (args.center_lat is None) != (args.center_lon is None):
+        sys.exit('--center-lat and --center-lon must be given together')
+    if args.center_lat is not None:
+        CENTER_LAT = args.center_lat
+        CENTER_LON = args.center_lon
+        COS_LAT = math.cos(math.radians(CENTER_LAT))
+    if args.grid_radius_m is not None:
+        RADIUS_M = args.grid_radius_m / 0.75
 
     model_name = f'dinov2_{args.model}'
     if args.db_dir:
@@ -295,7 +315,13 @@ def main():
     print(f"[DB] AGL levels: {[f'{a:.0f}' for a in agl_levels]} m  ({len(agl_levels)} levels)")
 
     # Load satellite image — download from NLSC if not already on disk
-    sat_path = os.path.join(SIM_DIR, 'satellite_ground.jpg')
+    if args.sat_path:
+        sat_path = args.sat_path
+    elif args.center_lat is not None:
+        sat_path = os.path.join(db_dir, 'satellite.jpg')
+    else:
+        sat_path = os.path.join(SIM_DIR, 'satellite_ground.jpg')
+    os.makedirs(os.path.dirname(sat_path), exist_ok=True)
     if not os.path.exists(sat_path):
         fetch_satellite(sat_path)
     sat_img = Image.open(sat_path).convert('RGB')
