@@ -234,9 +234,9 @@ class GroundViewNode(rclpy.node.Node):
                 continue
             bboxes.append(dict(x1=x1, y1=y1, x2=x2, y2=y2, label=label, conf=conf))
 
-            # Crop window: square, 20% larger than the bbox's longer side so
+            # Crop window: square, 50% larger than the bbox's longer side so
             # the thumbnail shows surrounding context instead of a tight cut.
-            side = min(max(bw, bh) * 1.2, fw, fh)
+            side = min(max(bw, bh) * 1.5, fw, fh)
             half = side / 2
             wx1, wy1, wx2, wy2 = cx - half, cy - half, cx + half, cy + half
             if wx1 < 0:
