@@ -21,7 +21,7 @@ A real-imagery database uses the actual camera, actual lighting, and actual terr
 | Stream | Transport | Source |
 |---|---|---|
 | Video | GStreamer (nvarguscamerasrc/ISP) → OpenCV, not through ROS | H.264, 1640×1232 30fps, ~60 MB/min (8 Mbps default) |
-| Telemetry | ROS2 subscriptions | lat/lon/AGL/heading at 5 Hz → CSV |
+| Telemetry | ROS2 subscriptions | lat/lon/AGL/heading + RC channels at 5 Hz → CSV |
 
 Video goes **directly through Argus, not through ROS**. This means:
 
@@ -150,9 +150,16 @@ Press **Ctrl+C** to stop.
 
 Output in `field_data/survey1/`:
 ```
-video.mkv       H.264, 1640×1232 30fps (MKV — stays playable after power-off)
-telemetry.csv   unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
-meta.json       video_start_unix, fps, width, height
+video.mkv         H.264, 1640×1232 30fps (MKV — stays playable after power-off)
+telemetry.csv     unix_time, lat, lon, alt_amsl, alt_agl, heading_deg, rc_channels  (5 Hz)
+                  rc_channels = raw /mavros/rc/in PWM list — check the EKF-source
+                  switch (RCx_OPTION=90) stayed LOW (GPS) throughout if this
+                  recording needs to be trusted as GPS ground truth
+meta.json         video_start_unix, fps, width, height
+frame_times.csv   frame_idx, unix_time — actual capture time per frame, logged
+                  directly so it stays correct across camera dropouts/reconnects
+                  (video_start_unix + frame_idx/fps assumes constant fps and drifts
+                  after a dropout — prefer this file for timing-sensitive work)
 ```
 
 ---

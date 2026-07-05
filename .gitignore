@@ -143,6 +143,7 @@ field_data/**/frames/
 field_data/**/frames.csv
 field_data/**/telemetry.csv
 field_data/**/meta.json
+field_data/**/frame_times.csv
 
 # Streaming directory — ignore only the MediaMTX binary (large, download separately)
 # Source files, docs, and config in streaming/ are tracked normally

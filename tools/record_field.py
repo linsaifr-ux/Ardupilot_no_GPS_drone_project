@@ -10,7 +10,8 @@ Video and stream share a single OpenCV capture of the IMX219 CSI camera
 (nvarguscamerasrc, sensor-id=0).
 Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
 
-Requires MAVROS only — reads GPS/AGL/heading directly from /mavros/global_position/*.
+Requires MAVROS only — reads GPS/AGL/heading directly from /mavros/global_position/*,
+and RC input from /mavros/rc/in (to log which EKF source switch position was active).
 hw_bridge.py is not needed.
 
 Usage:
@@ -33,8 +34,16 @@ Usage:
 
 Output files in DIR/:
     video.mkv          H.264, 1640×1232 30fps (MKV — crash-safe)
-    telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg  (5 Hz)
+    telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg, rc_channels  (5 Hz)
+                       rc_channels is the raw /mavros/rc/in PWM list (space-separated) —
+                       check the EKF-source switch channel (RCx_OPTION=90) stayed LOW
+                       (GPS) throughout if this recording is meant to be GPS ground truth.
     meta.json          video_start_unix, fps, width, height
+    frame_times.csv    frame_idx, unix_time — actual capture time per frame, logged
+                       directly (not reconstructed from fps) so it stays correct even
+                       across camera dropouts/reconnects. Prefer this over
+                       video_start_unix + frame_idx/fps for any timing-sensitive
+                       analysis (e.g. VO drift).
 
 Stream mode A receiver (ground station):
     gst-launch-1.0 udpsrc port=5000 ! \\
@@ -72,6 +81,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float64
+from mavros_msgs.msg import RCIn
 
 Gst.init(None)
 
@@ -87,20 +97,22 @@ class TelemetryLogger(Node):
     def __init__(self, csv_path):
         super().__init__('field_recorder')
 
-        self._lock    = threading.Lock()
-        self._lat     = None
-        self._lon     = None
-        self._alt_msl = None
-        self._agl     = None
-        self._heading = None
+        self._lock       = threading.Lock()
+        self._lat        = None
+        self._lon        = None
+        self._alt_msl    = None
+        self._agl        = None
+        self._heading    = None
+        self._rc_channels = None   # raw RCIn.channels — includes the EKF-source switch
 
         self._file   = open(csv_path, 'w', newline='')
         self._writer = csv.writer(self._file)
-        self._writer.writerow(['unix_time', 'lat', 'lon', 'alt_amsl', 'alt_agl', 'heading_deg'])
+        self._writer.writerow(['unix_time', 'lat', 'lon', 'alt_amsl', 'alt_agl', 'heading_deg', 'rc_channels'])
 
         self.create_subscription(NavSatFix, '/mavros/global_position/global',    self._cb_gps, qos_profile_sensor_data)
         self.create_subscription(Float64,   '/mavros/global_position/rel_alt',  self._cb_agl, qos_profile_sensor_data)
         self.create_subscription(Float64,   '/mavros/global_position/compass_hdg', self._cb_hdg, qos_profile_sensor_data)
+        self.create_subscription(RCIn,      '/mavros/rc/in',                    self._cb_rc,  qos_profile_sensor_data)
 
         self.create_timer(0.2, self._log_row)
 
@@ -118,10 +130,15 @@ class TelemetryLogger(Node):
         with self._lock:
             self._heading = msg.data
 
+    def _cb_rc(self, msg: RCIn):
+        with self._lock:
+            self._rc_channels = list(msg.channels)
+
     def _log_row(self):
         with self._lock:
             if self._lat is None:
                 return
+            rc_str = ' '.join(str(c) for c in self._rc_channels) if self._rc_channels else ''
             self._writer.writerow([
                 f'{time.time():.3f}',
                 f'{self._lat:.8f}',
@@ -129,6 +146,7 @@ class TelemetryLogger(Node):
                 f'{self._alt_msl:.2f}' if self._alt_msl is not None else '',
                 f'{self._agl:.2f}'     if self._agl     is not None else '',
                 f'{self._heading:.1f}' if self._heading  is not None else '',
+                rc_str,
             ])
             self._file.flush()
 
@@ -283,9 +301,10 @@ def main():
     out = args.output or os.path.join('field_data', ts)
     os.makedirs(out, exist_ok=True)
 
-    video_path = os.path.join(out, 'video.mkv')
-    telem_path = os.path.join(out, 'telemetry.csv')
-    meta_path  = os.path.join(out, 'meta.json')
+    video_path       = os.path.join(out, 'video.mkv')
+    telem_path       = os.path.join(out, 'telemetry.csv')
+    meta_path        = os.path.join(out, 'meta.json')
+    frame_times_path = os.path.join(out, 'frame_times.csv')
 
     # ── ROS2 telemetry ─────────────────────────────────────────────────────────
     rclpy.init()
@@ -344,6 +363,14 @@ def main():
     frame_idx   = 0
     max_frames  = args.duration * FPS if args.duration > 0 else 0
 
+    # Real per-frame capture time — video_start_unix + frame_idx/fps assumes a
+    # perfectly constant frame rate, which breaks silently after any camera
+    # dropout (frame_idx isn't incremented during the reconnect gap, so every
+    # frame after that point gets an increasingly wrong reconstructed time).
+    frame_times_file = open(frame_times_path, 'w', newline='')
+    frame_times_writer = csv.writer(frame_times_file)
+    frame_times_writer.writerow(['frame_idx', 'unix_time'])
+
     def _stop(*_):
         stop_event.set()
 
@@ -354,6 +381,7 @@ def main():
     try:
         while not stop_event.is_set():
             ret, frame = cap.read()
+            capture_time = time.time()
             if not ret:
                 print('\n[REC] Camera dropout — reconnecting...', flush=True)
                 cap.release()
@@ -365,6 +393,9 @@ def main():
                 continue
 
             frame = cv2.rotate(frame, cv2.ROTATE_180)
+
+            frame_times_writer.writerow([frame_idx, f'{capture_time:.6f}'])
+            frame_times_file.flush()
 
             # Push full-res to recording pipeline
             flow = _push(rec_src, frame, frame_idx)
@@ -388,6 +419,7 @@ def main():
                 break
 
     finally:
+        frame_times_file.close()
         if cap is not None:
             cap.release()
         rec_src.emit('end-of-stream')

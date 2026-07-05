@@ -122,7 +122,7 @@ source /opt/ros/humble/setup.bash
 python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
 # Or push RTSP to MediaMTX relay (watch in VLC/browser, no GStreamer on ground station):
 python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
-# → writes field_data/survey1/video.mkv  telemetry.csv  meta.json
+# → writes field_data/survey1/video.mkv  telemetry.csv  meta.json  frame_times.csv
 # MKV format: stays playable even after power-off mid-flight
 
 # 2. Extract geo-tagged frames

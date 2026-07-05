@@ -6,10 +6,10 @@ Standalone tools for monitoring, streaming, and analysing drone flights.
 
 ## record_field.py — Field database collection recorder
 
-Records 1640×1232 30fps H.264 video from the IMX219 CSI camera directly (via OpenCV + GStreamer `nvarguscamerasrc`/ISP + `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading at 5 Hz via ROS2). Frames are rotated 180° after capture. Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server.
+Records 1640×1232 30fps H.264 video from the IMX219 CSI camera directly (via OpenCV + GStreamer `nvarguscamerasrc`/ISP + `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading/RC-channels at 5 Hz via ROS2) and a per-frame capture-timestamp CSV. Frames are rotated 180° after capture. Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server.
 
 **Do NOT run `launch_camera.sh` at the same time** — both open an Argus CaptureSession on the same sensor.  
-Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*`. `hw_bridge.py` is not needed.
+Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*` and RC input from `/mavros/rc/in`. `hw_bridge.py` is not needed.
 
 > **Known issue:** prints `waiting for GPS …` until `/mavros/global_position/global` receives a fix. On a no-GPS flight (GPS jammed), the status line stays stuck but **recording continues normally** — video and AGL/heading still write to CSV. Fix pending: replace lat/lon source with AnyLoc pose.
 
@@ -58,7 +58,7 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 
 `--stream-host` and `--stream-server` are mutually exclusive.
 
-**Output:** `video.mkv`, `telemetry.csv`, `meta.json` in the output directory.  
+**Output:** `video.mkv`, `telemetry.csv` (now includes an `rc_channels` column — raw `/mavros/rc/in` PWM list, useful for confirming the EKF-source switch stayed on GPS for the whole recording), `meta.json`, and `frame_times.csv` (`frame_idx, unix_time` — real per-frame capture time, more reliable than `meta.json`'s `video_start_unix + frame_idx/fps` across camera dropouts) in the output directory.  
 **Storage:** ~60 MB/min at default bitrate.
 
 ---

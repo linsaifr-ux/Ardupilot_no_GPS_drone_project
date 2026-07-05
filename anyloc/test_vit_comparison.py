@@ -37,8 +37,8 @@ CENTER_LAT = 23.450868
 CENTER_LON = 120.286135
 RADIUS_M   = 2000.0
 COS_LAT    = math.cos(math.radians(CENTER_LAT))
-HFOV_DEG   = 90.0
-VFOV_DEG   = 73.7
+HFOV_DEG   = 62.2    # IMX219 CSI spec (matches localizer.py/build_database.py)
+VFOV_DEG   = 48.8
 TILE_PX    = 256
 
 ESRI_TILE_URL = (

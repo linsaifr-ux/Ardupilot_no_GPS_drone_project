@@ -42,8 +42,8 @@ CENTER_LON = 120.286135
 RADIUS_M   = 2000.0
 COS_LAT    = math.cos(math.radians(CENTER_LAT))
 
-HFOV_DEG = 90.0    # drone camera horizontal FOV
-VFOV_DEG = 73.7    # drone camera vertical FOV
+HFOV_DEG = 62.2    # IMX219 CSI spec (matches localizer.py/build_database.py)
+VFOV_DEG = 48.8
 
 
 # ── Tile math (Web Mercator, same convention as build_database.py) ─────────────
@@ -299,18 +299,32 @@ def run_benchmark(n_samples, agl_m, seed, output_path, plot, show_viewport):
     loc = AnyLocLocalizer(DB_DIR)
     print()
 
+    # Derive the test-point center/radius from the *actual* loaded database
+    # instead of the hardcoded mission-zone globals -- otherwise pointing
+    # --db-dir (or the `anyloc/database` symlink) at a different-area DB
+    # generates test points nowhere near its coverage.
+    db_lats = [float(x) for x in loc.lats]
+    db_lons = [float(x) for x in loc.lons]
+    center_lat = sum(db_lats) / len(db_lats)
+    center_lon = sum(db_lons) / len(db_lons)
+    radius_m = max(
+        euclidean_m(center_lat, center_lon, la, lo)
+        for la, lo in zip(db_lats, db_lons)
+    )
+
     print("[2/3] Generating test points …")
     test_points = []
     for i in range(n_samples):
         lat, lon = random_point_in_circle(
-            CENTER_LAT, CENTER_LON,
-            max_r_m=RADIUS_M * 0.85,
+            center_lat, center_lon,
+            max_r_m=radius_m * 0.85,
             min_r_m=50.0,
             rng=rng,
         )
         h = agl_m if agl_m > 0 else rng.choice([60, 70, 80, 90, 100, 110, 120])
         test_points.append(dict(idx=i + 1, true_lat=lat, true_lon=lon, agl_m=h))
-    print(f"  {n_samples} points inside {RADIUS_M * 0.85:.0f} m radius\n")
+    print(f"  {n_samples} points inside {radius_m * 0.85:.0f} m radius "
+          f"(center {center_lat:.6f}, {center_lon:.6f})\n")
 
     print("[3/3] Fetching imagery and running localizer …\n")
     header  = f"  {'#':>3}  {'True lat':>10}  {'True lon':>11}  "
@@ -389,8 +403,8 @@ def run_benchmark(n_samples, agl_m, seed, output_path, plot, show_viewport):
     report = dict(
         config=dict(n_samples=n_samples, agl_m=agl_m, seed=seed,
                     imagery='Esri World Imagery',
-                    center_lat=CENTER_LAT, center_lon=CENTER_LON,
-                    radius_m=RADIUS_M),
+                    center_lat=center_lat, center_lon=center_lon,
+                    radius_m=radius_m),
         statistics=st,
         results=results,
     )
@@ -400,14 +414,14 @@ def run_benchmark(n_samples, agl_m, seed, output_path, plot, show_viewport):
         print(f"Results saved → {output_path}")
 
     if plot:
-        _plot_results(results, st)
+        _plot_results(results, st, center_lat, center_lon)
 
     return report
 
 
 # ── Plot ───────────────────────────────────────────────────────────────────────
 
-def _plot_results(results, st):
+def _plot_results(results, st, center_lat, center_lon):
     try:
         import matplotlib
         matplotlib.use('TkAgg')
@@ -451,7 +465,7 @@ def _plot_results(results, st):
                 'k-', linewidth=0.6, alpha=0.4)
     ax.scatter(est_lons, est_lats, marker='x', s=40, color='navy',
                linewidths=0.8, zorder=4, label='AnyLoc estimate')
-    ax.scatter([CENTER_LON], [CENTER_LAT], marker='*', s=150,
+    ax.scatter([center_lon], [center_lat], marker='*', s=150,
                color='gold', edgecolors='black', linewidths=0.5,
                zorder=5, label='Scene centre')
     fig.colorbar(sc, ax=ax).set_label('Error (m)')
