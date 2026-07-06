@@ -57,7 +57,7 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - **VPE reference frame (2026-07-06):** VPE metres (and detection lat/lon logging) are computed relative to `local_frame_ref()` — priority: `GPS_GLOBAL_ORIGIN` echo (ArduPilot's exact EKF origin, decoded from MAVLink msg 49) > arm-time GPS fix (`--manual-takeoff`) > hardcoded `HOME_LAT/LON` (SITL fallback, where origin == HOME). ArduPilot sets its EKF origin at the first GPS 3D fix, **not** at the hardcoded HOME, so referencing the constants would offset the whole flight by (origin − HOME) on real hardware. `home_frame_to_local()` shifts the home-const-frame `SURVEY_WPS` into the EKF-local frame at use time; return-home `go_to_ned(0,0)` is intentionally unshifted (local origin = takeoff point). The Phase-2 log prints the active reference + source — verify it says `EKF origin` or `arm GPS`, not `HOME const`, before trusting SRC2.
 - After reaching cruise altitude: switches EKF source to SRC2 (ExternalNav) via `MAV_CMD_DO_AUX_FUNCTION`
 - Force-arm fallback via `CommandLong(400, param2=21196)` for SITL pre-arm bypass
-- `--manual-takeoff`: skips auto arm/takeoff; waits for RC arm, sets EKF origin **and VPE reference** from live GPS, waits for GUIDED. Also serves as the pure VPE feeder for the Mission-Planner-AUTO flow: leave it waiting (never switch to GUIDED) and fly the FC-stored mission in AUTO instead.
+- `--manual-takeoff`: skips auto arm/takeoff; waits for RC arm (**exits after 10 min unarmed** — restart shortly before arming), sets EKF origin **and VPE reference** from live GPS, waits for GUIDED. Also serves as the pure VPE feeder for the Mission-Planner-AUTO flow: leave it waiting (never switch to GUIDED) and fly the FC-stored mission in AUTO instead.
 - `HOLDTEST=1`: 3 m hold gate (ArduPilot Phase-3 regression test)
 - Survey mission, YOLO detection callback, CSV logging — identical to `px4_commander.py`
 
@@ -78,6 +78,9 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - `GPS_TYPE=1`, `EK3_SRC1_POSXY=3` (GPS for arming/takeoff), `EK3_SRC2_POSXY=6` (ExternalNav for survey)
 - `EK3_SRC2_VELXY=0` (2026-07-06, was 6): on real hardware the vision_speed feed is differentiated EKF local position — the filter's own output fed back — so SRC2 takes no velocity source; IMU + 20 Hz VPE position is sufficient
 - `VISO_TYPE=1`, `BRD_SAFETYENABLE=1`, `PSC_NE_VEL_I=0.0`, `GUID_TIMEOUT=30`
+- `FRAME_CLASS=2`/`FRAME_TYPE=1` (hexa X — the real airframe; was wrongly quad in this file until 2026-07-06)
+- `SERIAL6_OPTIONS=1024` (2026-07-06): no MAVLink forwarding to/from the Jetson port — otherwise the FC copies the 20 Hz VPE broadcasts onto the telemetry radio and Mission Planner hangs on "Getting Params". FC reboot required after setting
+- `SR3_*=10` (2026-07-06): persistent 10 Hz stream rates for SERIAL6 (4th MAVLink port → SR3), so telemetry survives FC reboots without re-requesting
 - RC aux channel: `RCx_OPTION=90` (EKF Source Select — LOW=SRC1/GPS, HIGH=SRC2/ExternalNav)
 - Upload via Mission Planner or MAVProxy: `param load control/real_hw.parm`
 
@@ -92,7 +95,7 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 
 | Script | Purpose |
 |--------|---------|
-| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (Serial6). Auto-requests all data streams at 10 Hz after connect — required because MAVROS resets SR* params to 0 on startup. |
+| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (Serial6). Auto-requests all data streams at 10 Hz after connect (MAVROS sends REQUEST_DATA_STREAM rate=0 on startup). The request is runtime-only — `SR3_*=10` in real_hw.parm is the persistent fallback that keeps streams alive if the FC reboots mid-session. |
 | `launch_camera.sh` | `csi_camera_node.py`: IMX219 CSI (nvarguscamerasrc, sensor-id 0), 1640×1232 @ 30 fps → `/drone/camera/image_raw` (rgb8) |
 | `hw_bridge.py` | Publishes `/drone/state` (local ENU from `/mavros/local_position/pose`, for control math), and `/drone/pose`/`/drone/agl` (real WGS84 lat/lon/AGL relayed straight from ArduPilot's own EKF output — `/mavros/global_position/global` + `rel_alt` — so they match Mission Planner/QGC regardless of which EKF source, GPS or ExternalNav/VPE, is active) |
 | `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera + hw_bridge + AnyLoc + YOLO + commander. Pass `--stream-host IP` for direct UDP ground view stream, or `--stream-server IP` for RTSP push to MediaMTX relay — either adds `ground_view_stream.py` alongside `launch_camera.sh` (both always run). |
@@ -232,6 +235,10 @@ bash control/launch_commander_ardupilot.sh
 2. Wait for RC arm → set EKF origin **and VPE local-frame reference** from live GPS at arm moment
 3. Wait for FC in GUIDED mode + AGL > 5 m
 4. Survey starts automatically
+
+⚠️ Step 2's arm wait is a **hard 10-minute timeout** — unarmed past that, the
+commander exits (`ABORT: timed out waiting for arm`) and the VPE feed stops
+(FC shows "computer vision position: Fail"). Restart it shortly before arming.
 
 For the Mission-Planner-AUTO flow, stop after step 2: never switch to GUIDED
 (that starts the scripted survey) — switch to AUTO from Mission Planner instead;

@@ -8,8 +8,8 @@
 # Set in Mission Planner: RCx_OPTION = 90  (EKF Position Source) on a 2/3-pos switch channel
 
 # Frame
-FRAME_CLASS     1       # quadrotor
-FRAME_TYPE      1       # quad-X
+FRAME_CLASS     2       # hexarotor
+FRAME_TYPE      1       # X
 
 # GPS enabled — used for arming and as SRC1
 GPS_TYPE        1       # enable GPS driver (auto-detect receiver type)
@@ -75,3 +75,22 @@ EK3_GLITCH_RAD    50    # m — horizontal position glitch threshold (default 25
 
 # Timeouts
 GUID_TIMEOUT    30      # 30 s GUIDED setpoint timeout (prevent failsafe on CPU spikes)
+
+# Serial — Jetson companion link on SERIAL6 (921600, MAVLink2)
+SERIAL6_OPTIONS 1024    # Don't forward MAVLink to/from the Jetson port. Without this, the FC
+                        # copies the commander's 20 Hz VPE broadcasts onto every other MAVLink
+                        # port, saturating the 57600 telemetry radio — Mission Planner then
+                        # hangs on "Getting Params" and mission upload stalls. The FC still
+                        # consumes VPE for EKF3 itself; only port-to-port forwarding is cut.
+                        # Reboot FC after setting. (Set live 2026-07-06.)
+
+# Persistent stream rates for the Jetson link (SERIAL6 = 4th MAVLink port → SR3_*).
+# launch_mavros_real.sh requests 10 Hz at connect, but that request is runtime-only —
+# after an FC reboot mid-session these params are what keeps attitude/position flowing.
+SR3_EXT_STAT    10
+SR3_EXTRA1      10
+SR3_EXTRA2      10
+SR3_EXTRA3      10
+SR3_POSITION    10
+SR3_RAW_SENS    10
+SR3_RC_CHAN     10

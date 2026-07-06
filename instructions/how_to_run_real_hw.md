@@ -84,6 +84,7 @@ Key parameters in `real_hw.parm`:
 
 | Parameter | Value | Why |
 |---|---|---|
+| `FRAME_CLASS` / `FRAME_TYPE` | 2 / 1 | Hexarotor X — matches the real airframe (was wrongly quad-X in this file until 2026-07-06; the FC itself was always correct) |
 | `GPS_TYPE` | 1 | GPS enabled — used for SRC1 arming |
 | `EK3_SRC1_POSXY` | 3 | SRC1 = GPS (arm + takeoff) |
 | `EK3_SRC2_POSXY` | 6 | SRC2 = ExternalNav/AnyLoc (survey) |
@@ -95,6 +96,8 @@ Key parameters in `real_hw.parm`:
 | `GUID_TIMEOUT` | 30 | Prevents failsafe on Jetson CPU spikes |
 | `EK3_GLITCH_RAD` | 50 | Accept AnyLoc jumps up to 50 m |
 | `ARMING_CHECK` | 0 | Skip software pre-arm (physical safety switch is protection) |
+| `SERIAL6_OPTIONS` | 1024 | Don't forward MAVLink to/from the Jetson port. Without it the FC copies the commander's 20 Hz VPE broadcasts onto the telemetry radio/USB, and Mission Planner hangs on "Getting Params". Needs FC reboot to take effect |
+| `SR3_*` (EXT_STAT, EXTRA1-3, POSITION, RAW_SENS, RC_CHAN) | 10 | Persistent 10 Hz stream rates for the Jetson link (SERIAL6 = 4th MAVLink port → SR**3**). Keeps telemetry flowing after an FC reboot mid-session — the launch script's stream request is runtime-only |
 
 Set RC aux switch for EKF source:
 - In Mission Planner: Config → Full Parameter List → find `RCx_OPTION` on a 2/3-pos switch → set to **90** (EKF Source Select)
@@ -344,13 +347,20 @@ python3 control/ardupilot_commander.py --manual-takeoff
 > mission lives on the FC). Launch this same `--manual-takeoff` commander as
 > the VPE feeder, arm on GPS, climb, flip the aux switch to SRC2, then switch
 > to **AUTO** from Mission Planner. **Never switch to GUIDED** in this flow —
-> GUIDED triggers the commander's scripted survey. The commander sets the EKF
+> GUIDED triggers the commander's scripted survey. Mission Planner can stay
+> connected the whole time (radio or USB) — `SERIAL6_OPTIONS=1024` stops the
+> FC from forwarding the VPE flood onto MP's link. The commander sets the EKF
 > origin *and the VPE reference frame* from your arm GPS position; when
 > Phase 2 activates it prints `VPE reference: … (EKF origin|arm GPS)` — if it
 > says `HOME const` on real hardware, positions will be offset; abort.
 > Flip back to SRC1 (GPS) before descending below 50 m AGL — below that the
 > localizer stops and the VPE falls back to a home-anchor that would drag the
 > EKF toward the origin.
+
+**The 10-minute arm wait is a hard timeout**: if you don't arm within 10 min the
+commander prints `ABORT: timed out waiting for arm` and **exits** — VPE stops and
+the FC's "computer vision position" health flips to Fail. Restart the commander
+shortly before you actually intend to arm.
 
 Commander prints and waits up to 10 min:
 ```
@@ -500,7 +510,12 @@ bash control/launch_gstreamer.sh --host 192.168.1.50
 source /opt/ros/humble/setup.bash
 ros2 topic hz /mavros/vision_pose/pose_cov    # expect 20 Hz
 ros2 topic echo /mavros/vision_pose/pose_cov --once   # check x,y,z
+ros2 topic hz /uas1/mavlink_sink              # Jetson→FC MAVLink: ~40 msg/s with
+                                              # commander running; 1 msg/s = heartbeat
+                                              # only (commander dead / VPE not reaching FC)
 ```
+
+FC-side confirmation that the EKF is receiving the feed: `/diagnostics` → `mavros: System` → `computer vision position: Ok` (Fail = no VPE arriving).
 
 ### AnyLoc estimate
 
@@ -574,7 +589,10 @@ Emergency
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| All `/mavros/*` data topics silent (no IMU, pose, altitude) | MAVROS reset SR6_* stream rates on startup | `launch_mavros_real.sh` handles this automatically — if running manually, call `ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate "{stream_id: 6, message_rate: 10, on_off: true}"` for each stream ID 1–4, 6, 10–12 |
+| All `/mavros/*` data topics silent (no IMU, pose, altitude) | MAVROS sends REQUEST_DATA_STREAM rate=0 on startup, or an FC reboot dropped the runtime stream request | `launch_mavros_real.sh` re-requests 10 Hz automatically at connect; `SR3_*=10` in real_hw.parm keeps streams alive across FC reboots. Manual fix: `ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate "{stream_id: 0, message_rate: 10, on_off: true}"` (stream_id 0 = all) |
+| Mission Planner stuck on "Getting Params" / mission upload stalls while the stack runs | FC forwards the commander's 20 Hz VPE broadcasts onto MP's link (57600 radio saturates) | `SERIAL6_OPTIONS=1024` on the FC (in real_hw.parm since 2026-07-06) + reboot FC. Verified: MP param download + mission upload work with the full stack running |
+| FC reports "computer vision position: Fail" / VPE gone though stack looks up | Commander hit its 10-min arm timeout and exited (`ABORT: timed out waiting for arm`) | Restart the commander; healthy check: `ros2 topic hz /uas1/mavlink_sink` ≈ 40 msg/s (1 msg/s = only heartbeat, commander dead) |
+| `ros2 topic hz/echo` shows nothing for a topic that is actually publishing | DDS discovery latency on the loaded Jetson (load ~6 with full stack) | Wait — use 25 s+ timeouts before concluding a topic is dead |
 | `/dev/ttyUSB0` permission denied | Not in `dialout` group | `sudo chmod 666 /dev/ttyUSB0` |
 | `/dev/ttyUSB0` not found | Adapter unplugged or driver missing | `dmesg \| tail -20` → look for cp210x/ch341 |
 | `launch_mavros_real.sh` exits with no output | `set -e` + stale pkill returning 1 | Fixed; if recurs: check script has `pkill ... \|\| true` |
