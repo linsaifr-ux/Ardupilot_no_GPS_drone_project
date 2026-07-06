@@ -34,7 +34,25 @@ ESRI_TILE_URL = (
     "https://server.arcgisonline.com/ArcGIS/rest/services"
     "/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
-TILE_PX = 256   # Esri tile size in pixels
+# NLSC PHOTO2 — same source build_database.py uses. Ground-truth via this
+# source has zero domain gap vs. the DB (same imagery, different zoom/crop),
+# so it isolates resolution effects instead of conflating them with the
+# Esri/NLSC appearance mismatch.
+NLSC_TILE_URL = "https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}"
+TILE_PX = 256   # tile size in pixels (both sources)
+
+IMAGERY_NAME  = 'Esri World Imagery'
+_TILE_URL     = ESRI_TILE_URL
+_TILE_UA      = 'AnyLocAccuracyTest/1.0'
+
+
+def set_imagery_source(name: str):
+    """Switch the ground-truth tile source: 'esri' or 'nlsc'."""
+    global IMAGERY_NAME, _TILE_URL, _TILE_UA
+    if name == 'nlsc':
+        IMAGERY_NAME, _TILE_URL, _TILE_UA = 'NLSC PHOTO2', NLSC_TILE_URL, 'AnyLocDB/1.0'
+    else:
+        IMAGERY_NAME, _TILE_URL, _TILE_UA = 'Esri World Imagery', ESRI_TILE_URL, 'AnyLocAccuracyTest/1.0'
 
 # ── Scene constants (must match cesium_scene.py / localizer.py) ───────────────
 CENTER_LAT = 23.450868
@@ -97,18 +115,18 @@ def _fetch_tile(z, tx, ty, retries=3):
     if key in _tile_cache:
         return _tile_cache[key]
 
-    url = ESRI_TILE_URL.format(z=z, y=ty, x=tx)
+    url = _TILE_URL.format(z=z, y=ty, x=tx)
     for attempt in range(retries):
         try:
             resp = requests.get(url, timeout=15,
-                                headers={'User-Agent': 'AnyLocAccuracyTest/1.0'})
+                                headers={'User-Agent': _TILE_UA})
             resp.raise_for_status()
             tile = Image.open(io.BytesIO(resp.content)).convert('RGB')
             _tile_cache[key] = tile
             return tile
         except Exception as exc:
             if attempt == retries - 1:
-                raise RuntimeError(f"Esri tile ({z}/{ty}/{tx}) failed: {exc}") from exc
+                raise RuntimeError(f"{IMAGERY_NAME} tile ({z}/{ty}/{tx}) failed: {exc}") from exc
             time.sleep(0.5 * (attempt + 1))
 
 
@@ -181,7 +199,7 @@ def fetch_esri_image(lat, lon, agl_m, img_w=640, img_h=480):
 
         return mosaic.crop((x1, y1, x2, y2)).resize((img_w, img_h), Image.LANCZOS), zoom
 
-    raise RuntimeError(f"No Esri imagery available for ({lat:.5f}, {lon:.5f}) "
+    raise RuntimeError(f"No {IMAGERY_NAME} imagery available for ({lat:.5f}, {lon:.5f}) "
                        f"down to zoom {min_zoom}")
 
 
@@ -290,7 +308,7 @@ def run_benchmark(n_samples, agl_m, seed, output_path, plot, show_viewport):
     from anyloc.localizer import AnyLocLocalizer
 
     print(f"\n{'='*62}")
-    print(f"  AnyLoc Accuracy Benchmark — Esri World Imagery")
+    print(f"  AnyLoc Accuracy Benchmark — {IMAGERY_NAME}")
     print(f"  Samples : {n_samples}  |  AGL : {agl_m if agl_m > 0 else 'random 60-120'} m"
           f"  |  Seed : {seed}")
     print(f"{'='*62}\n")
@@ -402,7 +420,7 @@ def run_benchmark(n_samples, agl_m, seed, output_path, plot, show_viewport):
     # ── JSON output ───────────────────────────────────────────────────────────
     report = dict(
         config=dict(n_samples=n_samples, agl_m=agl_m, seed=seed,
-                    imagery='Esri World Imagery',
+                    imagery=IMAGERY_NAME,
                     center_lat=center_lat, center_lon=center_lon,
                     radius_m=radius_m),
         statistics=st,
@@ -503,9 +521,15 @@ def main():
                         help='Disable the live side-by-side image viewport')
     parser.add_argument('--db-dir', default=_default_db,
                         help=f'AnyLoc database directory (default: {_default_db})')
+    parser.add_argument('--imagery', choices=['esri', 'nlsc'], default='esri',
+                        help="Ground-truth tile source: 'esri' (independent, has a "
+                             "domain gap vs. the NLSC-built DB) or 'nlsc' (same source "
+                             "the DB is built from — isolates resolution/zoom effects "
+                             "from appearance-domain-gap effects). Default: esri")
     args = parser.parse_args()
 
     DB_DIR = args.db_dir
+    set_imagery_source(args.imagery)
 
     run_benchmark(
         n_samples=args.samples,

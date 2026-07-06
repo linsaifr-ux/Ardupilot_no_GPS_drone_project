@@ -2,15 +2,20 @@
 """
 Hardware bridge: publishes /drone/state, /drone/pose, /drone/agl from MAVROS.
 
-Converts EKF ENU local position (from /mavros/local_position/pose) to:
   /drone/state   PoseStamped  position=(East_m, North_m, alt_msl_m)  ← ardupilot_commander
-  /drone/pose    PoseStamped  position=(lat, lon, alt_msl_m)          ← anyloc, yolo nodes
-  /drone/agl     Float64      metres AGL above home                   ← anyloc, yolo nodes
+                 Local ENU from /mavros/local_position/pose, relative to home_elevation.json.
+                 Used for velocity/waypoint control math only.
+
+  /drone/pose    PoseStamped  position=(lat, lon, alt_amsl_m)          ← anyloc, yolo nodes
+  /drone/agl     Float64      metres AGL above home                    ← anyloc, yolo nodes
+                 Both read straight from ArduPilot's own EKF output (/mavros/global_position/*),
+                 i.e. whatever position source (GPS or ExternalNav/VPE) is currently active —
+                 the same numbers Mission Planner/QGC show. Not reconstructed from local ENU,
+                 so they stay correct regardless of where the vehicle actually is.
 
 Run: python3 control/hw_bridge.py
 """
 import json
-import math
 import os
 import sys
 
@@ -21,7 +26,7 @@ if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
 import rclpy
 import rclpy.node
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import Altitude
+from sensor_msgs.msg import NavSatFix
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import Float64
 
@@ -31,8 +36,6 @@ with open(_HOME_CFG) as _f:
 HOME_LAT     = float(_h["lat"])
 HOME_LON     = float(_h["lon"])
 HOME_ALT_MSL = float(_h["centre_elev_m"])
-COS_LAT      = math.cos(math.radians(HOME_LAT))
-M_PER_DEG    = 111_320.0
 
 _SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           durability=DurabilityPolicy.VOLATILE, depth=10)
@@ -41,12 +44,17 @@ _SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 class HWBridge(rclpy.node.Node):
     def __init__(self):
         super().__init__("hw_bridge")
-        self._agl = 0.0
+        self._lat      = None
+        self._lon      = None
+        self._alt_amsl = None
+        self._agl      = None
 
         self.create_subscription(PoseStamped, "/mavros/local_position/pose",
                                  self._cb_pose, _SENSOR_QOS)
-        self.create_subscription(Altitude, "/mavros/altitude",
-                                 self._cb_alt, _SENSOR_QOS)
+        self.create_subscription(NavSatFix, "/mavros/global_position/global",
+                                 self._cb_gps, _SENSOR_QOS)
+        self.create_subscription(Float64, "/mavros/global_position/rel_alt",
+                                 self._cb_rel_alt, _SENSOR_QOS)
 
         self._pub_state = self.create_publisher(PoseStamped, "/drone/state", 10)
         self._pub_pose  = self.create_publisher(PoseStamped, "/drone/pose",  10)
@@ -55,10 +63,13 @@ class HWBridge(rclpy.node.Node):
         self.get_logger().info(
             f"HW bridge ready  HOME={HOME_LAT:.5f},{HOME_LON:.5f}  MSL={HOME_ALT_MSL:.1f} m")
 
-    def _cb_alt(self, msg):
-        # msg.relative = AGL above home from ArduPilot baro
-        if msg.relative > -100:
-            self._agl = float(msg.relative)
+    def _cb_gps(self, msg):
+        self._lat      = msg.latitude
+        self._lon      = msg.longitude
+        self._alt_amsl = msg.altitude
+
+    def _cb_rel_alt(self, msg):
+        self._agl = float(msg.data)
 
     def _cb_pose(self, msg):
         # EKF ENU: x=East, y=North, z=Up from home origin
@@ -66,32 +77,31 @@ class HWBridge(rclpy.node.Node):
         north_m = msg.pose.position.y
         up_m    = msg.pose.position.z   # AGL from home
 
-        alt_msl = HOME_ALT_MSL + up_m
-        lat     = HOME_LAT + north_m / M_PER_DEG
-        lon     = HOME_LON + east_m  / (M_PER_DEG * COS_LAT)
-
         stamp = msg.header.stamp
 
-        # /drone/state — ENU metres (used by ardupilot_commander.py)
+        # /drone/state — local ENU metres (used by ardupilot_commander.py for control)
         s = PoseStamped()
         s.header.stamp = stamp; s.header.frame_id = "map"
         s.pose.position.x = east_m
         s.pose.position.y = north_m
-        s.pose.position.z = alt_msl
+        s.pose.position.z = HOME_ALT_MSL + up_m
         s.pose.orientation = msg.pose.orientation
         self._pub_state.publish(s)
 
-        # /drone/pose — WGS84 (used by anyloc and yolo nodes)
-        p = PoseStamped()
-        p.header.stamp = stamp; p.header.frame_id = "wgs84"
-        p.pose.position.x = lat
-        p.pose.position.y = lon
-        p.pose.position.z = alt_msl
-        p.pose.orientation = msg.pose.orientation
-        self._pub_pose.publish(p)
+        # /drone/pose — real WGS84 position from ArduPilot's own EKF (GPS or VPE, whichever
+        # source is active). Not published until the first GLOBAL_POSITION_INT arrives.
+        if self._lat is not None:
+            p = PoseStamped()
+            p.header.stamp = stamp; p.header.frame_id = "wgs84"
+            p.pose.position.x = self._lat
+            p.pose.position.y = self._lon
+            p.pose.position.z = self._alt_amsl if self._alt_amsl is not None else HOME_ALT_MSL + up_m
+            p.pose.orientation = msg.pose.orientation
+            self._pub_pose.publish(p)
 
-        # /drone/agl — prefer barometer (smoother) over EKF z
-        agl = self._agl if abs(self._agl) < 500 else up_m
+        # /drone/agl — ArduPilot's own relative-altitude output; falls back to EKF z only
+        # until the first rel_alt reading arrives.
+        agl = self._agl if self._agl is not None else up_m
         a = Float64(); a.data = float(max(0.0, agl))
         self._pub_agl.publish(a)
 

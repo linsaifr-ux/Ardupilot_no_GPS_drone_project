@@ -59,7 +59,22 @@ ESRI_TILE_URL = (
     "https://server.arcgisonline.com/ArcGIS/rest/services"
     "/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
+# NLSC PHOTO2 — same source build_database.py uses (see test_accuracy_esri.py
+# for why this matters: zero domain gap vs. the DB, isolates resolution effects).
+NLSC_TILE_URL = "https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}"
 TILE_PX = 256
+
+IMAGERY_NAME = 'Esri World Imagery'
+_TILE_URL    = ESRI_TILE_URL
+_TILE_UA     = 'AnyLocConstrained/1.0'
+
+
+def set_imagery_source(name: str):
+    global IMAGERY_NAME, _TILE_URL, _TILE_UA
+    if name == 'nlsc':
+        IMAGERY_NAME, _TILE_URL, _TILE_UA = 'NLSC PHOTO2', NLSC_TILE_URL, 'AnyLocDB/1.0'
+    else:
+        IMAGERY_NAME, _TILE_URL, _TILE_UA = 'Esri World Imagery', ESRI_TILE_URL, 'AnyLocConstrained/1.0'
 
 
 # ── Tile math ──────────────────────────────────────────────────────────────────
@@ -101,18 +116,18 @@ def _fetch_tile(z, tx, ty, retries=3):
     key = (z, tx, ty)
     if key in _tile_cache:
         return _tile_cache[key]
-    url = ESRI_TILE_URL.format(z=z, y=ty, x=tx)
+    url = _TILE_URL.format(z=z, y=ty, x=tx)
     for attempt in range(retries):
         try:
             resp = requests.get(url, timeout=15,
-                                headers={'User-Agent': 'AnyLocConstrained/1.0'})
+                                headers={'User-Agent': _TILE_UA})
             resp.raise_for_status()
             tile = Image.open(io.BytesIO(resp.content)).convert('RGB')
             _tile_cache[key] = tile
             return tile
         except Exception as exc:
             if attempt == retries - 1:
-                raise RuntimeError(f"Esri tile ({z}/{ty}/{tx}) failed: {exc}") from exc
+                raise RuntimeError(f"{IMAGERY_NAME} tile ({z}/{ty}/{tx}) failed: {exc}") from exc
             time.sleep(0.5 * (attempt + 1))
 
 
@@ -169,7 +184,7 @@ def fetch_esri_image(lat, lon, agl_m, img_w=640, img_h=480):
 
         return mosaic.crop((x1, y1, x2, y2)).resize((img_w, img_h), Image.LANCZOS), zoom
 
-    raise RuntimeError(f"No Esri imagery available for ({lat:.5f}, {lon:.5f}) "
+    raise RuntimeError(f"No {IMAGERY_NAME} imagery available for ({lat:.5f}, {lon:.5f}) "
                        f"down to zoom {min_zoom}")
 
 
@@ -194,22 +209,22 @@ def _stats(values):
 
 # ── Trajectory generator ───────────────────────────────────────────────────────
 
-def _linear_trajectory(n_steps, agl_m, seed):
+def _linear_trajectory(n_steps, agl_m, seed, center_lat, center_lon, radius_m, cos_lat):
     """
     Simple linear trajectory across the scene.
-    Starts and ends within 85 % of RADIUS_M from centre.
+    Starts and ends within 85 % of radius_m from centre.
     The anchor-chain benefit is most visible on a correlated path — each
     step is close to the previous one, exactly like a real drone flight.
     """
     rng   = random.Random(seed)
     angle = rng.uniform(0, 2 * math.pi)
-    r0    = rng.uniform(0.3, 0.7) * RADIUS_M
-    r1    = rng.uniform(0.3, 0.7) * RADIUS_M
+    r0    = rng.uniform(0.3, 0.7) * radius_m
+    r1    = rng.uniform(0.3, 0.7) * radius_m
 
-    lat0 = CENTER_LAT + r0 * math.sin(angle)     / 111_320.0
-    lon0 = CENTER_LON + r0 * math.cos(angle)     / (111_320.0 * COS_LAT)
-    lat1 = CENTER_LAT + r1 * math.sin(angle + math.pi) / 111_320.0
-    lon1 = CENTER_LON + r1 * math.cos(angle + math.pi) / (111_320.0 * COS_LAT)
+    lat0 = center_lat + r0 * math.sin(angle)     / 111_320.0
+    lon0 = center_lon + r0 * math.cos(angle)     / (111_320.0 * cos_lat)
+    lat1 = center_lat + r1 * math.sin(angle + math.pi) / 111_320.0
+    lon1 = center_lon + r1 * math.cos(angle + math.pi) / (111_320.0 * cos_lat)
 
     pts = []
     for i in range(n_steps):
@@ -304,7 +319,7 @@ def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewpo
     from anyloc.localizer import AnyLocLocalizer
 
     print(f"\n{'='*66}")
-    print(f"  AnyLoc Constrained-Search Benchmark  (no VO)")
+    print(f"  AnyLoc Constrained-Search Benchmark  (no VO)  —  {IMAGERY_NAME}")
     print(f"  Steps  : {n_steps}  |  AGL : {agl_m if agl_m > 0 else 'random 60-120'} m"
           f"  |  Radius : {radius_m} m  |  Seed : {seed}")
     print(f"  Method : anchor-chain constrained search vs full global search")
@@ -314,8 +329,25 @@ def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewpo
     loc = AnyLocLocalizer(DB_DIR)
     print()
 
+    # Derive the trajectory center/radius from the *actual* loaded database
+    # instead of the hardcoded sim-scene globals (CENTER_LAT/CENTER_LON =
+    # 23.450868/120.286135) -- otherwise pointing --db-dir at a
+    # different-area DB (e.g. the 22.575/120.549 mission zone) generates a
+    # trajectory ~140 km away from anything the DB actually covers.
+    db_lats = [float(x) for x in loc.lats]
+    db_lons = [float(x) for x in loc.lons]
+    db_center_lat = sum(db_lats) / len(db_lats)
+    db_center_lon = sum(db_lons) / len(db_lons)
+    db_cos_lat    = math.cos(math.radians(db_center_lat))
+    db_radius_m = max(
+        euclidean_m(db_center_lat, db_center_lon, la, lo)
+        for la, lo in zip(db_lats, db_lons)
+    )
+
     print("[2/3] Generating linear trajectory …")
-    trajectory = _linear_trajectory(n_steps, agl_m, seed)
+    trajectory = _linear_trajectory(n_steps, agl_m, seed,
+                                     db_center_lat, db_center_lon,
+                                     db_radius_m, db_cos_lat)
     start = trajectory[0]
     end   = trajectory[-1]
     span  = euclidean_m(start['true_lat'], start['true_lon'],
@@ -462,9 +494,9 @@ def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewpo
     report = dict(
         config=dict(
             n_steps=n_steps, agl_m=agl_m, radius_m=radius_m, seed=seed,
-            imagery='Esri World Imagery',
-            center_lat=CENTER_LAT, center_lon=CENTER_LON,
-            radius_scene_m=RADIUS_M,
+            imagery=IMAGERY_NAME,
+            center_lat=db_center_lat, center_lon=db_center_lon,
+            radius_scene_m=db_radius_m,
         ),
         statistics=dict(
             global_search=st_glob,
@@ -602,9 +634,13 @@ def main():
                         help='Disable live three-panel image viewport')
     parser.add_argument('--db-dir', default=_default_db,
                         help=f'AnyLoc database directory (default: {_default_db})')
+    parser.add_argument('--imagery', choices=['esri', 'nlsc'], default='esri',
+                        help="Ground-truth tile source: 'esri' or 'nlsc' "
+                             "(same source the DB is built from). Default: esri")
     args = parser.parse_args()
 
     DB_DIR = args.db_dir
+    set_imagery_source(args.imagery)
 
     run_benchmark(
         n_steps=args.steps,

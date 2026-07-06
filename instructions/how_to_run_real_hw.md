@@ -19,8 +19,11 @@ Mission Planner (PC)
                                   │  [2b] ground_view_stream.py      → subscribes /drone/camera/image_raw (needs 2a running) (+ H.265 stream)
                                   │         --stream-host GS_IP      →   RTP/UDP → ground station
                                   │         --stream-server SERVER_IP →   RTSP push → MediaMTX relay
-                                  ├─ [3] hw_bridge.py                → /mavros/local_position/pose → /drone/state /drone/pose /drone/agl
+                                  ├─ [3] hw_bridge.py                → /mavros/local_position/pose → /drone/state
+                                  │                                    /mavros/global_position/global, rel_alt → /drone/pose, /drone/agl
                                   ├─ [4] anyloc/ros2_node.py         → venv/anyloc → /drone/camera/image_raw → AnyLoc VPE
+                                  │      (plan A — launch_real_hw.sh default; Desktop full_run.sh uses
+                                  │       plan B anyloc/ros2_node_vo_primary.py, VO-primary + gate 0.32 — preferred)
                                   ├─ [5] detection/ros2_node.py      → venv/yolo   → /drone/camera/image_raw → detections.csv
                                   └─ [6] ardupilot_commander.py      → VPE → GUIDED → survey
                                          ↕ MAVLink
@@ -84,6 +87,8 @@ Key parameters in `real_hw.parm`:
 | `GPS_TYPE` | 1 | GPS enabled — used for SRC1 arming |
 | `EK3_SRC1_POSXY` | 3 | SRC1 = GPS (arm + takeoff) |
 | `EK3_SRC2_POSXY` | 6 | SRC2 = ExternalNav/AnyLoc (survey) |
+| `EK3_SRC2_VELXY` | 0 | **No velocity on SRC2** — the Jetson vision_speed is differentiated EKF output on real hw (circular); IMU + 20 Hz VPE position suffices. Was 6 in SITL only. |
+| `EK3_SRC2_YAW` | 1 | Compass on SRC2 — never 6; VPE yaw is hardcoded North, not a measurement |
 | `VISO_TYPE` | 1 | MAVLink visual odometry enabled |
 | `BRD_SAFETYENABLE` | 1 | Physical safety button required |
 | `PSC_NE_VEL_I` | 0.0 | Must be 0 — non-zero causes integral windup |
@@ -213,6 +218,12 @@ pkill -f csi_camera_node.py 2>/dev/null; echo "camera clear"
 
 ### Option 1 — One command (recommended)
 
+> **Fusion-node note:** `launch_real_hw.sh` starts the **plan-A** localizer
+> (`anyloc/ros2_node.py`). The Desktop **Full Run** icon (`~/Desktop/full_run.sh`)
+> starts the **plan-B** node (`ros2_node_vo_primary.py`, VO-primary + gate 0.32,
+> preferred) plus the `--manual-takeoff` commander and the RTSP ground stream —
+> use that for the Mission-Planner-AUTO flow.
+
 ```bash
 cd ~/Ardupilot_no_GPS_drone_project
 
@@ -274,7 +285,11 @@ source /opt/ros/humble/setup.bash
 python3 control/hw_bridge.py
 
 # Pane 3: AnyLoc (~20 min startup — loading VLAD database)
-bash anyloc/run_ros2_localizer.sh --headless
+# Plan B (VO-primary + score-gated AnyLoc, preferred — see anyloc/README.md):
+bash anyloc/run_ros2_localizer_vo.sh --headless
+# or plan A (anchor-chain):
+#   bash anyloc/run_ros2_localizer.sh --headless
+# Run ONE of the two, never both — they write the same latest_estimate.json.
 
 # Pane 4: YOLO
 bash detection/run_ros2_detector.sh --headless
@@ -323,6 +338,19 @@ All flying is done with your RC. The only thing Jetson does is send VPE to the F
 ```bash
 python3 control/ardupilot_commander.py --manual-takeoff
 ```
+
+> **Mission Planner AUTO flow (alternative to the scripted survey):** plan the
+> survey in Mission Planner and **Write** it to the FC (no scp needed — the
+> mission lives on the FC). Launch this same `--manual-takeoff` commander as
+> the VPE feeder, arm on GPS, climb, flip the aux switch to SRC2, then switch
+> to **AUTO** from Mission Planner. **Never switch to GUIDED** in this flow —
+> GUIDED triggers the commander's scripted survey. The commander sets the EKF
+> origin *and the VPE reference frame* from your arm GPS position; when
+> Phase 2 activates it prints `VPE reference: … (EKF origin|arm GPS)` — if it
+> says `HOME const` on real hardware, positions will be offset; abort.
+> Flip back to SRC1 (GPS) before descending below 50 m AGL — below that the
+> localizer stops and the VPE falls back to a home-anchor that would drag the
+> EKF toward the origin.
 
 Commander prints and waits up to 10 min:
 ```
@@ -398,6 +426,7 @@ Confirm images flow: `ros2 topic hz /drone/camera/image_raw` → expect ~30 Hz
 [APCmd] GUIDED ✓
 [APCmd] switching EKF source → SRC2 (ExternalNav/AnyLoc) …
 [APCmd] AGL 65 m ≥ 50 m — VPE → AnyLoc               ← Phase 2 activates
+[APCmd] VPE reference: 23.450912°N 120.286201°E (arm GPS)   ← must NOT say "HOME const"
 [APCmd] SURVEY WP 1/14 ...
 ```
 
@@ -420,6 +449,8 @@ flags=0x037  ✓ POS_ABS accepted
 ### Ground view stream — composite YOLO + AnyLoc viewport
 
 `tools/ground_view_stream.py` streams a 1280×720 composite viewport showing YOLO live detection feed, AnyLoc match tile, and the last 3 detection crops with class/location labels. It only **subscribes** to `/drone/camera/image_raw` — it does not open the camera — so `launch_camera.sh` must already be running (handled automatically by `launch_real_hw.sh --stream-host/--stream-server`).
+
+It also always saves a local copy of the exact streamed composite to `recordings/ground_view_<timestamp>.mkv` (tee of the same H.265 encode — no extra GPU load; crash-safe MKV, playable even after power loss; gitignored). `--no-record` disables it, `--record-dir DIR` relocates it. The path is printed at startup and on exit.
 
 **Mode A — direct UDP (ZeroTier / LAN):**
 ```bash
@@ -522,9 +553,12 @@ Contest start — jammer ON (GPS LOST — expected)
   [ ] Press physical safety button on FC → LED green
   [ ] Arm with RC in STABILIZE or LOITER (GPS)
   [ ] Fly manually to 65 m AGL
+  [ ] Commander printed "VPE reference: … (EKF origin)" or "(arm GPS)" — NOT "(HOME const)"
   [ ] Flip RC aux switch to HIGH → SRC2 (ExternalNav/AnyLoc)
   [ ] Watch EKF monitor: "✓ POS_ABS accepted" from VPE
-  [ ] Switch FC to GUIDED → commander takes over survey automatically
+  [ ] Scripted flow: switch FC to GUIDED → commander runs its survey
+      Mission Planner flow: switch FC to AUTO (mission stored on FC) — NEVER GUIDED
+  [ ] Before descending below 50 m AGL: flip aux switch back LOW (SRC1/GPS)
   [ ] Monitor: "WP 01/N →" for each waypoint
   [ ] detections.csv populated (tail -f)
   [ ] "Survey complete" → RTL/LAND → disarm
@@ -549,7 +583,7 @@ Emergency
 | Camera calibration file not found | No intrinsics YAML | Harmless — AnyLoc doesn't use camera intrinsics |
 | Arm rejected: Safety Switch | Safety button not pressed | Press physical button; LED must go green |
 | Arm rejected: Need Position | VPE not publishing or EKF not converged | Check `ros2 topic hz /mavros/vision_pose/pose_cov` (expect 20 Hz); wait 30 s |
-| EKF never reaches POS_ABS on SRC2 | ExternalNav params wrong | Verify `VISO_TYPE=1`, `EK3_SRC2_POSXY=6` in FC params; check VPE topic hz |
+| EKF never reaches POS_ABS on SRC2 | ExternalNav params wrong | Verify `VISO_TYPE=1`, `EK3_SRC2_POSXY=6`, `EK3_SRC2_VELXY=0` in FC params; check VPE topic hz |
 | EKF failsafe during survey | AnyLoc jump > glitch radius | Verify `EK3_GLITCH_RAD=50` in real_hw.parm |
 | AnyLoc venv import error | Wrong Python used | Confirm script uses `/home/jetson/venv/anyloc/bin/python3` |
 | YOLO venv import error | Wrong Python used | Confirm script uses `/home/jetson/venv/yolo/bin/python3` |

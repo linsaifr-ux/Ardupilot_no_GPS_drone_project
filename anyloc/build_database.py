@@ -286,9 +286,13 @@ def main():
     ap.add_argument('--sat-path', default='',
                     help='Satellite mosaic path (default: simulator/satellite_ground.jpg, or '
                          '<db-dir>/satellite.jpg when --center-lat/--center-lon is set)')
+    ap.add_argument('--sat-zoom', type=int, default=None,
+                    help='NLSC WMTS zoom level for the satellite source (default: module '
+                         'constant, currently 18). 19 is the documented max in NLSC\'s '
+                         'GetCapabilities; 20 works in practice but is undocumented.')
     args = ap.parse_args()
 
-    global CENTER_LAT, CENTER_LON, RADIUS_M, COS_LAT
+    global CENTER_LAT, CENTER_LON, RADIUS_M, COS_LAT, SAT_ZOOM
     if (args.center_lat is None) != (args.center_lon is None):
         sys.exit('--center-lat and --center-lon must be given together')
     if args.center_lat is not None:
@@ -297,6 +301,8 @@ def main():
         COS_LAT = math.cos(math.radians(CENTER_LAT))
     if args.grid_radius_m is not None:
         RADIUS_M = args.grid_radius_m / 0.75
+    if args.sat_zoom is not None:
+        SAT_ZOOM = args.sat_zoom
 
     model_name = f'dinov2_{args.model}'
     if args.db_dir:

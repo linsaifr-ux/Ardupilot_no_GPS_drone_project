@@ -137,7 +137,10 @@ class AnyLocNode(rclpy.node.Node):
         self._drone_alt = HOME_ALT_MSL
         self._drone_yaw = 0.0      # radians
         self._drone_agl = 0.0
-        self._agl_logged = False   # one-time "AGL reached" print
+        self._pose_received = False  # True once a real /drone/pose arrived —
+                                     # gates EKF-seeding of the first search
+        self._agl_logged  = False  # one-time "AGL reached" print
+        self._seed_logged = False  # one-time "anchor seeded from EKF" print
 
         # GPS ground truth from MAVROS (used for error_m; avoids circular
         # comparison when EKF is on SRC2/ExternalNav)
@@ -196,6 +199,7 @@ class AnyLocNode(rclpy.node.Node):
         self._drone_alt = msg.pose.position.z
         self._drone_yaw = _yaw_from_quat(
             msg.pose.orientation.z, msg.pose.orientation.w)
+        self._pose_received = True
 
     def _cb_gps(self, msg):
         if msg.status.status >= 0:  # STATUS_NO_FIX = -1
@@ -259,10 +263,25 @@ class AnyLocNode(rclpy.node.Node):
         # AnyLoc retrieval every ANYLOC_INTERVAL frames
         t0 = time.perf_counter()
         if run_anyloc:
-            clat = (self._anchor_lat + self._accum_dlat
-                    if self._anchor_lat is not None else None)
-            clon = (self._anchor_lon + self._accum_dlon
-                    if self._anchor_lat is not None else None)
+            if self._anchor_lat is not None:
+                clat = self._anchor_lat + self._accum_dlat
+                clon = self._anchor_lon + self._accum_dlon
+            elif self._pose_received:
+                # No anchor yet (first AnyLoc frame): seed the search window
+                # from the EKF position — still GPS truth on SRC1 at this
+                # point — instead of a global whole-DB search whose bad match
+                # would plant an unrecoverable anchor.
+                clat, clon = drone_lat, drone_lon
+                if not self._seed_logged:
+                    print(f"[AnyLoc] first search seeded from EKF position "
+                          f"{clat:.6f}, {clon:.6f} (r={SEARCH_RADIUS_M:.0f} m)")
+                    self._seed_logged = True
+            else:
+                clat = clon = None
+                if not self._seed_logged:
+                    print("[AnyLoc] WARNING: no /drone/pose yet — first search "
+                          "is global (whole DB); check hw_bridge is running")
+                    self._seed_logged = True
             result = self._loc.localize(
                 pil_img, agl_m=agl_m,
                 center_lat=clat, center_lon=clon,

@@ -25,9 +25,13 @@ EK3_SRC1_YAW    1       # Compass → yaw
 
 # EKF source 2: ExternalNav/AnyLoc (switch HIGH — activate at cruise altitude)
 EK3_SRC2_POSXY  6       # ExternalNav → XY position
-EK3_SRC2_VELXY  6       # ExternalNav → XY velocity
+EK3_SRC2_VELXY  0       # NO velocity source — the Jetson's vision_speed is differentiated
+                        # EKF local position (hw_bridge relays /mavros/local_position/pose),
+                        # i.e. the EKF's own output fed back = circular. IMU + 20 Hz VPE
+                        # position is sufficient. (6 was correct only in SITL, where
+                        # /drone/state was simulator ground truth.)
 EK3_SRC2_POSZ   1       # Baro → altitude (same — AnyLoc gives no independent altitude)
-EK3_SRC2_YAW    1       # Compass → yaw (same)
+EK3_SRC2_YAW    1       # Compass → yaw (same — VPE yaw is hardcoded North, not a measurement)
 
 VISO_TYPE       1       # enable MAVLink ExternalNav processing (VPE from Jetson)
 

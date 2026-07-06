@@ -137,6 +137,8 @@ and confirm `POS_ABS` appears in the active list with `pos_h` variance < 0.5.
 
 Subscribes to `/drone/camera/image_raw` (`launch_camera.sh` must already be running — this script doesn't open the camera) and streams a 1280×720 composite viewport. Two stream modes: direct UDP to a ground station, or RTSP push to the MediaMTX relay server (no GStreamer needed on the receiver).
 
+**Local recording (default-on, added 2026-07-06):** every run also saves the exact streamed composite to `recordings/ground_view_<timestamp>.mkv` — a tee of the same H.265 encode (no extra GPU load), streamable MKV so it stays playable after power loss mid-flight, new timestamped file per run, gitignored. `--no-record` disables; `--record-dir DIR` relocates. This is the overlay-burned 720p stream view — for clean full-res camera footage (database building, offline replay) use `record_field.py`; both can run together.
+
 ```
 Left  (640×720)
   ├─ Top    (640×360): live camera with YOLO bounding boxes + drone lat/lon/AGL

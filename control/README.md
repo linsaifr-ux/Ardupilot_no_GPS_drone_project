@@ -54,9 +54,10 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - STABILIZE → arm → GUIDED → EKF origin → `EKF_POS_HORIZ_ABS` wait → NAV_TAKEOFF → 10-strip E-W survey 12 m/s → LAND
 - ENU setpoints (identical to `px4_commander.py`); MAVROS converts to NED for ArduPilot
 - Two-phase VPE: Phase 1 (AGL < 50 m) = home anchor, Phase 2 (≥ 50 m) = AnyLoc `latest_estimate.json`
+- **VPE reference frame (2026-07-06):** VPE metres (and detection lat/lon logging) are computed relative to `local_frame_ref()` — priority: `GPS_GLOBAL_ORIGIN` echo (ArduPilot's exact EKF origin, decoded from MAVLink msg 49) > arm-time GPS fix (`--manual-takeoff`) > hardcoded `HOME_LAT/LON` (SITL fallback, where origin == HOME). ArduPilot sets its EKF origin at the first GPS 3D fix, **not** at the hardcoded HOME, so referencing the constants would offset the whole flight by (origin − HOME) on real hardware. `home_frame_to_local()` shifts the home-const-frame `SURVEY_WPS` into the EKF-local frame at use time; return-home `go_to_ned(0,0)` is intentionally unshifted (local origin = takeoff point). The Phase-2 log prints the active reference + source — verify it says `EKF origin` or `arm GPS`, not `HOME const`, before trusting SRC2.
 - After reaching cruise altitude: switches EKF source to SRC2 (ExternalNav) via `MAV_CMD_DO_AUX_FUNCTION`
 - Force-arm fallback via `CommandLong(400, param2=21196)` for SITL pre-arm bypass
-- `--manual-takeoff`: skips auto arm/takeoff; waits for RC arm, sets EKF origin from live GPS, waits for GUIDED
+- `--manual-takeoff`: skips auto arm/takeoff; waits for RC arm, sets EKF origin **and VPE reference** from live GPS, waits for GUIDED. Also serves as the pure VPE feeder for the Mission-Planner-AUTO flow: leave it waiting (never switch to GUIDED) and fly the FC-stored mission in AUTO instead.
 - `HOLDTEST=1`: 3 m hold gate (ArduPilot Phase-3 regression test)
 - Survey mission, YOLO detection callback, CSV logging — identical to `px4_commander.py`
 
@@ -75,6 +76,7 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 
 **`real_hw.parm`** — ArduPilot real-hardware params (dual-source EKF):
 - `GPS_TYPE=1`, `EK3_SRC1_POSXY=3` (GPS for arming/takeoff), `EK3_SRC2_POSXY=6` (ExternalNav for survey)
+- `EK3_SRC2_VELXY=0` (2026-07-06, was 6): on real hardware the vision_speed feed is differentiated EKF local position — the filter's own output fed back — so SRC2 takes no velocity source; IMU + 20 Hz VPE position is sufficient
 - `VISO_TYPE=1`, `BRD_SAFETYENABLE=1`, `PSC_NE_VEL_I=0.0`, `GUID_TIMEOUT=30`
 - RC aux channel: `RCx_OPTION=90` (EKF Source Select — LOW=SRC1/GPS, HIGH=SRC2/ExternalNav)
 - Upload via Mission Planner or MAVProxy: `param load control/real_hw.parm`
@@ -92,7 +94,7 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 |--------|---------|
 | `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (Serial6). Auto-requests all data streams at 10 Hz after connect — required because MAVROS resets SR* params to 0 on startup. |
 | `launch_camera.sh` | `csi_camera_node.py`: IMX219 CSI (nvarguscamerasrc, sensor-id 0), 1640×1232 @ 30 fps → `/drone/camera/image_raw` (rgb8) |
-| `hw_bridge.py` | Converts MAVROS EKF position to `/drone/state`, `/drone/pose`, `/drone/agl` |
+| `hw_bridge.py` | Publishes `/drone/state` (local ENU from `/mavros/local_position/pose`, for control math), and `/drone/pose`/`/drone/agl` (real WGS84 lat/lon/AGL relayed straight from ArduPilot's own EKF output — `/mavros/global_position/global` + `rel_alt` — so they match Mission Planner/QGC regardless of which EKF source, GPS or ExternalNav/VPE, is active) |
 | `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera + hw_bridge + AnyLoc + YOLO + commander. Pass `--stream-host IP` for direct UDP ground view stream, or `--stream-server IP` for RTSP push to MediaMTX relay — either adds `ground_view_stream.py` alongside `launch_camera.sh` (both always run). |
 | `launch_gstreamer.sh` | Simple H.265 camera stream to ground station — camera + AnyLoc tile only, no YOLO. Opens camera directly — don't run with `launch_camera.sh` or `ground_view_stream.py`. |
 
@@ -227,9 +229,13 @@ bash control/launch_commander_ardupilot.sh
 
 **Manual-takeoff mode (`--manual-takeoff`):**
 1. Start VPE thread
-2. Wait for RC arm → set EKF origin from live GPS position at arm moment
+2. Wait for RC arm → set EKF origin **and VPE local-frame reference** from live GPS at arm moment
 3. Wait for FC in GUIDED mode + AGL > 5 m
 4. Survey starts automatically
+
+For the Mission-Planner-AUTO flow, stop after step 2: never switch to GUIDED
+(that starts the scripted survey) — switch to AUTO from Mission Planner instead;
+the commander keeps feeding VPE while ArduPilot flies its stored mission.
 
 ## ArduPilot Phase Status
 
@@ -247,6 +253,8 @@ bash control/launch_commander_ardupilot.sh
 - **PSC parameter rename (V4.8.0-dev)** — `PSC_POSXY_P` → `PSC_NE_POS_P`; `PSC_VELXY_P/I/D` → `PSC_NE_VEL_P/I/D`. Old names are **silently ignored** — no error, no warning. The defaults that activate (VEL_I=1.0, POS_P=1.0) cause integral windup and underdamped oscillation. Always verify `param show PSC_NE*` in MAVProxy after loading the parm file. Required: `PSC_NE_POS_P=0.2`, `PSC_NE_VEL_I=0.0`, `PSC_NE_VEL_D=0.5`.
 - **ENU setpoints** — MAVROS2 always converts ENU→NED regardless of `FRAME_LOCAL_NED` flag. Send `x=East, y=North, z=Up(AGL)` (same as PX4). The original `flight_commander.py` bug: it sent NED (`x=north, y=east`) which MAVROS treated as ENU — axis-swapping the target.
 - **EKF origin required** — ArduPilot (unlike PX4) requires explicit `/mavros/global_position/set_gp_origin` publication. PX4 auto-sets from the first EV pose.
+- **EKF origin ≠ hardcoded HOME on real hardware** — with GPS present, ArduPilot auto-sets the origin at the first 3D fix and ignores later `set_gp_origin` attempts. All ExternalNav/VPE metres are interpreted relative to *that* origin, so they must be computed against it (see `local_frame_ref()`), never against the `HOME_LAT/LON` constants — a takeoff anywhere but the hardcoded point would otherwise offset the entire flight by (origin − HOME).
+- **vision_speed is circular on real hardware** — the commander's `/mavros/vision_speed/speed_twist` is computed by differentiating `/drone/state`, which hw_bridge builds from `/mavros/local_position/pose` (the EKF's own output). Feeding it back as an ExternalNav velocity measurement (`EK3_SRC2_VELXY=6`) makes the EKF overconfident in its current velocity and slow to correct. Only valid in SITL, where `/drone/state` is simulator ground truth. Real hardware: `EK3_SRC2_VELXY=0`.
 - **EKF_POS_HORIZ_ABS** — wait for bit 4 (0x010) of `EKF_STATUS_REPORT` (MAVLink msg 193) via `/uas1/mavlink_source`. Not `local_pos.z < 5 m` as in PX4.
 - **Force-arm fallback** — `CommandLong(command=400, param1=1.0, param2=21196.0)` bypasses all pre-arm checks for SITL.
 - **NAV_TAKEOFF** — ArduPilot climbs autonomously to the requested AGL; commander only monitors. PX4 needs continuous position setpoints during climb.

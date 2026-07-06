@@ -194,6 +194,16 @@ class ArduPilotCommander(rclpy.node.Node):
         self._wp_reached          = -1   # seq of last WaypointReached (1-based mission index)
         self._gps_fix             = None  # latest NavSatFix from /mavros/global_position/global
 
+        # VPE / local-frame reference — the lat/lon that EKF-local metres are
+        # measured from. ArduPilot sets its EKF origin at the first GPS 3D fix
+        # (NOT at the hardcoded HOME), so VPE north/east must be computed
+        # relative to that point or the whole flight is offset by
+        # (origin − HOME). See local_frame_ref() for resolution order.
+        self._origin_lat  = None   # exact EKF origin from GPS_GLOBAL_ORIGIN echo
+        self._origin_lon  = None
+        self._arm_ref_lat = None   # arm-time GPS fix (≈ origin), --manual-takeoff
+        self._arm_ref_lon = None
+
         self._latest_frame     = None
         self._det_count        = 0
         self._logged_positions = []   # (north_m, east_m) for dedup
@@ -263,6 +273,14 @@ class ArduPilotCommander(rclpy.node.Node):
             self._ekf_flags = struct.unpack_from("<H", raw, 20)[0]
         elif msg.msgid == 49:                      # GPS_GLOBAL_ORIGIN echo
             self._gps_origin_received = True
+            # Wire layout: latitude, longitude, altitude (int32 ×1e7 / mm).
+            # This is ArduPilot's actual EKF origin — the exact reference
+            # point for VPE metres — so capture it for local_frame_ref().
+            if len(raw) >= 8:
+                lat_i, lon_i = struct.unpack_from("<ii", raw, 0)
+                if lat_i != 0 or lon_i != 0:
+                    self._origin_lat = lat_i / 1e7
+                    self._origin_lon = lon_i / 1e7
 
     def _cb_image(self, msg):
         try:
@@ -324,8 +342,11 @@ class ArduPilotCommander(rclpy.node.Node):
 
     def _log_detection(self, category, confidence, north_m, east_m, agl_m, bbox=None):
         """Append one row to detections.csv and save crop image."""
-        lat = HOME_LAT + north_m / M_PER_DEG
-        lon = HOME_LON + east_m  / (M_PER_DEG * COS_LAT)
+        # north/east are EKF-local metres → convert via the origin reference,
+        # not the hardcoded HOME, so logged lat/lon are geographically correct.
+        ref_lat, ref_lon, _ = self.local_frame_ref()
+        lat = ref_lat + north_m / M_PER_DEG
+        lon = ref_lon + east_m  / (M_PER_DEG * COS_LAT)
 
         crop_path = ""
         if _HAVE_PIL and bbox is not None and self._latest_frame is not None:
@@ -398,8 +419,12 @@ class ArduPilotCommander(rclpy.node.Node):
                                     and err_m < 100.0):
                                 lat  = est["est_lat"]; lon = est["est_lon"]
                                 yaw  = math.pi / 2.0
-                                n_v  = (lat - HOME_LAT) * M_PER_DEG
-                                e_v  = (lon - HOME_LON) * M_PER_DEG * COS_LAT
+                                # Metres relative to the EKF origin (arm GPS),
+                                # NOT the hardcoded HOME — ArduPilot interprets
+                                # VPE as origin-relative.
+                                ref_lat, ref_lon, _ = self.local_frame_ref()
+                                n_v  = (lat - ref_lat) * M_PER_DEG
+                                e_v  = (lon - ref_lon) * M_PER_DEG * COS_LAT
                                 cov  = max(1.0, err_m ** 2)
                                 anyloc_est = (e_v, n_v, yaw, cov)
                                 last_mtime = mtime
@@ -432,8 +457,15 @@ class ArduPilotCommander(rclpy.node.Node):
                     cov_xy  = 0.5
 
                 if use_anyloc and not phase_logged:
+                    ref_lat, ref_lon, ref_src = self.local_frame_ref()
                     print(f"[APCmd] AGL {drone_agl:.0f} m ≥ {MIN_LOCALISATION_AGL:.0f} m"
                           " — VPE → AnyLoc")
+                    print(f"[APCmd] VPE reference: {ref_lat:.6f}°N {ref_lon:.6f}°E"
+                          f" ({ref_src})")
+                    if ref_src == "HOME const":
+                        print("[APCmd] WARNING: VPE reference is the hardcoded HOME —"
+                              " on real hardware positions will be offset by"
+                              " (actual EKF origin − HOME) unless takeoff was at HOME")
                     phase_logged = True
 
                 # Use EKF z for altitude on real hardware when /drone/state absent
@@ -496,6 +528,37 @@ class ArduPilotCommander(rclpy.node.Node):
         if self._local_pos is not None:
             return self._local_pos.pose.position.z
         return 0.0
+
+    def set_arm_reference(self, lat, lon):
+        """Record the arm-time GPS fix as the VPE/local-frame reference."""
+        self._arm_ref_lat = lat
+        self._arm_ref_lon = lon
+        self.get_logger().info(
+            f"VPE local-frame reference ← arm GPS: {lat:.6f}°N {lon:.6f}°E")
+
+    def local_frame_ref(self):
+        """
+        (lat, lon, source) of the EKF local-frame origin — the point that VPE
+        and setpoint metres are measured from.
+        Priority: GPS_GLOBAL_ORIGIN echo (ArduPilot's exact origin)
+                > arm-time GPS fix (≈ origin; captured in --manual-takeoff)
+                > hardcoded HOME (SITL, where origin and HOME coincide).
+        """
+        if self._origin_lat is not None:
+            return self._origin_lat, self._origin_lon, "EKF origin"
+        if self._arm_ref_lat is not None:
+            return self._arm_ref_lat, self._arm_ref_lon, "arm GPS"
+        return HOME_LAT, HOME_LON, "HOME const"
+
+    def home_frame_to_local(self, north_m, east_m):
+        """
+        Home-const-frame N/E (SURVEY_WPS, ZONE_VERTS — geographic positions
+        relative to hardcoded HOME) → EKF-local N/E (relative to the origin).
+        Identity in SITL where origin == HOME.
+        """
+        ref_lat, ref_lon, _ = self.local_frame_ref()
+        return (north_m + (HOME_LAT - ref_lat) * M_PER_DEG,
+                east_m  + (HOME_LON - ref_lon) * M_PER_DEG * COS_LAT)
 
     def make_sp(self, east, north, up):
         """
@@ -731,10 +794,11 @@ class ArduPilotCommander(rclpy.node.Node):
             if seq >= 1:   # seq 1…n_wps correspond to survey WPs 0…n_wps-1
                 wp_idx = seq - 1
                 wn, we, _ = waypoints_ned[wp_idx]
+                ln, le = self.home_frame_to_local(wn, we)
                 pos_str = ""
                 if self._drone is not None:
                     ds = self._drone.pose.position
-                    dx = ds.x - we; dy = ds.y - wn
+                    dx = ds.x - le; dy = ds.y - ln
                     pos_str = (f"  E={ds.x:+.1f} N={ds.y:+.1f}"
                                f"  err={math.hypot(dx, dy):.1f} m")
                 print(f"[APCmd] WP {seq}/{n_wps} REACHED ✓  N={wn:+.0f} E={we:+.0f}{pos_str}")
@@ -1067,6 +1131,7 @@ def main():
             arm_alt = gps.altitude
             print(f"[APCmd] Armed ✓  GPS: {arm_lat:.6f} N  {arm_lon:.6f} E  {arm_alt:.1f} m MSL")
             cmd.set_ekf_origin(arm_lat, arm_lon, arm_alt)
+            cmd.set_arm_reference(arm_lat, arm_lon)
         else:
             print(f"[APCmd] Armed ✓  no GPS fix — using home_elevation.json origin")
             cmd.set_ekf_origin(HOME_LAT, HOME_LON, HOME_ALT_MSL)
@@ -1178,14 +1243,17 @@ def main():
         wp_idx = 0
         while wp_idx < len(SURVEY_WPS):
             wn, we, wagl = SURVEY_WPS[wp_idx]
+            # Waypoints are home-const-frame (geographic zone positions);
+            # go_to_ned targets are EKF-local — shift into the origin frame.
+            ln, le = cmd.home_frame_to_local(wn, we)
             print(f"[APCmd] SURVEY WP {wp_idx+1}/{len(SURVEY_WPS)}"
-                  f"  N={wn:+.0f} E={we:+.0f} AGL={wagl:.0f} m")
-            reached = cmd.go_to_ned(wn, we, wagl,
+                  f"  N={ln:+.0f} E={le:+.0f} AGL={wagl:.0f} m")
+            reached = cmd.go_to_ned(ln, le, wagl,
                                     timeout=WAYPOINT_TIMEOUT,
                                     speed=SURVEY_SPEED)
             if reached and cmd._drone is not None:
                 ds  = cmd._drone.pose.position
-                dx  = ds.x - we; dy = ds.y - wn
+                dx  = ds.x - le; dy = ds.y - ln
                 print(f"[APCmd] WP {wp_idx+1} ARRIVED ✓"
                       f"  E={ds.x:+.1f} N={ds.y:+.1f}"
                       f"  horiz_err={math.hypot(dx, dy):.1f} m")
@@ -1195,6 +1263,8 @@ def main():
             wp_idx += 1
 
         print("[APCmd] === SURVEY COMPLETE — returning home ===")
+        # Local (0,0) IS the EKF origin ≈ takeoff point — no home_frame_to_local
+        # here; shifting would steer to the hardcoded HOME instead.
         cmd.go_to_ned(0.0, 0.0, TAKEOFF_ALT, timeout=300.0, speed=SURVEY_SPEED)
         print("[APCmd] Over home — LAND")
         cmd.set_mode("LAND")

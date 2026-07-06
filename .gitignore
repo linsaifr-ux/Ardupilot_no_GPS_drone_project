@@ -149,3 +149,5 @@ field_data/**/frame_times.csv
 # Source files, docs, and config in streaming/ are tracked normally
 streaming/mediamtx
 streaming/*.log
+# Local copies of the ground-view stream (tools/ground_view_stream.py)
+recordings/

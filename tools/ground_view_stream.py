@@ -33,6 +33,11 @@ Stream mode B — RTSP push to MediaMTX relay server (LTE / internet):
         Browser: http://118.232.160.227:8888/drone  (HLS ~5 s, very reliable)
 
 --host and --stream-server are mutually exclusive.
+
+A local copy of the streamed composite is always recorded to
+recordings/ground_view_<timestamp>.mkv (same encoded H.265 — no extra GPU
+cost; crash-safe streamable MKV). Disable with --no-record; change the
+directory with --record-dir.
 """
 
 import argparse
@@ -98,29 +103,45 @@ _APPSRC = (
 )
 
 
-def _build_udp_pipeline(host: str, port: int, bitrate: int):
-    """Mode A — direct RTP/UDP to ground station."""
-    pipeline = Gst.parse_launch(
-        _APPSRC +
-        _ENC + f'bitrate={bitrate} ! '
-        f'rtph265pay config-interval=-1 mtu=1200 ! '
-        f'udpsink host={host} port={port} sync=false'
-    )
+def _rec_branch(record_path: str) -> str:
+    """tee branch writing the encoded H.265 to a local MKV (no re-encode).
+
+    matroskamux streamable=true writes cluster-by-cluster with no end-of-file
+    index seek, so the file stays playable after a crash / power loss
+    mid-flight — same rationale as record_field.py's video.mkv.
+    """
+    return (f' t. ! queue ! h265parse ! matroskamux streamable=true ! '
+            f'filesink location="{record_path}" sync=false')
+
+
+def _build_udp_pipeline(host: str, port: int, bitrate: int, record_path: str = ''):
+    """Mode A — direct RTP/UDP to ground station (+ optional local MKV)."""
+    net = (f'rtph265pay config-interval=-1 mtu=1200 ! '
+           f'udpsink host={host} port={port} sync=false')
+    if record_path:
+        desc = (_APPSRC + _ENC + f'bitrate={bitrate} ! tee name=t '
+                f't. ! queue ! ' + net + _rec_branch(record_path))
+    else:
+        desc = _APPSRC + _ENC + f'bitrate={bitrate} ! ' + net
+    pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
 
 
-def _build_server_pipeline(server: str, rtsp_path: str, bitrate: int):
-    """Mode B — RTSP push to MediaMTX relay server via TCP.
+def _build_server_pipeline(server: str, rtsp_path: str, bitrate: int,
+                           record_path: str = ''):
+    """Mode B — RTSP push to MediaMTX relay server via TCP (+ optional local MKV).
 
     Requires the `gstreamer1.0-rtsp` apt package (provides rtspclientsink) —
     it's not part of gstreamer1.0-plugins-bad on Ubuntu.
     """
-    pipeline = Gst.parse_launch(
-        _APPSRC +
-        _ENC + f'bitrate={bitrate} ! '
-        f'h265parse ! '
-        f'rtspclientsink location=rtsp://{server}:8554{rtsp_path} protocols=tcp'
-    )
+    net = (f'h265parse ! '
+           f'rtspclientsink location=rtsp://{server}:8554{rtsp_path} protocols=tcp')
+    if record_path:
+        desc = (_APPSRC + _ENC + f'bitrate={bitrate} ! tee name=t '
+                f't. ! queue ! ' + net + _rec_branch(record_path))
+    else:
+        desc = _APPSRC + _ENC + f'bitrate={bitrate} ! ' + net
+    pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
 
 # ── Overlay helper ────────────────────────────────────────────────────────────
@@ -377,6 +398,12 @@ def main():
                     help='RTSP stream path on server (default: /drone)')
     # Common
     ap.add_argument('--bitrate', type=int, default=1_000_000)
+    ap.add_argument('--record-dir', default=os.path.join(PROJECT_DIR, 'recordings'),
+                    metavar='DIR',
+                    help='Directory for the local MKV copy of the stream '
+                         '(default: <project>/recordings)')
+    ap.add_argument('--no-record', action='store_true',
+                    help='Disable the local recording (stream only)')
     args = ap.parse_args()
 
     if args.host and args.stream_server:
@@ -384,12 +411,20 @@ def main():
     if not args.host and not args.stream_server:
         args.host = GROUND_IP   # default to direct UDP
 
+    record_path = ''
+    if not args.no_record:
+        os.makedirs(args.record_dir, exist_ok=True)
+        record_path = os.path.join(
+            args.record_dir,
+            f"ground_view_{time.strftime('%Y%m%d_%H%M%S')}.mkv")
+
     Gst.init(None)
     if args.stream_server:
         pipeline, appsrc = _build_server_pipeline(
-            args.stream_server, args.rtsp_path, args.bitrate)
+            args.stream_server, args.rtsp_path, args.bitrate, record_path)
     else:
-        pipeline, appsrc = _build_udp_pipeline(args.host, args.port, args.bitrate)
+        pipeline, appsrc = _build_udp_pipeline(
+            args.host, args.port, args.bitrate, record_path)
     pipeline.set_state(Gst.State.PLAYING)
 
     rclpy.init()
@@ -413,6 +448,8 @@ def main():
         print( '      application/x-rtp,encoding-name=H265,payload=96 ! \\')
         print( '      rtph265depay ! h265parse ! avdec_h265 ! \\')
         print( '      videoconvert ! autovideosink sync=false')
+    if record_path:
+        print(f'[stream] Recording local copy → {record_path}')
     print()
     print('[stream] Waiting for /drone/camera/image_raw …')
 
@@ -452,8 +489,16 @@ def main():
         print('\n[stream] Stopping …')
     finally:
         appsrc.emit('end-of-stream')
+        # Let the muxer flush its last cluster before tearing down — the MKV
+        # is streamable (playable even without this), but this avoids losing
+        # the final ~1 s.
+        bus = pipeline.get_bus()
+        bus.timed_pop_filtered(2 * Gst.SECOND,
+                               Gst.MessageType.EOS | Gst.MessageType.ERROR)
         pipeline.set_state(Gst.State.NULL)
         rclpy.shutdown()
+        if record_path:
+            print(f'[stream] Local recording saved → {record_path}')
         print('[stream] Done.')
 
 

@@ -13,10 +13,17 @@ Active backbone: **ViT-S/14** (`dinov2_vits14`) — database lives in `anyloc/da
 ## How it fits in the pipeline
 
 ```
-/drone/camera/image_raw  →  ros2_node.py  →  /anyloc/pose_estimate
-                                           →  latest_estimate.json   (read by ardupilot_commander.py)
-                                           →  latest_match.jpg       (read by gstreamer_stream.py postview)
+/drone/camera/image_raw  →  ros2_node.py                →  /anyloc/pose_estimate
+                            OR ros2_node_vo_primary.py   →  latest_estimate.json   (read by ardupilot_commander.py)
+                            (run ONE, never both)        →  latest_match.jpg       (read by gstreamer_stream.py postview)
 ```
+
+Two fusion nodes exist — identical topics/outputs, different policy; run **one or the other, never both** (they write the same `latest_estimate.json`):
+
+- **`ros2_node.py` (plan A, anchor-chain):** AnyLoc every `ANYLOC_INTERVAL=10` frames re-anchors *unconditionally*; VO fills between anchors and resets on each anchor. Since 2026-07-06 the first search is seeded from the EKF position (`/drone/pose` — GPS truth on SRC1 at handover) instead of a global whole-DB search.
+- **`ros2_node_vo_primary.py` (plan B, VO-primary + score gate) — preferred:** position seeds once from the EKF position, VO integrates every frame and is never reset; AnyLoc every 10 frames (constrained ±200 m around the VO position) only replaces the position when cosine `score ≥ --gate` (default 0.32). Launcher: `run_ros2_localizer_vo.sh`. Benchmarked on `field_data/survey13` real footage (`test_vo_fusion_compare.py`, logs `anyloc/logs/survey13_vo_fusion*.json`): 13–15 m mean error vs 29–399 m for plan A, which can permanently lock onto a wrong DB entry. **The gate is site/database-specific** (real-footage scores span ~0.16–0.34; 0.32 calibrated on survey13 + `database_test20_vits14`) — recalibrate from a GPS shadow flight's accuracy CSV before contest: set it just above the highest bad-match score.
+
+The Desktop `full_run.sh` launches plan B; `control/launch_real_hw.sh` still launches plan A.
 
 AnyLoc only runs inference when AGL ≥ 50 m (configurable via `MIN_AGL`).  
 Below 50 m the postview still shows the live camera feed.
@@ -119,17 +126,21 @@ ls anyloc/database/database_vlads.pt && echo "DB OK"
 ## 2. Run the ROS2 Node
 
 ```bash
-bash anyloc/run_ros2_localizer.sh [OPTIONS]
+bash anyloc/run_ros2_localizer_vo.sh [OPTIONS]   # plan B (preferred)
+bash anyloc/run_ros2_localizer.sh    [OPTIONS]   # plan A (anchor-chain)
 ```
 
 | Flag | Description |
 |---|---|
 | *(none)* | Show matplotlib postview window (requires display / SSH -X) |
 | `--headless` | No display, no stream — flight mode |
+| `--gate S` | **plan B only** — AnyLoc accept score gate (default 0.32; recalibrate per site/DB) |
 | `--stream-host IP` | Stream postview as H.265/RTP to ground station instead of local window |
 | `--stream-port N` | UDP port for stream (default: 5000) |
 | `--test` | **Ground test mode**: bypass 50 m AGL gate, run AnyLoc on every frame, publish VPE directly to `/mavros/vision_pose/pose_cov` |
 | `--test-agl N` | Fake AGL (m) used when on ground in `--test` mode (default: 65) |
+
+Both nodes need `hw_bridge.py` running: plan B waits for `/drone/pose` to seed its position (prints a warning until it arrives), and plan A uses it to seed the first search window.
 
 ### Postview streaming to ground station
 
@@ -171,8 +182,8 @@ Then flip RC aux switch to HIGH (SRC2 = ExternalNav) and watch for `✓ POS_ABS 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
 | Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1640×1232, 30 fps |
-| Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | WGS84 (lat, lon, alt_msl) from hw_bridge |
-| Subscribe | `/drone/agl` | `std_msgs/Float64` | AGL from hw_bridge (barometer) |
+| Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | WGS84 (lat, lon, alt_amsl) — hw_bridge relays ArduPilot's own EKF output (`/mavros/global_position/global`), whichever source (GPS or ExternalNav/VPE) is active |
+| Subscribe | `/drone/agl` | `std_msgs/Float64` | AGL — hw_bridge relays `/mavros/global_position/rel_alt` (ArduPilot's own relative altitude) |
 | Publish | `/anyloc/pose_estimate` | `geometry_msgs/PoseWithCovarianceStamped` | WGS84 estimate (monitoring) |
 | Publish | `/mavros/vision_pose/pose_cov` | `geometry_msgs/PoseWithCovarianceStamped` | **test mode only** — ENU metres |
 
@@ -188,13 +199,13 @@ Then flip RC aux switch to HIGH (SRC2 = ExternalNav) and watch for `✓ POS_ABS 
 
 ### accuracy_<timestamp>.csv format
 
-One file per `ros2_node.py` run, created at startup (path printed as `[AnyLoc] Logging accuracy to ...`), flushed every row so no data is lost on a crash. Columns:
+One file per node run (either fusion node — same format), created at startup (path printed as `[AnyLoc] Logging accuracy to ...`), flushed every row so no data is lost on a crash. Columns:
 
 ```
 timestamp, drone_lat, drone_lon, gps_lat, gps_lon, est_lat, est_lon, err_m, score, mode_tag, agl_m, n_vo, elapsed_ms
 ```
 
-`gps_lat`/`gps_lon` come from `/mavros/global_position/global` (ground truth); `err_m` is the great-circle distance to `est_lat`/`est_lon`. `mode_tag` is `ANYLOC` on retrieval frames or `VO +Nf` on the VO-propagated frames in between. Not committed to git (`anyloc/logs/` is gitignored).
+`gps_lat`/`gps_lon` come from `/mavros/global_position/global` (ground truth); `err_m` is the great-circle distance to `est_lat`/`est_lon`. `mode_tag`: plan A writes `ANYLOC` on retrieval frames and `VO +Nf` in between; plan B writes `ANYLOC-ACC` (correction accepted), `ANYLOC-REJ` (candidate below gate), or `VO`. The plan-B tags + `score` column are what you use to recalibrate `--gate` after a shadow flight. Not committed to git (`anyloc/logs/` is gitignored).
 
 ### latest_estimate.json format
 
@@ -217,10 +228,14 @@ timestamp, drone_lat, drone_lon, gps_lat, gps_lon, est_lat, est_lon, err_m, scor
 
 `ardupilot_commander.py` reads `latest_estimate.json` in its VPE background thread at 20 Hz:
 
-- **Phase 1** (AGL < 50 m): sends home-anchor VPE at (0, 0), cov = 20 m²
-- **Phase 2** (AGL ≥ 50 m): sends AnyLoc estimate, cov = 20 m²
+- **Phase 1** (AGL < 50 m): sends home-anchor VPE at (0, 0), cov = 0.5 m²
+- **Phase 2** (AGL ≥ 50 m): sends the estimate, cov = max(1, err_m²)
 
-The commander also switches EKF source from GPS (SRC1) to ExternalNav (SRC2) automatically after reaching cruise altitude via `MAV_CMD_DO_AUX_FUNCTION`.
+VPE metres are computed relative to the commander's `local_frame_ref()` (EKF origin / arm GPS — see `control/README.md`), not the hardcoded HOME.
+
+In the scripted-survey flow the commander also switches EKF source SRC1→SRC2 automatically at cruise altitude; in the Mission-Planner-AUTO flow you flip the RC aux switch yourself.
+
+> **Known landmine (unfixed):** Phase 2 only accepts estimates with `error_m < 100`, and `error_m` is measured against the last GPS fix. Under real GPS jamming the fix freezes, so >100 m from the jam point every estimate gets rejected and the thread republishes a stale position. Replace this gate before a real GPS-denied flight.
 
 ---
 
