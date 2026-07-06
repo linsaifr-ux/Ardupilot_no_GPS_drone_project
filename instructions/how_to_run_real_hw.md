@@ -105,7 +105,7 @@ Set RC aux switch for EKF source:
 
 ### 5. AnyLoc database
 
-Active database is `anyloc/database_zone_vits14/` (satellite tiles, right-sized to the mission zone) with a symlink `anyloc/database → anyloc/database_zone_vits14` (already created). The old full-radius `anyloc/database_vits14/` (2821 entries, covers a 1502 m circle around home) is kept on disk as a fallback — `ln -sfn database_vits14 anyloc/database` to switch back.
+Active database is `anyloc/database_zone_z20_vits14/` (NLSC zoom-20 satellite tiles ≈ 0.19 m/px, right-sized to the mission zone, 882 entries) with a symlink `anyloc/database → anyloc/database_zone_z20_vits14` (already created). Fallbacks kept on disk: `anyloc/database_zone_vits14/` (same 882-entry grid, coarser zoom-18) and the old full-radius `anyloc/database_vits14/` (2821 entries, 1502 m circle) — `ln -sfn database_zone_vits14 anyloc/database` etc. to switch back.
 
 To rebuild satellite database for a different site or zone:
 ```bash
@@ -115,10 +115,14 @@ To rebuild satellite database for a different site or zone:
 # region instead of the default full-radius circle — use this to stay zone-sized.
 # The values below are specific to the CURRENT mission zone + 20% margin — recompute
 # them (see tools/gen_contest_survey.py's bounding-box math) if the zone changes.
+# --sat-zoom 20 needs --grid-radius-m to shrink the tile fetch (MAX_TEX cap) and an
+# explicit --sat-path (else it silently reuses the zoom-18 simulator mosaic).
 /home/jetson/venv/anyloc/bin/python3 anyloc/build_database.py --model vits14 \
-    --db-dir anyloc/database_zone_vits14 \
-    --n-min -262 --n-max 762 --e-min -1501 --e-max 589 --rebuild
-ls -lh anyloc/database_zone_vits14/   # expect database.pt, database_vlads.pt, db_meta.json, db_images/
+    --db-dir anyloc/database_zone_z20_vits14 \
+    --n-min -262.2 --n-max 737.8 --e-min -1501.3 --e-max 548.7 \
+    --agl-min 65 --agl-max 65 --sat-zoom 20 --grid-radius-m 780 \
+    --sat-path anyloc/database_zone_z20_vits14/satellite.jpg --rebuild
+ls -lh anyloc/database_zone_z20_vits14/   # expect database.pt, database_vlads.pt, db_meta.json, db_images/
 ```
 
 To build a **real-field database** from actual drone footage (better match at inference time):
@@ -606,7 +610,7 @@ Emergency
 | AnyLoc venv import error | Wrong Python used | Confirm script uses `/home/jetson/venv/anyloc/bin/python3` |
 | YOLO venv import error | Wrong Python used | Confirm script uses `/home/jetson/venv/yolo/bin/python3` |
 | AnyLoc not activating | AGL below 50 m threshold | Normal — activates above `MIN_AGL=50`; use `--test` flag to bypass on ground |
-| AnyLoc database error | Wrong path | Check symlink: `ls -la anyloc/database` → should point to `database_zone_vits14` |
+| AnyLoc database error | Wrong path | Check symlink: `ls -la anyloc/database` → should point to `database_zone_z20_vits14` |
 | Survey strips curved | Wrong setpoint type | `go_to_ned()` uses velocity setpoints — don't switch to position setpoints during survey |
 | Drone drifts in hover | `PSC_NE_VEL_I` non-zero | Verify `PSC_NE_VEL_I=0.0` in uploaded params |
 | No detections logged | YOLO not running, or `/drone/camera/image_raw` not flowing | Check YOLO pane started; `ros2 topic hz /drone/camera/image_raw` (YOLO runs at any AGL — no altitude gate) |

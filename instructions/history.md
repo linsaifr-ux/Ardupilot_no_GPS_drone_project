@@ -1,5 +1,26 @@
 # Project History
 
+## 2026-07-06 — Mission-zone database rebuilt at NLSC zoom 20 (`database_zone_z20_vits14`)
+
+**Motivation:** DB crops were blurry vs real 65 m AGL photos — zoom-18 source is ~0.55 m/px, so each camera-footprint crop is only ~141 native pixels wide, upsampled 4.5× to 640×480.
+
+**Build:** same 882-entry grid as `database_zone_vits14` (bounds recovered exactly from `db_meta.json`: n [-262.2, 737.8], e [-1501.3, 548.7] m from center; coordinates verified identical), AGL 65 only, `--sat-zoom 20 --grid-radius-m 780 --sat-path <db>/satellite.jpg`. The shrunk fetch radius (±1560 m) keeps the `MAX_TEX=16384` downsample cost low: **effective ~0.19 m/px** (2.9× sharper). Crops visually confirmed sharper (slab seams, pavement texture). `anyloc/database` symlink switched to the new DB.
+
+**Benchmarks (15 samples/steps, seed 42, AGL 65, old vs new zone DB):**
+- Random-sample (`test_accuracy_esri.py`): NLSC-matched median 210 → **80 m**, <50 m hits 5 → 7/15; mean only 319 → 289 m (farmland-aliasing outliers persist — sharpness fixes blur, not ambiguity). Esri-sourced rows unchanged (~700 m — cross-provider gap dominates).
+- GPS-seeded anchor-chain (`test_accuracy_constrained.py`, new **`--gps-seed`** flag added — step 0 constrained around the true start, mirroring the live node's EKF-seeded handover at 65 m AGL): NLSC-matched chain stays **100% in-window** on both DBs, mean 45.9 → **31.5 m**, medians at the ~half-grid-cell floor (~21–26 m). Esri-sourced chain falls to 40% in-window on both — when the technique fails it's the imagery domain gap, not resolution.
+- Trajectory sampling scores far better than uniform-random on the same DB (median 20.9 vs 79.5 m) — central-zone terrain is friendlier than the farmland fringes, so real survey-strip accuracy is likely better than the random benchmark suggests.
+
+**Domain-gap conclusion (discussed, deferred):** satellite-DB tuning is done paying off; the remaining real-footage bottleneck needs either a real-imagery database (`build_database_real.py`, viable for prelims) or query-side nadir rectification — user chose to keep the satellite DB for now.
+
+| File | Change |
+|------|--------|
+| `anyloc/database_zone_z20_vits14/` | New DB (gitignored data; buildable from the documented command) |
+| `anyloc/test_accuracy_constrained.py` | `--gps-seed` flag |
+| `anyloc/README.md`, `README.md`, `instructions/how_to_run_real_hw.md`, `instructions/field_database_collection.md` | Active-DB references + build command updated |
+
+---
+
 ## 2026-07-06 — Plan-B localizer: jump gate + blended corrections (MP position teleports)
 
 **Symptom:** First real flight with `anyloc/ros2_node_vo_primary.py` as the EKF source (SRC2/ExternalNav): Mission Planner showed the drone position teleporting — at X one moment, far away at Y the next.
@@ -14,6 +35,8 @@
 - **Re-acquisition:** `--reacquire-n` (3) consecutive jump-rejected candidates agreeing within 30 m force a full relocation — covers the "VO/seed was the wrong one" case (`ANYLOC-REACQ`).
 
 Verified by a stubbed `_cb_image` dry-run (accept → 3× far candidate → re-acquire → blend math exact). Not yet flight-tested.
+
+**Validated offline on survey13 real footage (same day):** replayed old vs new policy against GPS truth (`anyloc/logs/survey13_jumpgate_replay.{json,png}`, `_stress.{json,png}`). At the calibrated gate 0.32: largest output step 19.3 m → **7.6 m**, zero steps >10 m, same mean error (15 m), lower max error (43.6 → 35.4 m). Stress test at gate 0.25 (bad matches admitted, reproducing the teleport flight): old policy made 14 teleports >20 m (max 71.6 m); new policy suppressed them to 2 deliberate re-acquisitions and beat it on mean error (23.1 → 19.8 m). Caveat found: under a badly miscalibrated gate, a re-acquisition can hop to a wrong self-consistent cluster once (error briefly 103 m before recovery) — raise `--reacquire-n` if smoothness matters more than drift recovery speed.
 
 | File | Change |
 |------|--------|

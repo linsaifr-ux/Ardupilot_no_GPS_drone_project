@@ -2,7 +2,7 @@
 """
 Field database collection recorder.
 
-Records 1640×1232 30fps H.264 video alongside a telemetry CSV, and
+Records 1640×1232 30fps H.265 video alongside a telemetry CSV, and
 optionally streams a 1280×720 H.265 preview with a telemetry overlay
 to a ground station or a MediaMTX relay server.
 
@@ -19,7 +19,7 @@ Usage:
     python3 tools/record_field.py [OPTIONS]
 
     --output DIR           output directory  (default: field_data/<timestamp>)
-    --bitrate BPS          H.264 record bitrate (default: 8000000)
+    --bitrate BPS          H.265 record bitrate (default: 8000000)
     --duration SECS        stop after N s    (default: 0 = Ctrl+C)
 
   Stream mode A — direct UDP to ground station:
@@ -33,7 +33,7 @@ Usage:
     --stream-bitrate BPS   H.265 stream bitrate (default: 1000000)
 
 Output files in DIR/:
-    video.mkv          H.264, 1640×1232 30fps (MKV — crash-safe)
+    video.mkv          H.265, 1640×1232 30fps (MKV — crash-safe)
     telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg, rc_channels  (5 Hz)
                        rc_channels is the raw /mavros/rc/in PWM list (space-separated) —
                        check the EKF-source switch channel (RCx_OPTION=90) stayed LOW
@@ -226,14 +226,19 @@ def _open_camera(retries=10, delay=2.0):
 def _build_rec_pipeline(video_path, bitrate):
     # matroskamux writes clusters incrementally — the file stays playable even
     # after a hard power-off.  mp4mux requires a clean EOS to write the moov
-    # atom; a crash leaves the file unplayable.
+    # atom; a crash leaves the file unplayable. (Fragmented MP4 was tried as
+    # an alternative but produces corrupt trun/sample tables with
+    # nvv4l2h265enc on this hardware/GStreamer combo — do not switch to it
+    # without re-verifying.)
+    # idrinterval/iframeinterval=FPS forces one keyframe/second so every
+    # ~1 s window has a seek point, matching the stream pipelines below.
     return Gst.parse_launch(
         f'appsrc name=rec format=time is-live=true block=true '
         f'caps=video/x-raw,format=BGR,width={REC_W},height={REC_H},framerate={FPS}/1 ! '
         f'videoconvert ! '
         f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
-        f'nvv4l2h264enc bitrate={bitrate} ! '
-        f'h264parse ! matroskamux ! '
+        f'nvv4l2h265enc bitrate={bitrate} idrinterval={FPS} iframeinterval={FPS} ! '
+        f'h265parse ! matroskamux ! '
         f'filesink location={video_path}'
     )
 
@@ -377,6 +382,11 @@ def main():
     import signal
     signal.signal(signal.SIGINT,  _stop)
     signal.signal(signal.SIGTERM, _stop)
+    # Closing the terminal window (rather than Ctrl+C) sends SIGHUP, not
+    # SIGINT — without trapping it the process dies without emitting EOS,
+    # so matroskamux never writes Cues/duration and the file is left
+    # unseekable (this is what happened to survey8/survey9).
+    signal.signal(signal.SIGHUP,  _stop)
 
     try:
         while not stop_event.is_set():
@@ -424,10 +434,13 @@ def main():
             cap.release()
         rec_src.emit('end-of-stream')
         # Wait for EOS to propagate so matroskamux flushes the final cluster
-        # before the pipeline goes to NULL.
+        # (Cues/duration) before the pipeline goes to NULL.
         rec_bus = rec_pipe.get_bus()
-        rec_bus.timed_pop_filtered(10 * Gst.SECOND,
-                                   Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        rec_msg = rec_bus.timed_pop_filtered(10 * Gst.SECOND,
+                                             Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        if rec_msg is None or rec_msg.type != Gst.MessageType.EOS:
+            print('[REC] WARNING: record pipeline did not reach EOS cleanly — '
+                  'video.mkv may be missing its seek index (Cues)/duration.')
         rec_pipe.set_state(Gst.State.NULL)
         if stream_pipe:
             stream_src.emit('end-of-stream')

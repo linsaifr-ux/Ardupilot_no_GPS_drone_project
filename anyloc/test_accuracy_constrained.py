@@ -314,7 +314,8 @@ class _Viewport:
 
 # ── Benchmark ──────────────────────────────────────────────────────────────────
 
-def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewport):
+def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewport,
+                  gps_seed=False):
     sys.path.insert(0, os.path.dirname(HERE))
     from anyloc.localizer import AnyLocLocalizer
 
@@ -323,6 +324,9 @@ def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewpo
     print(f"  Steps  : {n_steps}  |  AGL : {agl_m if agl_m > 0 else 'random 60-120'} m"
           f"  |  Radius : {radius_m} m  |  Seed : {seed}")
     print(f"  Method : anchor-chain constrained search vs full global search")
+    if gps_seed:
+        print(f"  Seed   : GPS-seeded start — step 0 constrained around the true "
+              f"position (mirrors the live node's EKF-seeded handover at 65 m AGL)")
     print(f"{'='*66}\n")
 
     print("[1/3] Loading AnyLoc database and DINOv2 model …")
@@ -371,6 +375,12 @@ def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewpo
 
     anchor_lat = None
     anchor_lon = None
+    if gps_seed:
+        # The EKF position at SRC1→SRC2 handover is GPS truth — the live node
+        # (ros2_node.py / ros2_node_vo_primary.py) seeds its first search
+        # window from it, so the chain never does a global cold start.
+        anchor_lat = trajectory[0]['true_lat']
+        anchor_lon = trajectory[0]['true_lon']
 
     viewport = None
     if show_viewport:
@@ -494,7 +504,7 @@ def run_benchmark(n_steps, agl_m, radius_m, seed, output_path, plot, show_viewpo
     report = dict(
         config=dict(
             n_steps=n_steps, agl_m=agl_m, radius_m=radius_m, seed=seed,
-            imagery=IMAGERY_NAME,
+            imagery=IMAGERY_NAME, gps_seed=gps_seed,
             center_lat=db_center_lat, center_lon=db_center_lon,
             radius_scene_m=db_radius_m,
         ),
@@ -634,6 +644,10 @@ def main():
                         help='Disable live three-panel image viewport')
     parser.add_argument('--db-dir', default=_default_db,
                         help=f'AnyLoc database directory (default: {_default_db})')
+    parser.add_argument('--gps-seed', action='store_true',
+                        help='Constrain step 0 around the true start position '
+                             '(mirrors the live EKF-seeded handover) instead of '
+                             'a global cold-start search')
     parser.add_argument('--imagery', choices=['esri', 'nlsc'], default='esri',
                         help="Ground-truth tile source: 'esri' or 'nlsc' "
                              "(same source the DB is built from). Default: esri")
@@ -650,6 +664,7 @@ def main():
         output_path=args.output or None,
         plot=args.plot,
         show_viewport=not args.no_viewport,
+        gps_seed=args.gps_seed,
     )
 
 

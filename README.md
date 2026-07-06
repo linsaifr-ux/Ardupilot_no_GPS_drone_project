@@ -82,7 +82,8 @@ no_GPS_drone_project/
 │   ├── vo_refiner.py             # LK optical-flow visual odometry (shared by both nodes)
 │   ├── test_vit_comparison.py    # speed + accuracy benchmark: ViT-B vs ViT-S
 │   ├── test_vo_fusion_compare.py # plan A vs plan B vs pure-VO benchmark on field_data/surveyN
-│   ├── database_zone_vits14/     # active database (ViT-S/14, zone-sized, 882 entries, ~87 MB VLADs)
+│   ├── database_zone_z20_vits14/ # active database (ViT-S/14, zone-sized, 882 entries, NLSC zoom-20 ≈0.19 m/px, ~87 MB VLADs)
+│   ├── database_zone_vits14/     # zoom-18 predecessor (same 882-entry grid, ≈0.53 m/px) — fallback
 │   ├── database_vits14/          # old full-radius database (ViT-S/14, 2821 entries, ~265 MB VLADs) — inactive, kept as fallback
 │   ├── run_ros2_localizer.sh     # launch plan A
 │   └── run_ros2_localizer_vo.sh  # launch plan B (defaults: --gate 0.32 --jump-base 45 --drift-rate 1.0 --blend 0.4 --reacquire-n 3)
@@ -191,7 +192,7 @@ python3 tools/live_trace.py
 ```
 Overlays the survey route, zone boundary, sim car positions, and YOLO detections in real time.
 
-> **AnyLoc startup:** 882-entry ViT-S/14 database (`database_zone_vits14/`, 87 MB), right-sized to the mission zone rather than the old full-radius circle (`database_vits14/`, 2821 entries, 265 MB). Load time is much shorter than the old 36,673-entry ViT-B database. The localizer reads `model_name` from the database and loads the correct DINOv2 backbone automatically.
+> **AnyLoc startup:** 882-entry ViT-S/14 database (`database_zone_z20_vits14/`, 87 MB, NLSC zoom-20 imagery), right-sized to the mission zone rather than the old full-radius circle (`database_vits14/`, 2821 entries, 265 MB). Load time is much shorter than the old 36,673-entry ViT-B database. The localizer reads `model_name` from the database and loads the correct DINOv2 backbone automatically.
 
 ### Run — distributed (PC = sim only, Jetson = everything that runs on real drone)
 
