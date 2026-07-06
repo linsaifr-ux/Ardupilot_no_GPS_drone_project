@@ -78,14 +78,14 @@ no_GPS_drone_project/
 │   ├── build_database.py         # build VLAD database (--model vitb14|vits14; ~2 820 entries)
 │   ├── localizer.py              # AnyLocLocalizer (DINOv2 ViT-S/14 + VLAD + FAISS)
 │   ├── ros2_node.py              # plan A fusion node (anchor-chain; EKF-seeded first search)
-│   ├── ros2_node_vo_primary.py   # plan B fusion node (VO-primary + score-gated AnyLoc, gate 0.32) — preferred
+│   ├── ros2_node_vo_primary.py   # plan B fusion node (VO-primary; AnyLoc corrections score-gated 0.32 + jump-gated, α-blended) — preferred
 │   ├── vo_refiner.py             # LK optical-flow visual odometry (shared by both nodes)
 │   ├── test_vit_comparison.py    # speed + accuracy benchmark: ViT-B vs ViT-S
 │   ├── test_vo_fusion_compare.py # plan A vs plan B vs pure-VO benchmark on field_data/surveyN
 │   ├── database_zone_vits14/     # active database (ViT-S/14, zone-sized, 882 entries, ~87 MB VLADs)
 │   ├── database_vits14/          # old full-radius database (ViT-S/14, 2821 entries, ~265 MB VLADs) — inactive, kept as fallback
 │   ├── run_ros2_localizer.sh     # launch plan A
-│   └── run_ros2_localizer_vo.sh  # launch plan B (--gate 0.32 default)
+│   └── run_ros2_localizer_vo.sh  # launch plan B (defaults: --gate 0.32 --jump-base 45 --drift-rate 1.0 --blend 0.4 --reacquire-n 3)
 ├── detection/                    # object detection
 │   ├── detector.py               # YOLODetector (auto class-map COCO/VisDrone; TensorRT FP16 engine, auto-exported from .pt)
 │   ├── ros2_node.py              # ROS2: sub /drone/camera → pub /yolo/detections

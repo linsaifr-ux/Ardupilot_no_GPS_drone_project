@@ -23,7 +23,7 @@ Mission Planner (PC)
                                   │                                    /mavros/global_position/global, rel_alt → /drone/pose, /drone/agl
                                   ├─ [4] anyloc/ros2_node.py         → venv/anyloc → /drone/camera/image_raw → AnyLoc VPE
                                   │      (plan A — launch_real_hw.sh default; Desktop full_run.sh uses
-                                  │       plan B anyloc/ros2_node_vo_primary.py, VO-primary + gate 0.32 — preferred)
+                                  │       plan B anyloc/ros2_node_vo_primary.py, VO-primary + score/jump gates — preferred)
                                   ├─ [5] detection/ros2_node.py      → venv/yolo   → /drone/camera/image_raw → detections.csv
                                   └─ [6] ardupilot_commander.py      → VPE → GUIDED → survey
                                          ↕ MAVLink
@@ -223,8 +223,8 @@ pkill -f csi_camera_node.py 2>/dev/null; echo "camera clear"
 
 > **Fusion-node note:** `launch_real_hw.sh` starts the **plan-A** localizer
 > (`anyloc/ros2_node.py`). The Desktop **Full Run** icon (`~/Desktop/full_run.sh`)
-> starts the **plan-B** node (`ros2_node_vo_primary.py`, VO-primary + gate 0.32,
-> preferred) plus the `--manual-takeoff` commander and the RTSP ground stream —
+> starts the **plan-B** node (`ros2_node_vo_primary.py`, VO-primary + score gate 0.32
+> + jump gate/blended corrections, preferred) plus the `--manual-takeoff` commander and the RTSP ground stream —
 > use that for the Mission-Planner-AUTO flow.
 
 ```bash

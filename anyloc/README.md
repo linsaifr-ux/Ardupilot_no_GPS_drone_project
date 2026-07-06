@@ -21,7 +21,7 @@ Active backbone: **ViT-S/14** (`dinov2_vits14`) — database lives in `anyloc/da
 Two fusion nodes exist — identical topics/outputs, different policy; run **one or the other, never both** (they write the same `latest_estimate.json`):
 
 - **`ros2_node.py` (plan A, anchor-chain):** AnyLoc every `ANYLOC_INTERVAL=10` frames re-anchors *unconditionally*; VO fills between anchors and resets on each anchor. Since 2026-07-06 the first search is seeded from the EKF position (`/drone/pose` — GPS truth on SRC1 at handover) instead of a global whole-DB search.
-- **`ros2_node_vo_primary.py` (plan B, VO-primary + score gate) — preferred:** position seeds once from the EKF position, VO integrates every frame and is never reset; AnyLoc every 10 frames (constrained ±200 m around the VO position) only replaces the position when cosine `score ≥ --gate` (default 0.32). Launcher: `run_ros2_localizer_vo.sh`. Benchmarked on `field_data/survey13` real footage (`test_vo_fusion_compare.py`, logs `anyloc/logs/survey13_vo_fusion*.json`): 13–15 m mean error vs 29–399 m for plan A, which can permanently lock onto a wrong DB entry. **The gate is site/database-specific** (real-footage scores span ~0.16–0.34; 0.32 calibrated on survey13 + `database_test20_vits14`) — recalibrate from a GPS shadow flight's accuracy CSV before contest: set it just above the highest bad-match score.
+- **`ros2_node_vo_primary.py` (plan B, VO-primary + gated AnyLoc) — preferred:** position seeds once from the EKF position, VO integrates every frame and is never reset; AnyLoc every 10 frames (constrained ±200 m around the VO position) supplies *corrections* that must pass two gates: cosine `score ≥ --gate` (default 0.32) **and** a jump-plausibility gate — the candidate must lie within `--jump-base + --drift-rate × dt` metres of the VO position (defaults 45 m + 1.0 m/s since the last accepted correction), because VO can't be more wrong than its drift allows, so a farther "good-scoring" match is a false match. Accepted corrections are **blended** (`--blend`, default 0.4 of the way toward the candidate) rather than snapped, since the localizer returns raw DB-entry coordinates on a ~50 m grid — a correct match can sit ~35 m from truth and snapping teleports the EKF to each new grid point. If `--reacquire-n` (default 3) consecutive jump-rejected candidates agree within 30 m, the position relocates there fully (a consistent far signal means VO/seed was wrong, not the matcher). Launcher: `run_ros2_localizer_vo.sh`. Benchmarked on `field_data/survey13` real footage (`test_vo_fusion_compare.py`, logs `anyloc/logs/survey13_vo_fusion*.json`): 13–15 m mean error vs 29–399 m for plan A, which can permanently lock onto a wrong DB entry. **The gate is site/database-specific** (real-footage scores span ~0.16–0.34; 0.32 calibrated on survey13 + `database_test20_vits14`) — recalibrate from a GPS shadow flight's accuracy CSV before contest: set it just above the highest bad-match score.
 
 The Desktop `full_run.sh` launches plan B; `control/launch_real_hw.sh` still launches plan A.
 
@@ -135,6 +135,10 @@ bash anyloc/run_ros2_localizer.sh    [OPTIONS]   # plan A (anchor-chain)
 | *(none)* | Show matplotlib postview window (requires display / SSH -X) |
 | `--headless` | No display, no stream — flight mode |
 | `--gate S` | **plan B only** — AnyLoc accept score gate (default 0.32; recalibrate per site/DB) |
+| `--jump-base M` | **plan B only** — jump gate base (m): score-passing candidate must lie within `jump-base + drift-rate×dt` of the VO position (default 45) |
+| `--drift-rate R` | **plan B only** — jump gate growth (m/s) since last accepted correction (default 1.0) |
+| `--blend A` | **plan B only** — fraction of (candidate − position) applied per accepted correction (default 0.4; 1.0 = old snap behavior) |
+| `--reacquire-n N` | **plan B only** — consecutive agreeing jump-rejects that force a relocation (default 3) |
 | `--stream-host IP` | Stream postview as H.265/RTP to ground station instead of local window |
 | `--stream-port N` | UDP port for stream (default: 5000) |
 | `--test` | **Ground test mode**: bypass 50 m AGL gate, run AnyLoc on every frame, publish VPE directly to `/mavros/vision_pose/pose_cov` |
@@ -205,7 +209,7 @@ One file per node run (either fusion node — same format), created at startup (
 timestamp, drone_lat, drone_lon, gps_lat, gps_lon, est_lat, est_lon, err_m, score, mode_tag, agl_m, n_vo, elapsed_ms
 ```
 
-`gps_lat`/`gps_lon` come from `/mavros/global_position/global` (ground truth); `err_m` is the great-circle distance to `est_lat`/`est_lon`. `mode_tag`: plan A writes `ANYLOC` on retrieval frames and `VO +Nf` in between; plan B writes `ANYLOC-ACC` (correction accepted), `ANYLOC-REJ` (candidate below gate), or `VO`. The plan-B tags + `score` column are what you use to recalibrate `--gate` after a shadow flight. Not committed to git (`anyloc/logs/` is gitignored).
+`gps_lat`/`gps_lon` come from `/mavros/global_position/global` (ground truth); `err_m` is the great-circle distance to `est_lat`/`est_lon`. `mode_tag`: plan A writes `ANYLOC` on retrieval frames and `VO +Nf` in between; plan B writes `ANYLOC-ACC` (correction blended in), `ANYLOC-REJ` (score below gate), `ANYLOC-JREJ` (score passed but jump implausible — likely false match), `ANYLOC-REACQ` (agreeing far candidates forced a relocation), or `VO`. The plan-B tags + `score` column are what you use to recalibrate `--gate` after a shadow flight; frequent `JREJ` runs ending in `REACQ` back at the same spot suggest `--jump-base` is too tight, while isolated `JREJ`s are the filter doing its job. Not committed to git (`anyloc/logs/` is gitignored).
 
 ### latest_estimate.json format
 

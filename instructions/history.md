@@ -1,5 +1,28 @@
 # Project History
 
+## 2026-07-06 — Plan-B localizer: jump gate + blended corrections (MP position teleports)
+
+**Symptom:** First real flight with `anyloc/ros2_node_vo_primary.py` as the EKF source (SRC2/ExternalNav): Mission Planner showed the drone position teleporting — at X one moment, far away at Y the next.
+
+**Root cause (two stacked):**
+1. The plan-B node's only acceptance test was `score ≥ --gate` (0.32). Real-footage scores of good and bad matches overlap heavily, so a false match scoring above the gate snapped the fused position to it unconditionally — the jump distance was computed but only printed, never checked.
+2. Grid quantization: `localizer.py` returns the raw lat/lon of the single best DB entry (argmax, no interpolation). On the 50 m database grid, even a *correct* match sits up to ~35 m from truth, and at 5 m/s cruise the nearest grid entry flips every ~10 s — so every accepted correction yanked the EKF to a new grid point.
+
+**Fix (all in `ros2_node_vo_primary.py`, defaults on — no launcher change):**
+- **Jump gate:** a score-passing candidate must also lie within `--jump-base` (45 m, covers grid half-diagonal + VO error) + `--drift-rate` (1.0 m/s ≈ 2× measured VO drift) × seconds-since-last-accepted-correction of the VO position, else it's rejected (`ANYLOC-JREJ` in the accuracy CSV). VO tracks real motion, so flight speed doesn't need to be in the bound; the bound grows over time so accumulated VO drift stays correctable.
+- **α-blend:** accepted corrections move the position `--blend` (0.4) of the way toward the candidate instead of snapping, averaging out the ±half-cell quantization scatter (`ANYLOC-ACC`).
+- **Re-acquisition:** `--reacquire-n` (3) consecutive jump-rejected candidates agreeing within 30 m force a full relocation — covers the "VO/seed was the wrong one" case (`ANYLOC-REACQ`).
+
+Verified by a stubbed `_cb_image` dry-run (accept → 3× far candidate → re-acquire → blend math exact). Not yet flight-tested.
+
+| File | Change |
+|------|--------|
+| `anyloc/ros2_node_vo_primary.py` | Jump gate, α-blend, re-acquisition; `--jump-base/--drift-rate/--blend/--reacquire-n` flags; new CSV tags |
+| `anyloc/README.md` | Plan-B policy description, flags table, CSV `mode_tag` docs |
+| `README.md`, `instructions/how_to_run_real_hw.md` | One-line tree/launcher notes |
+
+---
+
 ## 2026-07-04 — YOLO TensorRT engine: 6.6 fps → ~17 fps
 
 **Symptom:** `detection/ros2_node.py` running `Car_visdrone1280.pt` (YOLOv8s, imgsz=1280) at ~6.6 fps in production.
