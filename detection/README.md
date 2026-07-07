@@ -62,6 +62,8 @@ Measured on `Car_visdrone1280.pt` at `imgsz=1280` on Jetson Orin NX:
 
 Preprocessing (CPU-side letterbox resize) is ~18 ms/frame — now roughly equal to inference time. If more headroom is needed later, that's the next thing to optimize, not the model itself.
 
+**`--headless` skips the postview render entirely (2026-07-07):** `ros2_node.py` used to build the annotated/resized postview frame every callback even with `--headless`, even though nothing displayed it — a ~37 ms/frame PIL LANCZOS resize wasted on every frame (comparable to inference itself). `--headless` now returns right after publishing detections, before that work runs.
+
 ---
 
 ## Training

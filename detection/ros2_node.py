@@ -52,9 +52,10 @@ def _pil_to_array(pil_img, size=(1024, 768)):
 
 
 class YOLONode(rclpy.node.Node):
-    def __init__(self):
+    def __init__(self, headless: bool = False):
         super().__init__("yolo_detector")
 
+        self._headless = headless
         self._det = YOLODetector(MODEL_PT, conf=0.50)
 
         self._drone_lat  = 0.0
@@ -129,6 +130,9 @@ class YOLONode(rclpy.node.Node):
                   f"infer {elapsed_ms:.0f} ms  {fps:.1f} fps  "
                   f"lat={self._drone_lat:.5f} lon={self._drone_lon:.5f}")
 
+        if self._headless:
+            return
+
         # Annotated frame for postview — scale boxes to half-res display
         _dw, _dh = 1024, 768
         _sx, _sy = _dw / msg.width, _dh / msg.height
@@ -187,7 +191,7 @@ def main():
     args, _ = parser.parse_known_args()
 
     rclpy.init()
-    node = YOLONode()
+    node = YOLONode(headless=args.headless)
 
     if args.headless:
         print("[YOLO] Running headless — no postview window")

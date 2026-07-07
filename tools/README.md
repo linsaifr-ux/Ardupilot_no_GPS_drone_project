@@ -186,6 +186,8 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 
 `--host` and `--stream-server` are mutually exclusive. Without either, defaults to direct UDP using `GROUND_IP` env var.
 
+**Latency bounding (2026-07-07):** over the LTE relay (mode B), a growing, non-recovering delay was traced to two unbounded buffers: `appsrc` pushed with `block=true` and no queue after it (a downstream stall just blocked the whole compositing loop indefinitely), and the encoder's `vbv-size` defaulting to 4 MB regardless of `--bitrate` (let it burst ~4 s of data above target rate on complex frames, e.g. right when YOLO draws a detection). Fixed by adding a `leaky=downstream max-size-buffers=2` queue right after `appsrc` (drops stale frames instead of blocking) and setting `vbv-size` equal to `--bitrate` (~1 s of burst allowance instead of ~4 s). Both scale automatically with `--bitrate` — no new flag.
+
 **Via launch script** (integrates into full flight stack):
 ```bash
 bash control/launch_real_hw.sh --stream-host 10.181.156.237       # mode A

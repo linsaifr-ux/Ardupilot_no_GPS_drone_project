@@ -100,6 +100,10 @@ _ENC = (
 _APPSRC = (
     f'appsrc name=src format=time is-live=true block=true '
     f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+    # Bound end-to-end latency: if the network sink (TCP push over LTE) can't
+    # keep up, drop stale frames here instead of blocking appsrc and letting
+    # delay grow unbounded with no catch-up.
+    f'queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! '
 )
 
 
@@ -119,10 +123,10 @@ def _build_udp_pipeline(host: str, port: int, bitrate: int, record_path: str = '
     net = (f'rtph265pay config-interval=-1 mtu=1200 ! '
            f'udpsink host={host} port={port} sync=false')
     if record_path:
-        desc = (_APPSRC + _ENC + f'bitrate={bitrate} ! tee name=t '
+        desc = (_APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! tee name=t '
                 f't. ! queue ! ' + net + _rec_branch(record_path))
     else:
-        desc = _APPSRC + _ENC + f'bitrate={bitrate} ! ' + net
+        desc = _APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
     pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
 
@@ -137,10 +141,10 @@ def _build_server_pipeline(server: str, rtsp_path: str, bitrate: int,
     net = (f'h265parse ! '
            f'rtspclientsink location=rtsp://{server}:8554{rtsp_path} protocols=tcp')
     if record_path:
-        desc = (_APPSRC + _ENC + f'bitrate={bitrate} ! tee name=t '
+        desc = (_APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! tee name=t '
                 f't. ! queue ! ' + net + _rec_branch(record_path))
     else:
-        desc = _APPSRC + _ENC + f'bitrate={bitrate} ! ' + net
+        desc = _APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
     pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
 
