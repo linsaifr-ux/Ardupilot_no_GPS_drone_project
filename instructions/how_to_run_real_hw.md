@@ -161,6 +161,30 @@ Re-run this (or just delete `Car_visdrone1280.engine`) any time the `.pt` weight
 
 **`sudo jetson_clocks` matters more than the engine.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force max clocks. Without `jetson_clocks`, DVFS throttling gives back most of the TensorRT speedup (measured 47 ms/frame vs 18.6 ms/frame with clocks locked). Run `sudo jetson_clocks` once per boot, before flying.
 
+### 7. MAVLink relay over the internet (optional — backup GCS link)
+
+Gives Mission Planner a second path to the FC (telemetry **and** arm/RTL/mode/param control) via the Jetson's own FC link (`SERIAL6`) and Frank's PC (`118.232.160.227`), for when the 915MHz SiK radio is out of range. Full setup in `streaming/mavlink_relay_setup.md`; summary:
+
+```bash
+# Once, any machine with openssl:
+bash streaming/generate_relay_certs.sh 118.232.160.227
+# Copy the right cert/key files to Frank's PC, the Jetson, and the MP machine (see doc).
+
+# Frank's PC:
+python3 streaming/mavlink_relay_server.py
+
+# Jetson — either standalone or via --mavlink-relay in the Launch Sequence below:
+python3 control/mavlink_relay_client.py --role vehicle
+
+# MP machine:
+python3 control/mavlink_relay_client.py --role controller
+# Then in Mission Planner: add a TCP connection to 127.0.0.1:5760, alongside the radio link.
+```
+
+**Why this doesn't use FC-level MAVLink signing:** ArduPilot's signing is all-or-nothing across every serial port ([confirmed via source + an exact-match upstream issue](https://github.com/ArduPilot/ardupilot/issues/28736)) — turning it on would also require mavros's unsigned `SERIAL6` VPE/EKF feed to be signed, which mavros/libmavconn has no support for, and would break the whole no-GPS localization stack. Instead, both relay hops are authenticated with mutual TLS (private CA, client certs) — the FC and mavros are never touched or made aware this exists.
+
+**This is a backup, not a replacement for the radio.** It depends on Jetson LTE + Frank's PC being reachable. Bench-test (props off) before ever trusting arm/RTL through it — see the testing checklist in `streaming/mavlink_relay_setup.md`.
+
 ---
 
 ## Before Every Flight
@@ -244,9 +268,14 @@ bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.w
 # With ground view stream — RTSP push to MediaMTX relay (LTE / internet)
 bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.waypoints \
     --stream-server 118.232.160.227
+
+# Plus a backup Mission Planner link over the internet (see step 7 above) —
+# combine with any of the above:
+bash control/launch_real_hw.sh --manual-takeoff --waypoint-file control/survey.waypoints \
+    --mavlink-relay
 ```
 
-`--stream-host` and `--stream-server` are mutually exclusive. Either adds `ground_view_stream.py` alongside `launch_camera.sh` (not instead of it) — `ground_view_stream.py` only subscribes to `/drone/camera/image_raw`, it doesn't open the camera.
+`--stream-host` and `--stream-server` are mutually exclusive. Either adds `ground_view_stream.py` alongside `launch_camera.sh` (not instead of it) — `ground_view_stream.py` only subscribes to `/drone/camera/image_raw`, it doesn't open the camera. `--mavlink-relay` is independent of both — it's a GCS link, not a video stream — and requires certs already generated/copied per step 7.
 
 Launch order with waits:
 

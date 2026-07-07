@@ -151,3 +151,7 @@ streaming/mediamtx
 streaming/*.log
 # Local copies of the ground-view stream (tools/ground_view_stream.py)
 recordings/
+
+# MAVLink relay mTLS certs/keys (streaming/generate_relay_certs.sh output) — secrets,
+# never commit; each machine (Jetson/Frank's PC/MP machine) gets its own copy by hand
+streaming/relay_certs/

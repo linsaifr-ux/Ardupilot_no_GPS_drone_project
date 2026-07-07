@@ -2,7 +2,7 @@
 # Full system launch for real hardware contest flight.
 #
 # Usage:
-#   bash control/launch_real_hw.sh [--waypoint-file FILE] [--stream-host IP]
+#   bash control/launch_real_hw.sh [--waypoint-file FILE] [--stream-host IP] [--mavlink-relay]
 #
 #   --stream-host IP     Enable ground view stream → direct UDP to this GS IP.
 #                        Receive: gst-launch-1.0 udpsrc port=5000 ! \
@@ -12,6 +12,11 @@
 #   --stream-server IP   Enable ground view stream → RTSP push to MediaMTX relay.
 #                        Watch: vlc rtsp://IP:8554/drone
 #                               http://IP:8889/drone  (WebRTC browser)
+#   --mavlink-relay      Bridge full MAVLink stream to Frank's PC over mTLS, so
+#                        Mission Planner has a second path to the FC if the SiK
+#                        radio drops. See streaming/mavlink_relay_setup.md —
+#                        requires relay_certs already generated/copied to this
+#                        machine first.
 #
 # --stream-host and --stream-server are mutually exclusive.
 # Without either flag the plain ROS2 camera driver runs (no ground stream).
@@ -24,11 +29,13 @@ source /opt/ros/humble/setup.bash
 
 STREAM_HOST=""
 STREAM_SERVER=""
+MAVLINK_RELAY_FLAG=""
 COMMANDER_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --stream-host)   STREAM_HOST="$2";   shift 2 ;;
         --stream-server) STREAM_SERVER="$2"; shift 2 ;;
+        --mavlink-relay) MAVLINK_RELAY_FLAG="1"; shift ;;
         *) COMMANDER_ARGS+=("$1"); shift ;;
     esac
 done
@@ -42,10 +49,19 @@ echo "=== Real Hardware Launch ==="
 echo "Project: $PROJECT_DIR"
 [[ -n "$STREAM_HOST"   ]] && echo "Stream: ground view UDP  → $STREAM_HOST:5000"
 [[ -n "$STREAM_SERVER" ]] && echo "Stream: ground view RTSP → rtsp://$STREAM_SERVER:8554/drone"
+[[ -n "$MAVLINK_RELAY_FLAG" ]] && echo "MAVLink relay: enabled (second GCS path via Frank's PC, see streaming/mavlink_relay_setup.md)"
+
+RELAY_PID=""
+if [[ -n "$MAVLINK_RELAY_FLAG" ]]; then
+    echo "[launch] Starting MAVLink relay client (role=vehicle) ..."
+    python3 -u "$SCRIPT_DIR/mavlink_relay_client.py" --role vehicle &
+    RELAY_PID=$!
+    sleep 1
+fi
 
 # 1. MAVROS
 echo "[launch] Starting MAVROS ..."
-bash "$SCRIPT_DIR/launch_mavros_real.sh" &
+MAVLINK_RELAY="${MAVLINK_RELAY_FLAG:-0}" bash "$SCRIPT_DIR/launch_mavros_real.sh" &
 MAVROS_PID=$!
 echo "[launch] MAVROS PID=$MAVROS_PID; waiting 6 s ..."
 sleep 6
@@ -93,5 +109,5 @@ python3 "$SCRIPT_DIR/ardupilot_commander.py" "${COMMANDER_ARGS[@]}"
 CMD_EXIT=$?
 
 echo "[launch] Commander exited ($CMD_EXIT) — shutting down ..."
-kill $YOLO_PID $ANYLOC_PID $BRIDGE_PID $STREAM_PID $CAMERA_PID $MAVROS_PID 2>/dev/null || true
+kill $YOLO_PID $ANYLOC_PID $BRIDGE_PID $STREAM_PID $CAMERA_PID $MAVROS_PID $RELAY_PID 2>/dev/null || true
 exit $CMD_EXIT

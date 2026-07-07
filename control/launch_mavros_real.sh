@@ -1,10 +1,14 @@
 #!/bin/bash
 # MAVROS2 connected to real ArduPilot FC via USB-to-TTL adapter.
 # Default device: /dev/ttyUSB0 — override with: FCU_DEV=/dev/ttyUSB1 bash launch_mavros_real.sh
+# Set MAVLINK_RELAY=1 to also bridge the full MAVLink stream to
+# control/mavlink_relay_client.py --role vehicle (must be started separately,
+# or via launch_real_hw.sh --mavlink-relay) — see streaming/mavlink_relay_setup.md.
 set -e
 source /opt/ros/humble/setup.bash
 
 FCU_DEV="${FCU_DEV:-/dev/ttyUSB0}"
+MAVLINK_RELAY="${MAVLINK_RELAY:-0}"
 
 if [ ! -c "$FCU_DEV" ]; then
     echo "[mavros_real] ERROR: $FCU_DEV not found"
@@ -32,12 +36,19 @@ echo "[mavros_real] Connecting to ArduPilot FC at $FCU_DEV:921600 ..."
   echo "[mavros_real] Data streams enabled."
 ) &
 
+GCS_ARGS=()
+if [ "$MAVLINK_RELAY" = "1" ]; then
+    echo "[mavros_real] MAVLINK_RELAY=1 — bridging to control/mavlink_relay_client.py at tcp://127.0.0.1:5760"
+    echo "  (start it separately, or use launch_real_hw.sh --mavlink-relay, or mavros will just retry the connection)"
+    GCS_ARGS=(-p gcs_url:="tcp://127.0.0.1:5760")
+fi
+
 ros2 run mavros mavros_node \
     --ros-args \
     -p fcu_url:="serial://${FCU_DEV}:921600" \
     -p tgt_system:=1 \
     -p tgt_component:=1 \
     -p log_output:="screen" \
-    -p fcu_protocol:="v2.0"
+    -p fcu_protocol:="v2.0" \
+    "${GCS_ARGS[@]}"
 # plugin_denylist removed — param plugin enabled for real hardware
-# Add -p gcs_url:="udp://@GCS_PC_IP:14550" for telemetry to Mission Planner
