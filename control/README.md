@@ -84,6 +84,8 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - RC aux channel: `RCx_OPTION=90` (EKF Source Select — LOW=SRC1/GPS, HIGH=SRC2/ExternalNav)
 - Upload via Mission Planner or MAVProxy: `param load control/real_hw.parm`
 
+**`jetson_clocks.service`** — systemd unit, locks GPU/EMC/CPU to max on every boot (`nvpmodel MAXN_SUPER` alone only raises the ceiling, doesn't force it — see `detection/README.md` Performance section). Install once: `sudo cp control/jetson_clocks.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now jetson_clocks.service`. Verify with `systemctl is-active jetson_clocks.service`.
+
 **`no_gps.parm`** — ArduPilot SITL no-GPS params:
 - `EK3_SRC1_POSXY=6`, `EK3_SRC1_POSZ=6` (ExternalNav), `GPS_TYPE=0`
 - `FS_CRASH_CHECK=0`, `ARMING_CHECK=0`, `DISARM_DELAY=0`

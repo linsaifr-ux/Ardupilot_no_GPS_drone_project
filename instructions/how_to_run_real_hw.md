@@ -159,7 +159,12 @@ ls -lh Car_visdrone1280.engine   # confirm it exists before flight day
 
 Re-run this (or just delete `Car_visdrone1280.engine`) any time the `.pt` weights are retrained/replaced — a stale engine built from old weights will silently keep being used since the cache check is by filename only.
 
-**`sudo jetson_clocks` matters more than the engine.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force max clocks. Without `jetson_clocks`, DVFS throttling gives back most of the TensorRT speedup (measured 47 ms/frame vs 18.6 ms/frame with clocks locked). Run `sudo jetson_clocks` once per boot, before flying.
+**`jetson_clocks` matters more than the engine.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force max clocks. Without `jetson_clocks`, DVFS throttling gives back most of the TensorRT speedup (measured 47 ms/frame vs 18.6 ms/frame with clocks locked). **Automated as of 2026-07-08** via `control/jetson_clocks.service` (systemd, ordered after `nvpmodel.service`) — runs on every boot automatically. To (re)install it (e.g. after an SSD reflash):
+```bash
+sudo cp control/jetson_clocks.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now jetson_clocks.service
+```
+Verify before flying with `systemctl is-active jetson_clocks.service` (expect `active`) rather than re-running the command by hand.
 
 ### 7. MAVLink relay over the internet (optional — backup GCS link)
 
@@ -184,6 +189,10 @@ python3 control/mavlink_relay_client.py --role controller
 **Why this doesn't use FC-level MAVLink signing:** ArduPilot's signing is all-or-nothing across every serial port ([confirmed via source + an exact-match upstream issue](https://github.com/ArduPilot/ardupilot/issues/28736)) — turning it on would also require mavros's unsigned `SERIAL6` VPE/EKF feed to be signed, which mavros/libmavconn has no support for, and would break the whole no-GPS localization stack. Instead, both relay hops are authenticated with mutual TLS (private CA, client certs) — the FC and mavros are never touched or made aware this exists.
 
 **This is a backup, not a replacement for the radio.** It depends on Jetson LTE + Frank's PC being reachable. Bench-test (props off) before ever trusting arm/RTL through it — see the testing checklist in `streaming/mavlink_relay_setup.md`.
+
+**Known limitation:** Mission Planner's Messages tab (prearm/warning `STATUSTEXT`) stays empty on this connection — telemetry and control both work fully, but `SERIAL6_OPTIONS=1024` (step 4 of "Upload ArduPilot parameters", set to stop the commander's VPE stream from flooding the radio) also excludes SERIAL6 from ArduPilot's `STATUSTEXT` distribution (verified via source — one option bit controls both). This is a permanent tradeoff, not a bug; see `streaming/mavlink_relay_setup.md` for details. Don't clear `SERIAL6_OPTIONS` to fix it — that reopens the VPE-flooding problem.
+
+Cross-machine tested 2026-07-08: both the vehicle leg (Jetson) and controller leg (MP machine) confirmed carrying live telemetry and control over the real deployed link.
 
 ---
 
@@ -579,7 +588,7 @@ T-30 min
 
 T-15 min
   [ ] Power on Jetson, connect USB-to-TTL adapter and camera
-  [ ] sudo jetson_clocks (locks GPU/EMC to max — without this YOLO loses most of its TensorRT speedup)
+  [ ] Verify jetson_clocks applied: `systemctl is-active jetson_clocks.service` → `active` (automated since 2026-07-08 — no manual command needed, but confirm the service actually ran; if not `active`, `sudo jetson_clocks` by hand)
   [ ] Verify /dev/ttyUSB0 present and `v4l2-ctl --list-devices` shows imx219
   [ ] ls Car_visdrone1280.engine (pre-built — if missing, first YOLO launch will stall ~15 min exporting it)
   [ ] pkill -f csi_camera_node.py (clear stale camera processes)

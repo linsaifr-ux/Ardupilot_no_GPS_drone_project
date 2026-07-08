@@ -87,6 +87,11 @@ def _connect_relay(ctx: ssl.SSLContext, host: str, port: int) -> ssl.SSLSocket:
     while True:
         try:
             raw = socket.create_connection((host, port), timeout=10)
+            # timeout=10 above only bounds the connect() attempt — Python leaves it set
+            # on the socket afterward, which would make _pump()'s blocking recv() raise
+            # socket.timeout (and tear the whole relay down) after any 10s idle gap, e.g.
+            # whenever no controller is connected to send anything back. Reset to blocking.
+            raw.settimeout(None)
             tls = ctx.wrap_socket(raw, server_hostname=host)
             _log(f"connected to relay {host}:{port}")
             return tls

@@ -50,7 +50,7 @@ ROS2 Jazzy + `ros-jazzy-vision-msgs` for the ROS2 node. TensorRT + ONNX come fro
 
 `YOLODetector.__init__` (in `detector.py`) exports `<model>.engine` next to any `.pt` weights the first time they're loaded, then loads the engine on every subsequent run (skips re-export if the `.engine` file already exists). Delete the `.engine` file to force a re-export, e.g. after retraining the weights.
 
-**Jetson clocks matter more than the engine itself.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force the GPU/EMC to run at max. Without `sudo jetson_clocks`, DVFS keeps clocks low between bursts and inference stays close to fp32 speeds even with the FP16 engine loaded (measured 47 ms/frame). After `sudo jetson_clocks`, inference dropped to ~18.6 ms/frame. Run `sudo jetson_clocks` once per boot (or wire it into the launch script) before flying.
+**Jetson clocks matter more than the engine itself.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force the GPU/EMC to run at max. Without `jetson_clocks`, DVFS keeps clocks low between bursts and inference stays close to fp32 speeds even with the FP16 engine loaded (measured 47 ms/frame). After `jetson_clocks`, inference dropped to ~18.6 ms/frame. **Automated as of 2026-07-08** — `jetson_clocks.service` (systemd, `After=nvpmodel.service`) runs it on every boot; no manual step needed. Verify with `systemctl is-active jetson_clocks.service` before flying (should print `active`) rather than re-running it by hand.
 
 Measured on `Car_visdrone1280.pt` at `imgsz=1280` on Jetson Orin NX:
 
