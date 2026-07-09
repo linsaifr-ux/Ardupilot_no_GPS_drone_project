@@ -141,7 +141,8 @@ Subscribes to `/drone/camera/image_raw` (`launch_camera.sh` must already be runn
 
 ```
 Left  (640×720)
-  ├─ Top    (640×360): live camera with YOLO bounding boxes + drone lat/lon/AGL
+  ├─ Top    (640×360): camera with YOLO bounding boxes + drone lat/lon/AGL
+  │                    (frame is stamp-matched to the boxes — see below)
   └─ Bottom (640×360): AnyLoc latest match satellite tile + localizer telemetry
 Right (640×720)
   ├─ Slot 0 (640×240): most recent YOLO detection crop ─┐
@@ -189,6 +190,8 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 **Latency bounding (2026-07-07):** over the LTE relay (mode B), a growing, non-recovering delay was traced to two unbounded buffers: `appsrc` pushed with `block=true` and no queue after it (a downstream stall just blocked the whole compositing loop indefinitely), and the encoder's `vbv-size` defaulting to 4 MB regardless of `--bitrate` (let it burst ~4 s of data above target rate on complex frames, e.g. right when YOLO draws a detection). Fixed by adding a `leaky=downstream max-size-buffers=2` queue right after `appsrc` (drops stale frames instead of blocking) and setting `vbv-size` equal to `--bitrate` (~1 s of burst allowance instead of ~4 s). Both scale automatically with `--bitrate` — no new flag.
 
 **Auto-reconnect (2026-07-09):** `rtspclientsink` (mode B) doesn't recover on its own from a lost TCP connection to the relay (LTE drop) — it left the pipeline stuck in an error state forever, silently discarding every subsequent frame with nothing to signal it (visible as a `GLib-GIO-CRITICAL **: g_socket_set_timeout: assertion 'G_IS_SOCKET (socket)' failed` log line, then the stream just stops). The main loop now polls the GStreamer bus each frame for `ERROR`/`EOS` and, on either, tears down and rebuilds the whole pipeline (exponential backoff: 2 s → capped at 30 s, reset after 15 s of clean streaming). Recording rolls into a new timestamped `.mkv` segment on each reconnect. Applies to both modes, though mode A (connectionless UDP) rarely triggers it.
+
+**Detection-synced overlay (2026-07-09):** the top-left panel used to draw the most recent `/yolo/detections` boxes on the *newest* camera frame — but those boxes were computed on a frame 2–4 frames older (30 fps camera vs ~17 fps YOLO + ~60 ms inference), so boxes visibly trailed moving objects; the right-panel crops had the same bug (cut from the newest frame with old box coordinates, so a moving car could sit off-center or outside its crop). The node now buffers the last 12 frames by header stamp and, since the detector copies the source image's header into `Detection2DArray`, both draws the boxes on and cuts the crops from the exact frame they were computed on. The panel therefore updates at YOLO's rate (~17 fps) and trails live by one inference (~60 ms — invisible next to the LTE latency), with the boxes glued to their objects. If no detections message arrives for 2 s (YOLO publishes every processed frame, even with zero detections, so silence means it's down), the panel falls back to the live 30 fps feed with no boxes and a red `YOLO STALE (live view)` header instead of freezing.
 
 **Via launch script** (integrates into full flight stack):
 ```bash

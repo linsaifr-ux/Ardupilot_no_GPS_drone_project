@@ -4,7 +4,9 @@ Ground view streamer — composite debug viewport → GStreamer H.265 → networ
 
 Layout (1280×720):
   Left  (640×720)
-    ├─ Top    (640×360): live camera with YOLO bounding boxes + drone position
+    ├─ Top    (640×360): camera with YOLO bounding boxes + drone position
+    │                    (frame stamp-matched to the boxes — trails live by
+    │                     one inference; falls back to live view if YOLO dies)
     └─ Bottom (640×360): AnyLoc latest match tile + localizer telemetry
   Right (640×720)
     ├─ Slot 0 (640×240): most recent YOLO detection crop ─┐
@@ -86,6 +88,15 @@ CROP_H    = PANEL_H // 3    # 240  — each right crop slot height
 CROP_IMG_H = CROP_H - 44   # 196  — image area inside each slot
 
 MAX_CROPS = 3
+
+# Recent camera frames kept for stamp-matching against /yolo/detections
+# (whose header is copied from the source image). YOLO inference is ~60 ms,
+# so detections arrive ~2-4 frames after their source at 30 fps; 12 frames
+# (~0.4 s) of slack covers scheduling hiccups. ~6 MB per 1640×1232 frame.
+FRAME_BUF_LEN = 12
+# If no detections message (even an empty one arrives per processed frame)
+# for this long, YOLO is considered down → show the live feed, no boxes.
+DET_STALE_S = 2.0
 
 PROJECT_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ESTIMATE_JSON = os.path.join(PROJECT_DIR, "anyloc", "latest_estimate.json")
@@ -227,6 +238,11 @@ class GroundViewNode(rclpy.node.Node):
         self._agl: float = 0.0
         self._latest_bgr: np.ndarray | None = None
         self._latest_bboxes: list[dict]     = []   # from most recent /yolo/detections
+        # Recent frames as (stamp_key, bgr) for pairing detections with the
+        # exact frame they were computed on (see _cb_det).
+        self._frame_buf: collections.deque = collections.deque(maxlen=FRAME_BUF_LEN)
+        self._det_frame: np.ndarray | None = None  # frame the latest bboxes belong to
+        self._det_time: float = 0.0                # wall time of last detections msg
         # Deque of detection crop dicts, newest at index 0
         self._crops: collections.deque = collections.deque(maxlen=MAX_CROPS)
 
@@ -241,8 +257,10 @@ class GroundViewNode(rclpy.node.Node):
         arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
         # csi_camera_node.py publishes rgb8; convert to BGR for OpenCV
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        key = (msg.header.stamp.sec, msg.header.stamp.nanosec)
         with self._lock:
             self._latest_bgr = bgr
+            self._frame_buf.append((key, bgr))
 
     def _cb_pose(self, msg):
         with self._lock:
@@ -254,8 +272,14 @@ class GroundViewNode(rclpy.node.Node):
             self._agl = msg.data
 
     def _cb_det(self, msg):
+        # The detector copies the source image's header, so the stamp tells us
+        # exactly which buffered frame these boxes were computed on. Drawing on
+        # that frame (not the newest one) keeps boxes glued to their objects —
+        # the panel just trails live by one YOLO inference (~60 ms).
+        key = (msg.header.stamp.sec, msg.header.stamp.nanosec)
         with self._lock:
-            frame    = self._latest_bgr
+            frame = next((f for k, f in self._frame_buf if k == key),
+                         self._latest_bgr)
             lat, lon = self._lat, self._lon
         if frame is None:
             return
@@ -317,6 +341,8 @@ class GroundViewNode(rclpy.node.Node):
 
         with self._lock:
             self._latest_bboxes = bboxes
+            self._det_frame = frame
+            self._det_time  = time.time()
             for crop in new_crops:
                 self._crops.appendleft(crop)
 
@@ -324,32 +350,42 @@ class GroundViewNode(rclpy.node.Node):
 
     def build_composite(self) -> np.ndarray:
         with self._lock:
-            frame   = self._latest_bgr
-            lat     = self._lat
-            lon     = self._lon
-            agl     = self._agl
-            bboxes  = list(self._latest_bboxes)
-            crops   = list(self._crops)
+            frame     = self._latest_bgr
+            lat       = self._lat
+            lon       = self._lon
+            agl       = self._agl
+            bboxes    = list(self._latest_bboxes)
+            crops     = list(self._crops)
+            det_frame = self._det_frame
+            det_age   = time.time() - self._det_time
 
-        # ── Left-top: YOLO live feed with bounding boxes ──────────────────────
-        if frame is not None:
-            yolo_panel = cv2.resize(frame, (PANEL_W, HALF_H))
-            sx = PANEL_W / frame.shape[1]
-            sy = HALF_H  / frame.shape[0]
-            for b in bboxes:
-                pt1 = (int(b['x1'] * sx), int(b['y1'] * sy))
-                pt2 = (int(b['x2'] * sx), int(b['y2'] * sy))
-                cv2.rectangle(yolo_panel, pt1, pt2, (0, 255, 0), 2)
-                label_y = max(pt1[1] - 4, 14)
-                _put(yolo_panel, [f"{b['label']} {b['conf']:.0%}"],
-                     pt1[0], label_y, scale=0.44, color=(0, 255, 0))
+        # ── Left-top: YOLO feed with bounding boxes ───────────────────────────
+        # Shown frame is the one the boxes were computed on (stamp-matched in
+        # _cb_det), so they never lag the video. If the detections feed goes
+        # quiet, fall back to the live frame with no boxes instead of freezing.
+        det_fresh = det_frame is not None and det_age <= DET_STALE_S
+        panel_src = det_frame if det_fresh else frame
+        if panel_src is not None:
+            yolo_panel = cv2.resize(panel_src, (PANEL_W, HALF_H))
+            sx = PANEL_W / panel_src.shape[1]
+            sy = HALF_H  / panel_src.shape[0]
+            if det_fresh:
+                for b in bboxes:
+                    pt1 = (int(b['x1'] * sx), int(b['y1'] * sy))
+                    pt2 = (int(b['x2'] * sx), int(b['y2'] * sy))
+                    cv2.rectangle(yolo_panel, pt1, pt2, (0, 255, 0), 2)
+                    label_y = max(pt1[1] - 4, 14)
+                    _put(yolo_panel, [f"{b['label']} {b['conf']:.0%}"],
+                         pt1[0], label_y, scale=0.44, color=(0, 255, 0))
         else:
             yolo_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
         n_det = len(bboxes)
+        status = f"YOLO  {n_det} det" if det_fresh else "YOLO  STALE (live view)"
         _put(yolo_panel, [
-            f"YOLO  {n_det} det   AGL {agl:.0f} m",
+            f"{status}   AGL {agl:.0f} m",
             f"LAT {lat:.5f}   LON {lon:.5f}",
-        ], 8, 18, scale=0.5)
+        ], 8, 18, scale=0.5,
+             color=(0, 255, 80) if det_fresh else (80, 80, 255))
         cv2.line(yolo_panel, (0, HALF_H - 1), (PANEL_W - 1, HALF_H - 1), (60, 60, 60), 1)
 
         # ── Left-bottom: AnyLoc match tile ───────────────────────────────────

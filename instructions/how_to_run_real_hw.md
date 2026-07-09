@@ -180,6 +180,9 @@ python3 streaming/mavlink_relay_server.py
 
 # Jetson — either standalone or via --mavlink-relay in the Launch Sequence below:
 python3 control/mavlink_relay_client.py --role vehicle
+# Standalone client requires mavros started with MAVLINK_RELAY=1 (gcs_url bridge) —
+# without it every relay piece looks healthy but MP gets no heartbeat and times out
+# (bit us 2026-07-09; verify with: pgrep -af mavros_node → args must include gcs_url)
 
 # MP machine:
 python3 control/mavlink_relay_client.py --role controller
@@ -500,7 +503,9 @@ flags=0x037  ✓ POS_ABS accepted
 
 ### Ground view stream — composite YOLO + AnyLoc viewport
 
-`tools/ground_view_stream.py` streams a 1280×720 composite viewport showing YOLO live detection feed, AnyLoc match tile, and the last 3 detection crops with class/location labels. It only **subscribes** to `/drone/camera/image_raw` — it does not open the camera — so `launch_camera.sh` must already be running (handled automatically by `launch_real_hw.sh --stream-host/--stream-server`).
+`tools/ground_view_stream.py` streams a 1280×720 composite viewport showing the YOLO detection feed, AnyLoc match tile, and the last 3 detection crops with class/location labels. It only **subscribes** to `/drone/camera/image_raw` — it does not open the camera — so `launch_camera.sh` must already be running (handled automatically by `launch_real_hw.sh --stream-host/--stream-server`).
+
+The YOLO panel (top-left) is detection-synced (2026-07-09): boxes are drawn on — and crops cut from — the exact frame YOLO computed them on (stamp-matched), so marks stay glued to moving objects. The panel updates at YOLO's ~17 fps and trails live by one inference (~60 ms). If the detections feed goes quiet for 2 s the panel switches to the live 30 fps feed with a red `YOLO STALE (live view)` header — see `tools/README.md` for details.
 
 It also always saves a local copy of the exact streamed composite to `recordings/ground_view_<timestamp>.mkv` (tee of the same H.265 encode — no extra GPU load; crash-safe MKV, playable even after power loss; gitignored). `--no-record` disables it, `--record-dir DIR` relocates it. The path is printed at startup and on exit.
 
@@ -661,6 +666,8 @@ Emergency
 | `gstreamer_stream.py` "Cannot open CSI camera" | `launch_camera.sh` already running | Kill it first — both open an Argus CaptureSession on the same sensor and only one is allowed |
 | `ground_view_stream.py` stuck at "Waiting for /drone/camera/image_raw" | `launch_camera.sh` not running | Start it first — `ground_view_stream.py` only subscribes, it doesn't open the camera (fixed automatically by `launch_real_hw.sh`) |
 | `ground_view_stream.py` YOLO panel shows no boxes | YOLO node not started yet | Wait for YOLO node to load model (~30 s); boxes appear once AGL > 50 m |
+| `ground_view_stream.py` YOLO panel header shows red `YOLO STALE (live view)` | No `/yolo/detections` message for >2 s — YOLO node died or hasn't started (it publishes every processed frame, even with zero detections, so silence means down) | Start/restart the detector; panel meanwhile shows the live camera feed without boxes (behavior added 2026-07-09) |
+| `ground_view_stream.py` YOLO boxes trail behind moving objects | Boxes drawn on newest frame instead of the frame they were computed on | Fixed 2026-07-09 (stamp-matched detection-synced panel) — pull latest code |
 | `ground_view_stream.py` AnyLoc panel black | AnyLoc node not running or no match yet | Wait for first AnyLoc match; `anyloc/latest_match.jpg` must exist |
 | `ground_view_stream.py` / `record_field.py` RTSP: `no element "rtspclientsink"` | `gstreamer1.0-rtsp` not installed — it's a separate package from `gstreamer1.0-plugins-bad` on Ubuntu | `sudo apt install gstreamer1.0-rtsp` (verified fix — confirms `gst-inspect-1.0 rtspclientsink` afterward) |
 | `ground_view_stream.py` RTSP: connection refused | MediaMTX server not running | Start `./mediamtx mediamtx.yml` on Frank's PC; verify port 8554 open |
