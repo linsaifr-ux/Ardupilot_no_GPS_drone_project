@@ -72,6 +72,11 @@ from vision_msgs.msg import Detection2DArray
 GROUND_IP = os.environ.get("GROUND_IP", "10.181.156.237")
 FPS       = 30
 
+# Reconnect backoff when the pipeline errors out (e.g. rtspclientsink losing
+# the TCP connection on an LTE drop) — doubles per consecutive failure, capped.
+RECONNECT_BACKOFF_S     = 2.0
+RECONNECT_BACKOFF_MAX_S = 30.0
+
 STREAM_W  = 1280
 STREAM_H  = 720
 PANEL_W   = STREAM_W // 2   # 640
@@ -147,6 +152,23 @@ def _build_server_pipeline(server: str, rtsp_path: str, bitrate: int,
         desc = _APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
     pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
+
+
+def _build_pipeline(args, record_path: str):
+    """Build the appsrc → encode → [net, rec] pipeline for the selected mode."""
+    if args.stream_server:
+        return _build_server_pipeline(args.stream_server, args.rtsp_path,
+                                       args.bitrate, record_path)
+    return _build_udp_pipeline(args.host, args.port, args.bitrate, record_path)
+
+
+def _new_record_path(args) -> str:
+    """Fresh timestamped MKV path, or '' if recording is disabled."""
+    if args.no_record:
+        return ''
+    os.makedirs(args.record_dir, exist_ok=True)
+    return os.path.join(args.record_dir,
+                         f"ground_view_{time.strftime('%Y%m%d_%H%M%S')}.mkv")
 
 # ── Overlay helper ────────────────────────────────────────────────────────────
 
@@ -415,21 +437,12 @@ def main():
     if not args.host and not args.stream_server:
         args.host = GROUND_IP   # default to direct UDP
 
-    record_path = ''
-    if not args.no_record:
-        os.makedirs(args.record_dir, exist_ok=True)
-        record_path = os.path.join(
-            args.record_dir,
-            f"ground_view_{time.strftime('%Y%m%d_%H%M%S')}.mkv")
+    record_path = _new_record_path(args)
 
     Gst.init(None)
-    if args.stream_server:
-        pipeline, appsrc = _build_server_pipeline(
-            args.stream_server, args.rtsp_path, args.bitrate, record_path)
-    else:
-        pipeline, appsrc = _build_udp_pipeline(
-            args.host, args.port, args.bitrate, record_path)
+    pipeline, appsrc = _build_pipeline(args, record_path)
     pipeline.set_state(Gst.State.PLAYING)
+    bus = pipeline.get_bus()
 
     rclpy.init()
     node = GroundViewNode()
@@ -457,13 +470,49 @@ def main():
     print()
     print('[stream] Waiting for /drone/camera/image_raw …')
 
+    def _reconnect(reason: str):
+        """Tear down the broken pipeline and rebuild it from scratch.
+
+        rtspclientsink doesn't recover from a lost TCP connection on its own
+        (e.g. an LTE drop) — it leaves the pipeline stuck in an error state
+        forever with nothing consuming appsrc's buffers. Rebuilding is the
+        simplest robust fix; the local recording starts a fresh segment
+        rather than trying to splice back into the old (now orphaned) file.
+        """
+        nonlocal pipeline, appsrc, bus, record_path
+        print(f'[stream] Connection lost ({reason}) — reconnecting …')
+        try:
+            pipeline.set_state(Gst.State.NULL)
+        except Exception:
+            pass
+        record_path = _new_record_path(args)
+        pipeline, appsrc = _build_pipeline(args, record_path)
+        pipeline.set_state(Gst.State.PLAYING)
+        bus = pipeline.get_bus()
+        if record_path:
+            print(f'[stream] Recording local copy → {record_path}')
+
     frame_interval = 1.0 / FPS
     next_frame_t   = time.monotonic()
     frame_count    = 0
     warned_no_cam  = False
+    consec_fail    = 0
 
     try:
         while True:
+            bus_msg = bus.timed_pop_filtered(0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+            if bus_msg is not None:
+                reason = ('EOS' if bus_msg.type == Gst.MessageType.EOS
+                          else bus_msg.parse_error()[0].message)
+                consec_fail += 1
+                backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (consec_fail - 1)),
+                                 RECONNECT_BACKOFF_MAX_S)
+                time.sleep(backoff_s)
+                _reconnect(reason)
+                frame_count  = 0
+                next_frame_t = time.monotonic()
+                continue
+
             composite = node.build_composite()
 
             if frame_count == 0 and node._latest_bgr is None and not warned_no_cam:
@@ -477,9 +526,20 @@ def main():
             buf.duration = Gst.SECOND // FPS
             flow = appsrc.emit('push-buffer', buf)
             if flow != Gst.FlowReturn.OK:
-                print(f'[!] GStreamer pipeline error: {flow}')
-                break
+                consec_fail += 1
+                backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (consec_fail - 1)),
+                                 RECONNECT_BACKOFF_MAX_S)
+                time.sleep(backoff_s)
+                _reconnect(f'push-buffer returned {flow}')
+                frame_count  = 0
+                next_frame_t = time.monotonic()
+                continue
             frame_count += 1
+
+            # 15s of clean streaming since the last reconnect → forgive past
+            # failures so a later, unrelated blip doesn't inherit a long backoff.
+            if consec_fail and frame_count == FPS * 15:
+                consec_fail = 0
 
             next_frame_t += frame_interval
             sleep_t = next_frame_t - time.monotonic()
@@ -496,7 +556,6 @@ def main():
         # Let the muxer flush its last cluster before tearing down — the MKV
         # is streamable (playable even without this), but this avoids losing
         # the final ~1 s.
-        bus = pipeline.get_bus()
         bus.timed_pop_filtered(2 * Gst.SECOND,
                                Gst.MessageType.EOS | Gst.MessageType.ERROR)
         pipeline.set_state(Gst.State.NULL)

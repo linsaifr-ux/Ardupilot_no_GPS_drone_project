@@ -538,7 +538,7 @@ Browser: http://118.232.160.227:8889/drone  (WebRTC ~200 ms)
 Browser: http://118.232.160.227:8888/drone  (HLS ~5 s, works on mobile)
 ```
 
-Bitrate: 1 Mbps H.265, keyframe every 1 s. Override with `--bitrate N`. Latency is bounded (leaky queue after `appsrc` + `vbv-size` capped to `--bitrate`, 2026-07-07) so a momentary LTE stall drops stale frames instead of building up an ever-growing, non-recovering delay.
+Bitrate: 1 Mbps H.265, keyframe every 1 s. Override with `--bitrate N`. Latency is bounded (leaky queue after `appsrc` + `vbv-size` capped to `--bitrate`, 2026-07-07) so a momentary LTE stall drops stale frames instead of building up an ever-growing, non-recovering delay. If the connection itself drops (mode B, RTSP relay over LTE), the pipeline auto-reconnects with backoff (2026-07-09) instead of hanging — see `tools/README.md`.
 
 **Simple camera-only stream** (no YOLO, no detection crops — `gstreamer_stream.py`):
 ```bash
@@ -665,6 +665,7 @@ Emergency
 | `ground_view_stream.py` / `record_field.py` RTSP: `no element "rtspclientsink"` | `gstreamer1.0-rtsp` not installed — it's a separate package from `gstreamer1.0-plugins-bad` on Ubuntu | `sudo apt install gstreamer1.0-rtsp` (verified fix — confirms `gst-inspect-1.0 rtspclientsink` afterward) |
 | `ground_view_stream.py` RTSP: connection refused | MediaMTX server not running | Start `./mediamtx mediamtx.yml` on Frank's PC; verify port 8554 open |
 | `ground_view_stream.py` stream delay grows and never recovers (LTE relay) | `appsrc` blocked on a stalled TCP push + encoder `vbv-size` let it burst above `--bitrate` on complex frames | Fixed 2026-07-07 (leaky queue + `vbv-size=bitrate`) — pull latest code. If it recurs, lower `--bitrate` for more headroom below actual uplink throughput |
+| `ground_view_stream.py` logs `GLib-GIO-CRITICAL **: g_socket_set_timeout: assertion 'G_IS_SOCKET (socket)' failed` and the stream stops | `rtspclientsink` (mode B) lost the TCP connection to the relay (e.g. LTE drop) and can't recover on its own | Fixed 2026-07-09 — pipeline now auto-rebuilds on bus `ERROR`/`EOS` with backoff; pull latest code. Prints `[stream] Connection lost (...) — reconnecting …` when it happens |
 
 ---
 
