@@ -176,7 +176,9 @@ Gives Mission Planner a second path to the FC (telemetry **and** arm/RTL/mode/pa
 bash streaming/generate_relay_certs.sh 118.232.160.227
 # Copy the right cert/key files to Frank's PC, the Jetson, and the MP machine (see doc).
 
-# Frank's PC:
+# Frank's PC (must run the 2026-07-09+ version of the file — the older hub
+# wedges permanently for everyone the first time any controller drops without
+# a TCP close; see mavlink_relay_setup.md troubleshooting):
 python3 streaming/mavlink_relay_server.py
 
 # Jetson — either standalone or via --mavlink-relay in the Launch Sequence below:
@@ -197,6 +199,8 @@ python3 control/mavlink_relay_client.py --role controller
 **Known limitation:** Mission Planner's Messages tab (prearm/warning `STATUSTEXT`) stays empty on this connection — telemetry and control both work fully, but `SERIAL6_OPTIONS=1024` (step 4 of "Upload ArduPilot parameters", set to stop the commander's VPE stream from flooding the radio) also excludes SERIAL6 from ArduPilot's `STATUSTEXT` distribution (verified via source — one option bit controls both). This is a permanent tradeoff, not a bug; see `streaming/mavlink_relay_setup.md` for details. Don't clear `SERIAL6_OPTIONS` to fix it — that reopens the VPE-flooding problem.
 
 Cross-machine tested 2026-07-08: both the vehicle leg (Jetson) and controller leg (MP machine) confirmed carrying live telemetry and control over the real deployed link.
+
+**Robustness fix 2026-07-09:** a controller connection dying without a TCP close (LTE/NAT drop, killed process, machine sleep) used to wedge the whole relay for every peer — server rewritten with per-peer writer threads + bounded queues (dead/slow peers get evicted, logged as `send queue full — evicting`) and TCP keepalive on both server and client (half-open sockets detected in ~60 s). **The server file must be re-copied to Frank's PC and restarted there for this to apply** — it is not covered by a git pull on the Jetson alone.
 
 ---
 

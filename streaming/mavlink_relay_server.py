@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import os
+import queue
 import socket
 import ssl
 import threading
@@ -34,9 +35,87 @@ DEFAULT_CERT_DIR = os.path.join(PROJECT_DIR, "streaming", "relay_certs")
 
 VALID_ROLES = ("vehicle", "controller")
 
+# Outbound chunks a peer may fall behind before we declare it dead (~2 MB at
+# the 4 KB recv size — MAVLink telemetry is ~10 KB/s, so a healthy peer never
+# gets near this).
+SEND_QUEUE_MAX = 512
+
 
 def _log(msg: str) -> None:
     print(f"[relay_server:{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def _enable_keepalive(raw_sock: socket.socket) -> None:
+    """Detect half-open TCP connections (peer vanished without FIN/RST — LTE
+    drop, NAT timeout, machine sleep) in ~60 s instead of never. Without this
+    a dead peer's socket looks healthy until its send buffer fills."""
+    raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+    raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+    raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+
+
+class Connection:
+    """One authenticated peer: owns the socket plus a writer thread draining a
+    bounded queue.
+
+    This exists because the original Hub called blocking sendall() on every
+    controller from the *vehicle's* recv thread — one controller going
+    half-open (never errors, just stops ACKing) filled its send buffer and
+    wedged the entire relay for everyone (observed 2026-07-09: MP could
+    authenticate but received nothing; vehicle client backed up 222 KB).
+    With a writer thread per peer, a stalled peer only ever blocks its own
+    writer; when its queue fills, the peer is evicted.
+    """
+
+    def __init__(self, sock: ssl.SSLSocket, role: str, addr) -> None:
+        self.sock = sock
+        self.role = role
+        self.addr = addr
+        self._q: queue.Queue = queue.Queue(SEND_QUEUE_MAX)
+        threading.Thread(target=self._drain, daemon=True,
+                         name=f"writer-{role}-{addr}").start()
+
+    def send(self, data: bytes) -> bool:
+        """Never blocks. Returns False if the peer's queue is full — the
+        caller (Hub) must then evict it: dead or hopelessly slow."""
+        try:
+            self._q.put_nowait(data)
+            return True
+        except queue.Full:
+            return False
+
+    def _drain(self) -> None:
+        while True:
+            data = self._q.get()
+            if data is None:        # sentinel from stop()
+                break
+            try:
+                self.sock.sendall(data)
+            except OSError:
+                break
+        self.close()
+
+    def stop(self) -> None:
+        """Ask the writer to exit once the queue drains, then close."""
+        try:
+            self._q.put_nowait(None)
+        except queue.Full:
+            pass                    # writer is stuck in sendall — close() below unblocks it
+        self.close()
+
+    def close(self) -> None:
+        # shutdown() first: on Linux, close() alone does NOT wake a thread
+        # blocked in recv() on this socket — the handler thread would sit
+        # there forever and never unregister the connection.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
 
 
 class Hub:
@@ -44,47 +123,46 @@ class Hub:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._vehicle: Optional[socket.socket] = None
-        self._controllers: Set[socket.socket] = set()
+        self._vehicle: Optional[Connection] = None
+        self._controllers: Set[Connection] = set()
 
-    def register(self, role: str, sock: socket.socket) -> None:
+    def register(self, conn: Connection) -> None:
         with self._lock:
-            if role == "vehicle":
+            if conn.role == "vehicle":
                 old = self._vehicle
-                self._vehicle = sock
+                self._vehicle = conn
                 if old is not None:
                     _log("new vehicle connection replacing previous one")
-                    try:
-                        old.close()
-                    except OSError:
-                        pass
+                    old.stop()
             else:
-                self._controllers.add(sock)
+                self._controllers.add(conn)
 
-    def unregister(self, role: str, sock: socket.socket) -> None:
+    def unregister(self, conn: Connection) -> None:
         with self._lock:
-            if role == "vehicle" and self._vehicle is sock:
+            if conn.role == "vehicle" and self._vehicle is conn:
                 self._vehicle = None
             else:
-                self._controllers.discard(sock)
+                self._controllers.discard(conn)
+
+    def _evict(self, conn: Connection) -> None:
+        """Remove a backed-up peer immediately — don't wait for its recv loop
+        (a half-open peer's recv never returns on its own)."""
+        _log(f"{conn.role} {conn.addr}: send queue full — evicting dead/slow peer")
+        self.unregister(conn)
+        conn.stop()
 
     def from_vehicle(self, data: bytes) -> None:
         with self._lock:
             targets = list(self._controllers)
         for c in targets:
-            try:
-                c.sendall(data)
-            except OSError:
-                pass  # that controller's own recv loop will notice and clean up
+            if not c.send(data):    # non-blocking
+                self._evict(c)
 
     def from_controller(self, data: bytes) -> None:
         with self._lock:
             v = self._vehicle
-        if v is not None:
-            try:
-                v.sendall(data)
-            except OSError:
-                pass
+        if v is not None and not v.send(data):
+            self._evict(v)
 
 
 def _peer_role(tls_sock: ssl.SSLSocket) -> Optional[str]:
@@ -106,7 +184,8 @@ def _handle_connection(tls_sock: ssl.SSLSocket, addr, hub: Hub) -> None:
         return
 
     _log(f"{role} connected from {addr}")
-    hub.register(role, tls_sock)
+    conn = Connection(tls_sock, role, addr)
+    hub.register(conn)
     route = hub.from_vehicle if role == "vehicle" else hub.from_controller
     try:
         while True:
@@ -117,11 +196,8 @@ def _handle_connection(tls_sock: ssl.SSLSocket, addr, hub: Hub) -> None:
     except OSError:
         pass
     finally:
-        hub.unregister(role, tls_sock)
-        try:
-            tls_sock.close()
-        except OSError:
-            pass
+        hub.unregister(conn)
+        conn.stop()
         _log(f"{role} disconnected ({addr})")
 
 
@@ -157,9 +233,10 @@ def main() -> None:
 
     while True:
         raw_sock, addr = raw_listener.accept()
+        _enable_keepalive(raw_sock)
         try:
             tls_sock = ctx.wrap_socket(raw_sock, server_side=True)
-        except ssl.SSLError as e:
+        except (ssl.SSLError, OSError) as e:
             _log(f"TLS handshake failed from {addr}: {e}")
             raw_sock.close()
             continue

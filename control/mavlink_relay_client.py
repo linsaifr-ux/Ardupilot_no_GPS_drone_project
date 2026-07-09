@@ -92,6 +92,13 @@ def _connect_relay(ctx: ssl.SSLContext, host: str, port: int) -> ssl.SSLSocket:
             # socket.timeout (and tear the whole relay down) after any 10s idle gap, e.g.
             # whenever no controller is connected to send anything back. Reset to blocking.
             raw.settimeout(None)
+            # Detect half-open drops (LTE/NAT dying without FIN/RST) in ~60s —
+            # otherwise _pump()'s recv() blocks forever on a dead link and the
+            # relay never reconnects. Mirrors the server's keepalive settings.
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
             tls = ctx.wrap_socket(raw, server_hostname=host)
             _log(f"connected to relay {host}:{port}")
             return tls
