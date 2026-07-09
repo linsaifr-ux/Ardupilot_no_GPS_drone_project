@@ -44,8 +44,11 @@ def build_pipeline(sensor_id: int, width: int, height: int, fps: int) -> str:
         # orientation in the ISP, before any downstream consumer (YOLO,
         # AnyLoc, ground-view stream, and the vision_pose feed into mavros)
         # ever sees a frame.
-        f'nvvidconv flip-method=2 ! video/x-raw,format=BGRx ! '
-        f'videoconvert ! video/x-raw,format=BGR ! '
+        # RGBA straight out of nvvidconv (VIC hardware) — no CPU videoconvert
+        # element. The old BGRx ! videoconvert ! BGR chain burned a full-frame
+        # CPU conversion per frame inside the pipeline thread; stripping the
+        # alpha channel in read_and_publish() costs ~1 ms instead.
+        f'nvvidconv flip-method=2 ! video/x-raw,format=RGBA ! '
         f'appsink drop=true max-buffers=1 sync=false'
     )
 
@@ -68,12 +71,12 @@ class CsiCameraNode(rclpy.node.Node):
             f'→ /drone/camera/image_raw')
 
     def read_and_publish(self) -> bool:
-        ok, bgr = self.cap.read()
+        ok, rgba = self.cap.read()
         if not ok:
             self.get_logger().warn('Camera read failed', throttle_duration_sec=2.0)
             return False
 
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(rgba, cv2.COLOR_RGBA2RGB)
         msg = Image()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'camera'

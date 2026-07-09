@@ -7,8 +7,12 @@ model's own class names and mapping them to four canonical labels:
 """
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
 
+import cv2
+import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
@@ -45,9 +49,14 @@ class YOLODetector:
     """
 
     def __init__(self, model_name: str = 'yolov8n.pt', conf: float = 0.35,
-                 imgsz: int = 1280, use_tensorrt: bool = True):
+                 imgsz: int | tuple[int, int] = 1280, use_tensorrt: bool = True):
         self.conf  = conf
-        self.imgsz = imgsz
+        # (h, w) — a rectangular size matching the camera's aspect ratio avoids
+        # burning compute on letterbox padding: 1640×1232 into a 1280×1280
+        # square wastes ~25% of the input on gray bars; (960, 1280) runs the
+        # same pixels at the same scale with none.
+        self.imgsz: tuple[int, int] = \
+            (imgsz, imgsz) if isinstance(imgsz, int) else tuple(imgsz)
 
         # Eager PyTorch fp32 at imgsz=1280 is GPU-bound on Jetson (~8 fps for
         # yolov8s). A fp16 TensorRT engine fuses the conv/NMS graph and uses
@@ -55,12 +64,25 @@ class YOLODetector:
         # once per (weights, imgsz) and cache the .engine next to the .pt.
         load_path = model_name
         if use_tensorrt and model_name.endswith('.pt') and torch.cuda.is_available():
-            engine_path = Path(model_name).with_suffix('.engine')
+            h, w = self.imgsz
+            if h == w:   # legacy name — pre-existing square engines keep working
+                engine_path = Path(model_name).with_suffix('.engine')
+            else:
+                engine_path = Path(model_name).with_name(
+                    f"{Path(model_name).stem}_{h}x{w}.engine")
             if not engine_path.exists():
                 print(f"[YOLO] No TensorRT engine at {engine_path} — exporting "
-                      f"from {model_name} (imgsz={imgsz}, fp16). This takes "
-                      f"a few minutes on first run …")
-                YOLO(model_name).export(format='engine', imgsz=imgsz, half=True, device=0)
+                      f"from {model_name} (imgsz={self.imgsz}, fp16). This "
+                      f"takes a few minutes on first run …")
+                # Export in a tempdir: ultralytics always writes <stem>.engine
+                # next to the .pt, which would silently clobber an existing
+                # engine of a different imgsz.
+                with tempfile.TemporaryDirectory() as td:
+                    tmp_pt = Path(td) / Path(model_name).name
+                    shutil.copy2(model_name, tmp_pt)
+                    YOLO(str(tmp_pt)).export(format='engine', imgsz=self.imgsz,
+                                             half=True, device=0)
+                    shutil.move(str(tmp_pt.with_suffix('.engine')), engine_path)
             load_path = str(engine_path)
 
         print(f"[YOLO] Loading {load_path} …")
@@ -103,6 +125,53 @@ class YOLODetector:
                 'label': self._filter[cls_id],
                 'conf':  float(box.conf[0]),
                 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+            })
+        return out
+
+    # ── Split-stage API (used by ros2_node.py to overlap CPU and GPU) ─────────
+    #
+    # detect() runs letterbox+normalize (CPU, ~20 ms) and inference (GPU,
+    # ~30-40 ms) back-to-back on the caller's thread. preprocess() /
+    # detect_prepared() expose the two halves so a producer thread can prepare
+    # frame N+1 while the GPU runs frame N. Results are identical to detect().
+
+    def preprocess(self, rgb: np.ndarray) -> tuple[torch.Tensor, dict]:
+        """CPU stage: RGB HWC uint8 (any size) → normalized CHW fp16 CUDA
+        tensor at self.imgsz, plus the letterbox meta needed to map boxes back.
+        """
+        h0, w0 = rgb.shape[:2]
+        th, tw = self.imgsz
+        gain = min(th / h0, tw / w0)
+        nw, nh = round(w0 * gain), round(h0 * gain)
+        if (nw, nh) != (w0, h0):
+            rgb = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        pad_x, pad_y = (tw - nw) // 2, (th - nh) // 2
+        canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
+        canvas[pad_y:pad_y + nh, pad_x:pad_x + nw] = rgb
+        t = torch.from_numpy(
+            np.ascontiguousarray(canvas.transpose(2, 0, 1))).unsqueeze(0)
+        t = t.to('cuda', non_blocking=True).half().div_(255.0)
+        return t, dict(gain=gain, pad_x=pad_x, pad_y=pad_y, w0=w0, h0=h0)
+
+    def detect_prepared(self, tensor: torch.Tensor, meta: dict) -> list[dict]:
+        """GPU stage: run the model on a preprocess()ed tensor. Returns the
+        same dict format as detect(), boxes in original-image pixels."""
+        results = self.model(tensor, conf=self.conf, verbose=False)[0]
+        gain, px, py = meta['gain'], meta['pad_x'], meta['pad_y']
+        w0, h0 = meta['w0'], meta['h0']
+        out = []
+        for box in results.boxes:
+            cls_id = int(box.cls[0])
+            if cls_id not in self._filter:
+                continue
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            out.append({
+                'label': self._filter[cls_id],
+                'conf':  float(box.conf[0]),
+                'x1': min(max((x1 - px) / gain, 0), w0),
+                'y1': min(max((y1 - py) / gain, 0), h0),
+                'x2': min(max((x2 - px) / gain, 0), w0),
+                'y2': min(max((y2 - py) / gain, 0), h0),
             })
         return out
 

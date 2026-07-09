@@ -19,14 +19,17 @@ bash control/launch_mavros_real.sh
 
 # Terminal 2 — record only
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/record_field.py --output field_data/survey1
 
 # Terminal 2 — record + stream direct to ground station (UDP)
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/record_field.py --output field_data/survey1 --stream-host 10.181.156.237
 
 # Terminal 2 — record + stream via MediaMTX relay server (RTSP)
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
 ```
 
@@ -116,6 +119,7 @@ Shows which EKF flags are active and whether `POS_ABS` has been accepted.
 
 ```bash
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ekf_monitor.py
 ```
 
@@ -155,10 +159,12 @@ This script only **subscribes** to `/drone/camera/image_raw` — it does not ope
 ```bash
 # Mode A — direct UDP to ground station (ZeroTier / LAN)
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ground_view_stream.py --host 10.181.156.237
 
 # Mode B — RTSP push to MediaMTX relay server (LTE / internet)
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ground_view_stream.py --stream-server 118.232.160.227
 ```
 
@@ -274,6 +280,7 @@ Compares `anyloc/latest_estimate.json` against live GPS from MAVROS.
 
 ```bash
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/anyloc_gps_compare.py
 ```
 

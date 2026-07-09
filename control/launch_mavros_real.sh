@@ -6,6 +6,7 @@
 # or via launch_real_hw.sh --mavlink-relay) — see streaming/mavlink_relay_setup.md.
 set -e
 source /opt/ros/humble/setup.bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ros2_env.sh"
 
 FCU_DEV="${FCU_DEV:-/dev/ttyUSB0}"
 MAVLINK_RELAY="${MAVLINK_RELAY:-0}"

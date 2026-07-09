@@ -130,6 +130,7 @@ To build a **real-field database** from actual drone footage (better match at in
 # 1. Record survey flight (MAVROS only, no launch_camera.sh)
 # Frames are rotated 180° automatically.
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh   # FastDDS SHM — without it big frames drop ~30%/subscriber
 # Direct UDP to ground station:
 python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
 # Or push RTSP to MediaMTX relay (watch in VLC/browser, no GStreamer on ground station):
@@ -321,15 +322,18 @@ bash control/launch_camera.sh
 #   Shows YOLO live + AnyLoc match + 3 most recent detection crops at 1280×720
 #   Receive: gst-launch-1.0 udpsrc port=5000 ! ... (see tools/README.md)
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ground_view_stream.py --host <GROUND_IP>
 
 #   OR: Ground view stream — RTSP push to MediaMTX relay (LTE / internet)
 #   Watch: vlc rtsp://118.232.160.227:8554/drone  OR  http://118.232.160.227:8889/drone
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ground_view_stream.py --stream-server 118.232.160.227
 
 # Pane 2: HW Bridge
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 control/hw_bridge.py
 
 # Pane 3: AnyLoc (~20 min startup — loading VLAD database)
@@ -344,6 +348,7 @@ bash detection/run_ros2_detector.sh --headless
 
 # Pane 5: Commander
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 control/ardupilot_commander.py --manual-takeoff --waypoint-file control/survey.waypoints
 
 # Pane 6: EKF monitor (optional — separate terminal)
@@ -513,6 +518,7 @@ It also always saves a local copy of the exact streamed composite to `recordings
 ```bash
 # In addition to Pane 1 (launch_camera.sh), add a new pane:
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ground_view_stream.py --host 192.168.1.50
 
 # Or via launch script:
@@ -530,6 +536,7 @@ gst-launch-1.0 udpsrc port=5000 ! \
 **Mode B — RTSP push to MediaMTX relay (LTE / internet, no GStreamer on receiver):**
 ```bash
 source /opt/ros/humble/setup.bash
+source control/ros2_env.sh
 python3 tools/ground_view_stream.py --stream-server 118.232.160.227
 
 # Or via launch script:
@@ -665,6 +672,7 @@ Emergency
 | GStreamer "appsrc push returned GST_FLOW_ERROR" | Ground IP unreachable | Ping ground station first; udpsink drops silently |
 | `gstreamer_stream.py` "Cannot open CSI camera" | `launch_camera.sh` already running | Kill it first — both open an Argus CaptureSession on the same sensor and only one is allowed |
 | `ground_view_stream.py` stuck at "Waiting for /drone/camera/image_raw" | `launch_camera.sh` not running | Start it first — `ground_view_stream.py` only subscribes, it doesn't open the camera (fixed automatically by `launch_real_hw.sh`) |
+| `/drone/camera/image_raw` arrives well below 30 fps (choppy YOLO/AnyLoc/stream) with the camera node healthy | Each subscriber independently drops ~30% of the 6 MB frames: FastDDS's default 512 KB SHM segment can't hold one frame, so it silently falls back to fragmented BEST_EFFORT UDP through 208 KB kernel buffers | Fixed 2026-07-09 — all launchers now source `control/ros2_env.sh` (64 MB SHM segment via `control/fastdds_shm_profile.xml`). If running a node by hand, `source control/ros2_env.sh` first; verify delivery with `ros2 topic hz /drone/camera/image_raw` |
 | `ground_view_stream.py` YOLO panel shows no boxes | YOLO node not started yet | Wait for YOLO node to load model (~30 s); boxes appear once AGL > 50 m |
 | `ground_view_stream.py` YOLO panel header shows red `YOLO STALE (live view)` | No `/yolo/detections` message for >2 s — YOLO node died or hasn't started (it publishes every processed frame, even with zero detections, so silence means down) | Start/restart the detector; panel meanwhile shows the live camera feed without boxes (behavior added 2026-07-09) |
 | `ground_view_stream.py` YOLO boxes trail behind moving objects | Boxes drawn on newest frame instead of the frame they were computed on | Fixed 2026-07-09 (stamp-matched detection-synced panel) — pull latest code |

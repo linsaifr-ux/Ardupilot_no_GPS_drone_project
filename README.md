@@ -88,8 +88,8 @@ no_GPS_drone_project/
 │   ├── run_ros2_localizer.sh     # launch plan A
 │   └── run_ros2_localizer_vo.sh  # launch plan B (defaults: --gate 0.32 --jump-base 45 --drift-rate 1.0 --blend 0.4 --reacquire-n 3)
 ├── detection/                    # object detection
-│   ├── detector.py               # YOLODetector (auto class-map COCO/VisDrone; TensorRT FP16 engine, auto-exported from .pt)
-│   ├── ros2_node.py              # ROS2: sub /drone/camera → pub /yolo/detections
+│   ├── detector.py               # YOLODetector (auto class-map COCO/VisDrone; TensorRT FP16 engine, auto-exported from .pt; rect 960×1280 since 2026-07-09)
+│   ├── ros2_node.py              # ROS2: sub /drone/camera → pub /yolo/detections (pipelined: CPU preprocess ‖ GPU inference)
 │   ├── finetune.py               # train car_s_1280 (YOLOv8s) / car_11s_1280 (YOLO11s)
 │   ├── test_map_car.py           # mAP benchmark: YOLOv8s vs YOLO11s car-only
 │   └── run_ros2_detector.sh      # launch script

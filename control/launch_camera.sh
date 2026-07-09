@@ -3,6 +3,7 @@
 source /opt/ros/humble/setup.bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ros2_env.sh"
 SENSOR_ID="${CAMERA_SENSOR_ID:-0}"
 echo "[camera] Using CSI sensor-id=$SENSOR_ID (IMX219)"
 

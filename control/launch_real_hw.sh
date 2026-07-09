@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 source /opt/ros/humble/setup.bash
+source "$SCRIPT_DIR/ros2_env.sh"
 
 STREAM_HOST=""
 STREAM_SERVER=""

@@ -48,7 +48,11 @@ ROS2 Jazzy + `ros-jazzy-vision-msgs` for the ROS2 node. TensorRT + ONNX come fro
 
 ## Performance
 
-`YOLODetector.__init__` (in `detector.py`) exports `<model>.engine` next to any `.pt` weights the first time they're loaded, then loads the engine on every subsequent run (skips re-export if the `.engine` file already exists). Delete the `.engine` file to force a re-export, e.g. after retraining the weights.
+`YOLODetector.__init__` (in `detector.py`) exports `<model>.engine` next to any `.pt` weights the first time they're loaded, then loads the engine on every subsequent run (skips re-export if the `.engine` file already exists). Delete the `.engine` file to force a re-export, e.g. after retraining the weights. Rectangular sizes get a size-tagged name (`<model>_<h>x<w>.engine`) so they can't be confused with the square engine, and the export runs in a tempdir so it can't clobber an existing engine of a different size.
+
+**Rectangular engine (2026-07-09):** the production node now runs `imgsz=(960, 1280)` instead of the 1280×1280 square. A 1640×1232 frame letterboxed into a square wastes ~25% of the input (and thus compute) on gray padding; the rect engine runs the same pixels at the same scale with none — ~25% faster preprocess *and* inference at identical accuracy (validated on survey13 footage: every square-engine detection matched at IoU>0.5, mean 0.89).
+
+**Pipelined node (2026-07-09):** `ros2_node.py` splits the work into a CPU preprocess thread (letterbox + tensor upload, ~16 ms) and a GPU inference thread (~30-47 ms) with depth-1 hand-off slots, so throughput is bounded by the slower stage instead of their sum. Detection latency gains one stage (~1 frame); `ground_view_stream.py`'s stamp-matching absorbs that.
 
 **Jetson clocks matter more than the engine itself.** `nvpmodel MAXN_SUPER` only raises the clock ceiling — it doesn't force the GPU/EMC to run at max. Without `jetson_clocks`, DVFS keeps clocks low between bursts and inference stays close to fp32 speeds even with the FP16 engine loaded (measured 47 ms/frame). After `jetson_clocks`, inference dropped to ~18.6 ms/frame. **Automated as of 2026-07-08** — `jetson_clocks.service` (systemd, `After=nvpmodel.service`) runs it on every boot; no manual step needed. Verify with `systemctl is-active jetson_clocks.service` before flying (should print `active`) rather than re-running it by hand.
 
@@ -60,7 +64,9 @@ Measured on `Car_visdrone1280.pt` at `imgsz=1280` on Jetson Orin NX:
 | TensorRT fp16, clocks not locked | ~83 | ~12 |
 | TensorRT fp16, `jetson_clocks` run | ~58 | ~17.3 |
 
-Preprocessing (CPU-side letterbox resize) is ~18 ms/frame — now roughly equal to inference time. If more headroom is needed later, that's the next thing to optimize, not the model itself.
+Preprocessing (CPU-side letterbox resize) is ~16 ms/frame — with the pipelined node it overlaps inference instead of adding to it. If more headroom is needed later, the next knob is an INT8 engine (needs a calibration set + an mAP check with `test_map_car.py` — small objects are the first casualty of INT8), not a smaller model.
+
+Note the end-to-end rate is capped by what the camera actually delivers — see the FastDDS SHM profile note in `control/ros2_env.sh` (2026-07-09): without it, each subscriber silently drops ~30% of the 6 MB frames in transport and no amount of detector speed helps.
 
 **`--headless` skips the postview render entirely (2026-07-07):** `ros2_node.py` used to build the annotated/resized postview frame every callback even with `--headless`, even though nothing displayed it — a ~37 ms/frame PIL LANCZOS resize wasted on every frame (comparable to inference itself). `--headless` now returns right after publishing detections, before that work runs.
 
