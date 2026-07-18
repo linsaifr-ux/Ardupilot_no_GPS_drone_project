@@ -61,6 +61,9 @@ try:
 except ImportError:
     _HAVE_PIL = False
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from vpe_slew import VpeSlewLimiter
+
 _SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                          durability=DurabilityPolicy.VOLATILE, depth=10)
 
@@ -396,6 +399,11 @@ class ArduPilotCommander(rclpy.node.Node):
             last_mtime   = 0.0
             n_sent       = 0
             phase_logged = False
+            # Corrections glide into the EKF instead of stepping — a fused
+            # step doubles as a phantom velocity spike and the controller
+            # fights it at full lean angle (instructions/
+            # vpe_jump_runaway_diagnosis.md).
+            slew = VpeSlewLimiter()
 
             while not stop.is_set():
                 t0 = time.time()
@@ -426,6 +434,10 @@ class ArduPilotCommander(rclpy.node.Node):
                                 n_v  = (lat - ref_lat) * M_PER_DEG
                                 e_v  = (lon - ref_lon) * M_PER_DEG * COS_LAT
                                 cov  = max(1.0, err_m ** 2)
+                                jump = slew.distance_to(e_v, n_v)
+                                if jump > 10.0:
+                                    print(f"[APCmd] VPE correction {jump:.1f} m"
+                                          " — gliding in, not stepping")
                                 anyloc_est = (e_v, n_v, yaw, cov)
                                 last_mtime = mtime
                                 if n_sent < 2:
@@ -442,6 +454,11 @@ class ArduPilotCommander(rclpy.node.Node):
 
                 if use_anyloc:
                     east_v, north_v, yaw_v, cov_xy = anyloc_est
+                    # The limiter derives its speed allowance from the
+                    # estimate's own motion — do NOT feed it EKF velocity;
+                    # that closes an unstable feedback loop (see vpe_slew.py).
+                    east_v, north_v = slew.update(
+                        east_v, north_v, time.time())
                 elif self._drone is not None:
                     # SITL: kinematic truth always available
                     east_v  = self._drone.pose.position.x
@@ -455,6 +472,11 @@ class ArduPilotCommander(rclpy.node.Node):
                     north_v = 0.0
                     yaw_v   = math.pi / 2.0
                     cov_xy  = 0.5
+
+                if not use_anyloc:
+                    # Phase 1 position is ground truth — keep the limiter
+                    # seeded so the AnyLoc handover glides from here.
+                    slew.reset(east_v, north_v, time.time())
 
                 if use_anyloc and not phase_logged:
                     ref_lat, ref_lon, ref_src = self.local_frame_ref()

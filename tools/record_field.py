@@ -32,18 +32,37 @@ Usage:
     --stream-rtsp-path P   RTSP stream path  (default: /drone)
     --stream-bitrate BPS   H.265 stream bitrate (default: 1000000)
 
+  Stream mode C — OpenHD (H.264 RTP/UDP, runs ALONGSIDE mode A or B):
+    --stream-openhd [IP]   stream clean view (no overlay — OpenHD has its own
+                           OSD) to the OpenHD ground station (default IP
+                           192.168.2.2 when the flag is given without a value)
+    --openhd-port PORT     UDP port     (default: 5601)
+    --openhd-bitrate BPS   H.264 bitrate (default: 4000000)
+
 Output files in DIR/:
     video.mkv          H.265, 1640×1232 30fps (MKV — crash-safe)
     telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg, rc_channels  (5 Hz)
                        rc_channels is the raw /mavros/rc/in PWM list (space-separated) —
                        check the EKF-source switch channel (RCx_OPTION=90) stayed LOW
                        (GPS) throughout if this recording is meant to be GPS ground truth.
-    meta.json          video_start_unix, fps, width, height
+    meta.json          video_start_unix, fps, width, height, frame_rotation_deg,
+                       achieved IMU/attitude rates (written again at shutdown)
     frame_times.csv    frame_idx, unix_time — actual capture time per frame, logged
                        directly (not reconstructed from fps) so it stays correct even
                        across camera dropouts/reconnects. Prefer this over
                        video_start_unix + frame_idx/fps for any timing-sensitive
                        analysis (e.g. VO drift).
+    imu.csv            stamp_ros, recv_unix, wx, wy, wz, ax, ay, az —
+                       /mavros/imu/data_raw (FC gyro rad/s + accel m/s², mavros
+                       timesync-mapped stamp AND Jetson arrival time). Written by
+                       the tools/imu_logger.py sidecar process (in-process logging
+                       is GIL-starved to ~100 Hz by the camera loop); it requests
+                       RAW_IMU at 200 Hz via SET_MESSAGE_INTERVAL. Achieved rate
+                       is shown live and stored in meta.json — OpenVINS-grade VIO
+                       needs ≥100 Hz (see instructions/vio_data_collection.md).
+    attitude.csv       stamp_ros, recv_unix, qw, qx, qy, qz — fused FC attitude
+                       (/mavros/imu/data), for VIO initialization/sanity checks.
+    imu_rates.json     live 2 s rate report from the sidecar (imu_hz, att_hz).
 
 Stream mode A receiver (ground station):
     gst-launch-1.0 udpsrc port=5000 ! \\
@@ -82,6 +101,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float64
 from mavros_msgs.msg import RCIn
+
+from imu_logger import IMU_OK_HZ, IMU_REQUEST_HZ   # sidecar (same dir)
 
 Gst.init(None)
 
@@ -169,15 +190,18 @@ class TelemetryLogger(Node):
 
 # ── Stream overlay ─────────────────────────────────────────────────────────────
 
-def _make_stream_frame(bgr_full, telem):
-    """Center-crop 4:3 → 16:9, resize to stream resolution, draw telemetry bar."""
-    lat, lon, _, agl, hdg = telem
-
+def _crop_resize_stream(bgr_full):
+    """Center-crop 4:3 → 16:9 and resize to stream resolution."""
     # Crop vertically to 16:9 before resizing (avoids horizontal stretch)
     src_h, src_w = bgr_full.shape[:2]
     crop_h = src_w * 9 // 16          # e.g. 1640 → 922
     y0c = (src_h - crop_h) // 2
-    frame = cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
+    return cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
+
+
+def _make_stream_frame(frame, telem):
+    """Draw the telemetry bar onto a _crop_resize_stream() frame (in place)."""
+    lat, lon, _, agl, hdg = telem
 
     # Black bar
     y0 = STREAM_H - OVERLAY_H
@@ -274,6 +298,27 @@ def _build_server_pipeline(server, rtsp_path, bitrate):
     )
 
 
+def _build_openhd_pipeline(host, port, bitrate):
+    """H.264 RTP/UDP for the OpenHD ground station.
+
+    Encoder/payloader settings mirror the field-tested standalone command
+    (nvv4l2h264enc bitrate=4000000 control-rate=1 insert-sps-pps=true
+    idrinterval=15, rtph264pay config-interval=1 pt=96 mtu=1024) — only the
+    source differs: frames come from the shared capture, since the CSI
+    camera cannot be opened by two processes.
+    """
+    return Gst.parse_launch(
+        f'appsrc name=openhd format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        f'videoconvert ! '
+        f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'nvv4l2h264enc bitrate={bitrate} control-rate=1 insert-sps-pps=true '
+        f'idrinterval=15 ! '
+        f'h264parse ! rtph264pay config-interval=1 pt=96 mtu=1024 ! '
+        f'udpsink host={host} port={port} sync=false'
+    )
+
+
 def _push(appsrc, frame_bgr, frame_idx):
     buf = Gst.Buffer.new_wrapped(frame_bgr.tobytes())
     buf.pts      = frame_idx * Gst.SECOND // FPS
@@ -289,6 +334,10 @@ def main():
     ap.add_argument('--output',           default='')
     ap.add_argument('--bitrate',          type=int, default=8_000_000)
     ap.add_argument('--duration',         type=int, default=0)
+    ap.add_argument('--calib', action='store_true',
+                    help='tag this recording as a camera-IMU calibration '
+                         'session (AprilGrid/checkerboard footage for Kalibr; '
+                         'see instructions/vio_data_collection.md)')
     # Stream mode A — direct UDP to ground station
     ap.add_argument('--stream-host',      default='',    metavar='IP')
     ap.add_argument('--stream-port',      type=int, default=5000)
@@ -297,24 +346,49 @@ def main():
     ap.add_argument('--stream-rtsp-path', default='/drone', metavar='PATH')
     # Shared stream option
     ap.add_argument('--stream-bitrate',   type=int, default=1_000_000)
+    # Stream mode C — OpenHD (can run alongside mode A or B)
+    ap.add_argument('--stream-openhd',    nargs='?', const='192.168.2.2',
+                    default='', metavar='IP')
+    ap.add_argument('--openhd-port',      type=int, default=5601)
+    ap.add_argument('--openhd-bitrate',   type=int, default=4_000_000)
     args = ap.parse_args()
 
     if args.stream_host and args.stream_server:
         ap.error('--stream-host and --stream-server are mutually exclusive')
 
     ts  = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out = args.output or os.path.join('field_data', ts)
+    out = args.output or os.path.join(
+        'field_data', ('calib_' if args.calib else '') + ts)
     os.makedirs(out, exist_ok=True)
 
     video_path       = os.path.join(out, 'video.mkv')
     telem_path       = os.path.join(out, 'telemetry.csv')
     meta_path        = os.path.join(out, 'meta.json')
     frame_times_path = os.path.join(out, 'frame_times.csv')
+    # imu.csv + attitude.csv are written by the imu_logger.py sidecar
 
     # ── ROS2 telemetry ─────────────────────────────────────────────────────────
     rclpy.init()
     logger = TelemetryLogger(telem_path)
     threading.Thread(target=rclpy.spin, args=(logger,), daemon=True).start()
+
+    # ── High-rate IMU sidecar (separate process) ───────────────────────────────
+    # In-process logging tops out at ~60-105 Hz of the 200 Hz stream: the
+    # camera/encode loop's GIL contention starves the ROS executor
+    # (bench-measured 2026-07-18). A dedicated process sustains 199.8 Hz.
+    imu_proc = subprocess.Popen(
+        [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      'imu_logger.py'), '--out', out])
+    imu_rates_path = os.path.join(out, 'imu_rates.json')
+
+    def _imu_status():
+        try:
+            with open(imu_rates_path) as f:
+                r = json.load(f)
+            mark = '' if r['imu_hz'] >= IMU_OK_HZ else '⚠'
+            return f"  imu={r['imu_hz']:.0f}Hz{mark}", r
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return '  imu=--', None
 
     # ── Camera ─────────────────────────────────────────────────────────────────
     cap = _open_camera()
@@ -345,6 +419,14 @@ def main():
         stream_src = stream_pipe.get_by_name('stream')
         stream_pipe.set_state(Gst.State.PLAYING)
 
+    openhd_pipe = None
+    openhd_src  = None
+    if args.stream_openhd:
+        openhd_pipe = _build_openhd_pipeline(
+            args.stream_openhd, args.openhd_port, args.openhd_bitrate)
+        openhd_src = openhd_pipe.get_by_name('openhd')
+        openhd_pipe.set_state(Gst.State.PLAYING)
+
     # ── Print header ───────────────────────────────────────────────────────────
     print(f'[REC] Output  → {out}/')
     if args.stream_host:
@@ -353,15 +435,23 @@ def main():
         url = f'rtsp://{args.stream_server}:8554{args.stream_rtsp_path}'
         print(f'[REC] Stream  → {url}  (H.265 RTSP push)')
         print(f'[REC] Watch   → http://{args.stream_server}:8889{args.stream_rtsp_path}  (WebRTC browser)')
+    if args.stream_openhd:
+        print(f'[REC] OpenHD  → {args.stream_openhd}:{args.openhd_port}  (H.264 RTP/UDP)')
     print('[REC] Press Ctrl+C to stop\n')
 
     video_start = time.time()
+    meta = {
+        'video_start_unix': video_start,
+        'fps': FPS, 'width': REC_W, 'height': REC_H,
+        'bitrate': args.bitrate,
+        # cv2.rotate(ROTATE_180) is applied before encoding — any camera
+        # calibration (Kalibr) must be run on the recorded orientation
+        'frame_rotation_deg': 180,
+        'purpose': 'calibration' if args.calib else 'survey',
+        'imu_requested_hz': IMU_REQUEST_HZ,
+    }
     with open(meta_path, 'w') as f:
-        json.dump({
-            'video_start_unix': video_start,
-            'fps': FPS, 'width': REC_W, 'height': REC_H,
-            'bitrate': args.bitrate,
-        }, f, indent=2)
+        json.dump(meta, f, indent=2)
 
     # ── Frame loop ─────────────────────────────────────────────────────────────
     stop_event  = threading.Event()
@@ -413,17 +503,24 @@ def main():
                 print(f'[REC] Record pipeline error: {flow}')
                 break
 
-            # Push overlay frame to stream pipeline
-            if stream_src is not None:
-                telem = logger.snapshot()
-                stream_frame = _make_stream_frame(frame, telem)
-                _push(stream_src, stream_frame, frame_idx)
+            # Push downscaled view to the stream pipelines: OpenHD gets the
+            # clean frame (its OSD overlays telemetry itself), A/B get the
+            # telemetry bar drawn on a copy.
+            if stream_src is not None or openhd_src is not None:
+                view = _crop_resize_stream(frame)
+                if openhd_src is not None:
+                    _push(openhd_src, view, frame_idx)
+                if stream_src is not None:
+                    stream_frame = _make_stream_frame(view.copy(), logger.snapshot())
+                    _push(stream_src, stream_frame, frame_idx)
 
             frame_idx += 1
 
             if frame_idx % FPS == 0:
                 elapsed = frame_idx // FPS
-                print(f'\r[REC] {elapsed:5d}s  {logger.status()}   ', end='', flush=True)
+                imu_s, _ = _imu_status()
+                print(f'\r[REC] {elapsed:5d}s  {logger.status()}{imu_s}   ',
+                      end='', flush=True)
 
             if max_frames and frame_idx >= max_frames:
                 break
@@ -448,13 +545,33 @@ def main():
             stream_bus.timed_pop_filtered(5 * Gst.SECOND,
                                           Gst.MessageType.EOS | Gst.MessageType.ERROR)
             stream_pipe.set_state(Gst.State.NULL)
+        if openhd_pipe:
+            openhd_src.emit('end-of-stream')
+            openhd_pipe.get_bus().timed_pop_filtered(
+                5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+            openhd_pipe.set_state(Gst.State.NULL)
+        _, rates = _imu_status()
+        imu_proc.send_signal(signal.SIGINT)     # sidecar flushes and exits
+        try:
+            imu_proc.wait(5)
+        except subprocess.TimeoutExpired:
+            imu_proc.terminate()
         logger.close()
         logger.destroy_node()
         rclpy.shutdown()
+        imu_rate = rates['imu_hz'] if rates else 0.0
+        meta['imu_achieved_hz_at_stop'] = imu_rate
+        meta['att_achieved_hz_at_stop'] = rates['att_hz'] if rates else 0.0
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
 
     print()
     size_mb = os.path.getsize(video_path) / 1e6 if os.path.exists(video_path) else 0
     print(f'[REC] Done — {size_mb:.1f} MB  ({out}/)')
+    if imu_rate < IMU_OK_HZ:
+        print(f'[REC] WARNING: IMU rate at stop was {imu_rate:.0f} Hz '
+              f'(< {IMU_OK_HZ} Hz) — insufficient for OpenVINS-grade VIO. '
+              'Check the FC link / SET_MESSAGE_INTERVAL support.')
 
 
 if __name__ == '__main__':
