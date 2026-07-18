@@ -34,7 +34,11 @@ Mission Planner (PC)
 
 VPE phases:
 - **Phase 1** (ground → 50 m AGL): commander anchors EKF at home (0, 0) — static hold
-- **Phase 2** (≥ 50 m AGL): AnyLoc DINOv2+VLAD visual estimates fused into EKF3
+- **Phase 2** (≥ 50 m AGL): AnyLoc DINOv2+VLAD visual estimates fused into EKF3,
+  **slew-limited** (`control/vpe_slew.py`, since 2026-07-18): localizer jumps
+  glide into the EKF at ≤2.5 m/s over real motion instead of stepping — prevents
+  the position-teleport + phantom-velocity lurch (full diagnosis & SITL
+  validation: `instructions/vpe_jump_runaway_diagnosis.md`)
 
 EKF source switching (real_hw.parm):
 - **SRC1** (RC switch LOW): GPS — used for arming and takeoff
@@ -135,7 +139,13 @@ source control/ros2_env.sh   # FastDDS SHM — without it big frames drop ~30%/s
 python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
 # Or push RTSP to MediaMTX relay (watch in VLC/browser, no GStreamer on ground station):
 python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
+# Optionally add --stream-openhd to also feed the OpenHD ground station
+# (H.264 RTP → 192.168.2.2:5601, same overlay view, coexists with the relay stream)
 # → writes field_data/survey1/video.mkv  telemetry.csv  meta.json  frame_times.csv
+#   + imu.csv (200 Hz FC IMU via the auto-spawned tools/imu_logger.py sidecar)
+#   + attitude.csv (50 Hz) — every recording doubles as a VIO/OpenVINS dataset
+#   (procedure & rate checks: instructions/vio_data_collection.md — wait for
+#    imu=200Hz in the status line before takeoff)
 # MKV format: stays playable even after power-off mid-flight
 
 # 2. Extract geo-tagged frames

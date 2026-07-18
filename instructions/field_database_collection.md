@@ -16,12 +16,13 @@ A real-imagery database uses the actual camera, actual lighting, and actual terr
 
 ## How recording works
 
-`record_field.py` records **two streams in parallel**:
+`record_field.py` records **three streams in parallel**:
 
 | Stream | Transport | Source |
 |---|---|---|
-| Video | GStreamer (nvarguscamerasrc/ISP) → OpenCV, not through ROS | H.264, 1640×1232 30fps, ~60 MB/min (8 Mbps default) |
+| Video | GStreamer (nvarguscamerasrc/ISP) → OpenCV, not through ROS | H.265, 1640×1232 30fps, ~60 MB/min (8 Mbps default) |
 | Telemetry | ROS2 subscriptions | lat/lon/AGL/heading + RC channels at 5 Hz → CSV |
+| IMU (VIO) | `tools/imu_logger.py` **sidecar process** (auto-started; must stay a separate process — the camera loop's GIL starves an in-process subscriber) | FC gyro+accel at 200 Hz + attitude at 50 Hz → CSV (see `instructions/vio_data_collection.md`) |
 
 Video goes **directly through Argus, not through ROS**. This means:
 
@@ -127,6 +128,12 @@ Browser: http://118.232.160.227:8889/drone  (WebRTC, ~200 ms)
 Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile)
 ```
 
+**Mode C — OpenHD (H.264 RTP/UDP to 192.168.2.2:5601, coexists with A/B):**
+the OpenHD ground station picks the stream up directly; the encoder settings
+match the field-tested standalone pipeline. Never run a separate
+`gst-launch nvarguscamerasrc …` while recording — the CSI camera allows only
+one Argus session; mode C shares the recorder's capture instead.
+
 Options:
 
 | Flag | Default | Description |
@@ -135,14 +142,25 @@ Options:
 | `--stream-port` | 5000 | UDP port (mode A) |
 | `--stream-server` | off | MediaMTX relay server IP — RTSP push (mode B) |
 | `--stream-rtsp-path` | `/drone` | RTSP path (mode B) |
-| `--stream-bitrate` | 2000000 | H.265 stream bitrate in bps (both modes) |
-| `--bitrate` | 8000000 | H.264 recording bitrate in bps |
+| `--stream-bitrate` | 1000000 | H.265 stream bitrate in bps (modes A/B) |
+| `--stream-openhd [IP]` | off (IP defaults to 192.168.2.2) | OpenHD ground station — H.264 RTP/UDP (mode C, runs **alongside** A or B; same overlay view) |
+| `--openhd-port` | 5601 | UDP port (mode C) |
+| `--openhd-bitrate` | 4000000 | H.264 bitrate in bps (mode C) |
+| `--bitrate` | 8000000 | H.265 recording bitrate in bps |
 | `--duration` | 0 | Stop after N seconds (0 = Ctrl+C) |
+| `--calib` | off | Tag as camera-IMU calibration session (`field_data/calib_<ts>/`) |
+
+All stream views carry the same telemetry overlay bar: `LAT LON clock` /
+`AGL HDG IMU-rate`.
 
 Live status printed to terminal:
 ```
-[REC]    42s  lat=23.451234  lon=120.287654  agl=65.2 m  hdg=045°
+[REC]    42s  lat=23.451234  lon=120.287654  agl=65.2 m  hdg=045°  imu=200Hz
 ```
+`imu=` shows the FC IMU stream rate; a `⚠` marks <80 Hz (insufficient for
+VIO). Expect ~15–30 s at 50 Hz right after mavros starts before it locks at
+200 Hz — wait for `imu=200Hz` before takeoff (details in
+`instructions/vio_data_collection.md`).
 
 > **Known issue:** if GPS fix hasn't been acquired yet, status shows `waiting for GPS …` instead. Recording still runs — video and non-GPS telemetry columns (AGL, heading) still write to CSV. Wait for GPS lock before starting the collection flight, or accept that lat/lon columns will be empty for the first few seconds.
 
@@ -150,16 +168,21 @@ Press **Ctrl+C** to stop.
 
 Output in `field_data/survey1/`:
 ```
-video.mkv         H.264, 1640×1232 30fps (MKV — stays playable after power-off)
+video.mkv         H.265, 1640×1232 30fps (MKV — stays playable after power-off)
 telemetry.csv     unix_time, lat, lon, alt_amsl, alt_agl, heading_deg, rc_channels  (5 Hz)
                   rc_channels = raw /mavros/rc/in PWM list — check the EKF-source
                   switch (RCx_OPTION=90) stayed LOW (GPS) throughout if this
                   recording needs to be trusted as GPS ground truth
-meta.json         video_start_unix, fps, width, height
+meta.json         video_start_unix, fps, width, height, frame_rotation_deg=180,
+                  purpose, imu_requested_hz + achieved IMU/attitude rates at stop
 frame_times.csv   frame_idx, unix_time — actual capture time per frame, logged
                   directly so it stays correct across camera dropouts/reconnects
                   (video_start_unix + frame_idx/fps assumes constant fps and drifts
                   after a dropout — prefer this file for timing-sensitive work)
+imu.csv           stamp_ros, recv_unix, wx, wy, wz, ax, ay, az — FC IMU at 200 Hz
+                  (written by the imu_logger.py sidecar; VIO input)
+attitude.csv      stamp_ros, recv_unix, qw, qx, qy, qz — fused FC attitude, 50 Hz
+imu_rates.json    live 2 s rate report from the sidecar
 ```
 
 ---
@@ -244,7 +267,8 @@ ln -sfn database_zone_z20_vits14 anyloc/database   # active — zone-sized, zoom
 
 | File | Purpose |
 |---|---|
-| `tools/record_field.py` | Record video + telemetry during the survey flight |
+| `tools/record_field.py` | Record video + telemetry + 200 Hz IMU during the survey flight |
+| `tools/imu_logger.py` | IMU sidecar (auto-spawned by record_field.py — never run the subscription in-process) |
 | `tools/extract_frames.py` | Extract geo-tagged frames from the recording |
 | `anyloc/build_database_real.py` | Build AnyLoc database from extracted frames |
 | `control/launch_camera.sh` | **Do not run during collection** — conflicts with recorder |

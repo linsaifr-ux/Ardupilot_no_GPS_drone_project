@@ -23,7 +23,7 @@
   ROS executor 榨到只剩 ~60–105 Hz(bench 實測),獨立行程才守得住 200 Hz。
   **不要把 IMU 訂閱搬回錄影機行程內。**
 - Sidecar 自動向 FC 發 `SET_MESSAGE_INTERVAL`,要求 `RAW_IMU` 200 Hz、
-  `ATTITUDE_QUATERNION` 50 Hz;**每 10 秒重發直到實測 ≥80 Hz**
+  `ATTITUDE_QUATERNION` 50 Hz;**每 2 秒重發直到實測 ≥80 Hz**
   (FC 重開機會遺失此設定,重發可自癒)。
 - 狀態列即時顯示 `imu=XXXHz`(讀 sidecar 的 `imu_rates.json`),
   **低於 80 Hz 會標 ⚠**;結束時若仍 <80 Hz 會印警告並記在 meta.json。
@@ -56,9 +56,10 @@ sidecar 每 2 秒重發直到搶回 200 Hz。**起飛前確認狀態列 `imu=200
 只會得到 ~50 Hz,要再發第二次才解鎖全速;(2) 兩個 COMMAND_LONG 並發會在
 mavros 內互相踩(RAW_IMU 被套成姿態的 50 Hz)——sidecar 已改成序列化發送。
 
-**OpenHD 即時圖傳(2026-07-19 新增):** 錄影機支援 `--stream-openhd [IP]`
+**OpenHD 即時圖傳(2026-07-18 新增):** 錄影機支援 `--stream-openhd [IP]`
 (mode C,H.264 RTP/UDP,預設 192.168.2.2:5601,參數與實測可用的
-standalone 管線一致),與 MediaMTX relay(mode B)可同時開。
+standalone 管線一致),與 MediaMTX relay(mode B)可同時開;
+兩路串流都帶相同的疊加資訊列(LAT/LON+時鐘、AGL/HDG+IMU 速率)。
 相機只能被一個行程開啟,所以 OpenHD 串流必須走錄影機內部共享畫面,
 **不要**在錄影時另外跑 standalone gst-launch 管線。
 `~/Desktop/field_data_collection.sh` 已加上此參數;地面站不在線時

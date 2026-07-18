@@ -33,9 +33,10 @@ Usage:
     --stream-bitrate BPS   H.265 stream bitrate (default: 1000000)
 
   Stream mode C — OpenHD (H.264 RTP/UDP, runs ALONGSIDE mode A or B):
-    --stream-openhd [IP]   stream clean view (no overlay — OpenHD has its own
-                           OSD) to the OpenHD ground station (default IP
-                           192.168.2.2 when the flag is given without a value)
+    --stream-openhd [IP]   stream the same overlay view as mode A/B (telemetry
+                           bar + IMU rate + clock) to the OpenHD ground
+                           station (default IP 192.168.2.2 when the flag is
+                           given without a value)
     --openhd-port PORT     UDP port     (default: 5601)
     --openhd-bitrate BPS   H.264 bitrate (default: 4000000)
 
@@ -199,7 +200,7 @@ def _crop_resize_stream(bgr_full):
     return cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
 
 
-def _make_stream_frame(frame, telem):
+def _make_stream_frame(frame, telem, imu_hz=None):
     """Draw the telemetry bar onto a _crop_resize_stream() frame (in place)."""
     lat, lon, _, agl, hdg = telem
 
@@ -207,10 +208,14 @@ def _make_stream_frame(frame, telem):
     y0 = STREAM_H - OVERLAY_H
     cv2.rectangle(frame, (0, y0), (STREAM_W, STREAM_H), (0, 0, 0), -1)
 
-    line1 = f'LAT {lat:.6f}   LON {lon:.6f}' if lat is not None else 'GPS: waiting ...'
+    clock = datetime.now().strftime('%H:%M:%S')
+    line1 = (f'LAT {lat:.6f}   LON {lon:.6f}   {clock}'
+             if lat is not None else f'GPS: waiting ...   {clock}')
+    imu_s = f'{imu_hz:.0f} Hz' if imu_hz is not None else '---'
     line2 = (f'AGL {agl:.1f} m   HDG {hdg:.0f} deg' if agl is not None and hdg is not None
              else f'AGL {agl:.1f} m' if agl is not None
              else 'AGL ---   HDG ---')
+    line2 += f'   IMU {imu_s}'
 
     cv2.putText(frame, line1, (10, y0 + 16),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
@@ -457,6 +462,7 @@ def main():
     stop_event  = threading.Event()
     frame_idx   = 0
     max_frames  = args.duration * FPS if args.duration > 0 else 0
+    imu_hz_cached = None    # refreshed 1×/s in the status block, shown in overlay
 
     # Real per-frame capture time — video_start_unix + frame_idx/fps assumes a
     # perfectly constant frame rate, which breaks silently after any camera
@@ -503,22 +509,22 @@ def main():
                 print(f'[REC] Record pipeline error: {flow}')
                 break
 
-            # Push downscaled view to the stream pipelines: OpenHD gets the
-            # clean frame (its OSD overlays telemetry itself), A/B get the
-            # telemetry bar drawn on a copy.
+            # Push the same overlay view (telemetry bar + IMU rate + clock)
+            # to every active stream sink.
             if stream_src is not None or openhd_src is not None:
                 view = _crop_resize_stream(frame)
+                _make_stream_frame(view, logger.snapshot(), imu_hz_cached)
                 if openhd_src is not None:
                     _push(openhd_src, view, frame_idx)
                 if stream_src is not None:
-                    stream_frame = _make_stream_frame(view.copy(), logger.snapshot())
-                    _push(stream_src, stream_frame, frame_idx)
+                    _push(stream_src, view, frame_idx)
 
             frame_idx += 1
 
             if frame_idx % FPS == 0:
                 elapsed = frame_idx // FPS
-                imu_s, _ = _imu_status()
+                imu_s, rates = _imu_status()
+                imu_hz_cached = rates['imu_hz'] if rates else None
                 print(f'\r[REC] {elapsed:5d}s  {logger.status()}{imu_s}   ',
                       end='', flush=True)
 
