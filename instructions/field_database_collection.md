@@ -96,9 +96,12 @@ The Desktop `~/Desktop/field_data_collection.sh` launcher wraps all of this
 (auto-numbered `field_data/surveyN`, MediaMTX + OpenHD streams) and since
 2026-07-21 also starts the MAVLink relay (`mavlink_relay_client.py --role
 vehicle` + `MAVLINK_RELAY=1` mavros) so Mission Planner can watch telemetry
-over the internet during the flight — see `streaming/mavlink_relay_setup.md`.
-Close the launcher window (press Enter at its final prompt) when done: left
-open, its relay client keeps port 5760 and blocks the next session's client.
+over the internet during the flight — see `streaming/mavlink_relay_setup.md`
+(the relay client filters MP's stream-rate stomps and the outbound 200 Hz
+IMU mirror, so neither the IMU recording nor the video stream's LTE
+bandwidth is affected by MP being connected). Close the launcher window
+(press Enter at its final prompt) when done; the launcher also reaps any
+stale relay client from a previous session at startup.
 
 Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for the same Argus CaptureSession.
 

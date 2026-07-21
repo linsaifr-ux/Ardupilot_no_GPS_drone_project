@@ -76,9 +76,16 @@ standalone 管線一致),與 MediaMTX relay(mode B)可同時開;
 運作,非錯誤);已對真實 MP 實測,RAW_IMU 全程守住 200 Hz,MP 的
 遙測與控制指令不受影響。副作用:MP 在 relay 連線上改不了 stream rate
 (rate 由 launch script 與 SRn 參數決定)。若錄影中 IMU 仍掉到 2 Hz,
-先查 5760 埠是不是被**舊版** client 佔住(上一場的launcher視窗停在
-「Press Enter to close」不按 Enter,EXIT trap 不會執行,舊 client
-就一直活著):`ss -tlnp | grep 5760`。
+先查 5760 埠是不是被**舊版** client 佔住(launcher 現已在啟動時自動
+pkill 舊 client;手動跑 client 時仍要留意):`ss -tlnp | grep 5760`。
+
+**出向流量也要濾(同日第二地雷,已修):** mavros 會把 FC 通道上的
+全部訊息鏡射給 gcs bridge——包括 sidecar 專用的 200 Hz RAW_IMU +
+50 Hz ATT_QUAT(~29 KB/s TCP),跟 MediaMTX 影像推流搶同一條 LTE
+上行,實測把影像串流塞到延遲 5–6 秒(RTT 32 ms→1.4 s)。vehicle
+client 現在同時丟棄出向的 msg 27/31(log:`dropped outbound msg id
+27`,每 5000 筆才記一次),relay 流量降回 ~11 KB/s、RTT ~50 ms;
+MP 的 HUD 用的是 10 Hz ATTITUDE(msg 30),完全不受影響。
 
 ## 3. 每次 survey 飛行的操作(新增步驟以 ★ 標示)
 

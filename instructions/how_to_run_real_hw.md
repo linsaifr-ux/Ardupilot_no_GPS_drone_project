@@ -191,7 +191,7 @@ Verify before flying with `systemctl is-active jetson_clocks.service` (expect `a
 
 ### 7. MAVLink relay over the internet (optional — backup GCS link)
 
-Gives Mission Planner a second path to the FC (telemetry **and** arm/RTL/mode/param control) via the Jetson's own FC link (`SERIAL1`/TELEM1 on the current Pixhawk 6C; `SERIAL6` on the previous FC) and Frank's PC (`118.232.160.227`), for when the 915MHz SiK radio is out of range. Full setup in `streaming/mavlink_relay_setup.md`; summary:
+Gives Mission Planner a second path to the FC (telemetry **and** arm/RTL/mode/param control) via the Jetson's own FC link (`SERIAL1`/TELEM1 on the current Pixhawk 6C; `SERIAL6` on the previous FC) and Frank's PC (`118.232.160.227`), for when the 915MHz SiK radio is out of range. Since 2026-07-21 the vehicle-side client filters the link both ways so MP can stay connected during recording without side effects: MP's periodic stream-rate requests are dropped (they would collapse the 200 Hz IMU recording stream to 2 Hz) and the outbound 200 Hz IMU mirror is dropped (it saturated the LTE uplink shared with the video stream — 5–6 s of stream lag). Full setup and details in `streaming/mavlink_relay_setup.md`; summary:
 
 ```bash
 # Once, any machine with openssl:

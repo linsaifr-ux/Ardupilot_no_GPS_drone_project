@@ -73,6 +73,15 @@ def _build_ssl_context(cert_dir: str, role: str) -> ssl.SSLContext:
 # rates launch_mavros_real.sh / the SRn params establish.
 DROP_TO_VEHICLE_MSG_IDS = {66}
 
+# Outbound, mavros mirrors the whole FCU stream to the gcs bridge — including
+# imu_logger.py's 200 Hz RAW_IMU (27) + 50 Hz ATTITUDE_QUATERNION (31), which
+# exist only to feed the local imu.csv. Forwarded over LTE they are ~29 KB/s
+# of TCP that saturates the uplink the MediaMTX video push shares (measured
+# 2026-07-21: video send backlog grew to ~650 KB ≈ 5-6 s of stream lag, RTT
+# 32 ms → 1.4 s, ~6% retrans). MP's HUD uses the 10 Hz ATTITUDE message, not
+# these — drop them on the way out.
+DROP_TO_GCS_MSG_IDS = {27, 31}
+
 
 class MavlinkFrameFilter:
     """Stateful splitter: drops whole MAVLink frames with the given msg ids.
@@ -82,9 +91,10 @@ class MavlinkFrameFilter:
     start (mid-frame resync garbage) is forwarded untouched.
     """
 
-    def __init__(self, drop_ids):
+    def __init__(self, drop_ids, tag="GCS"):
         self._drop = drop_ids
         self._buf = bytearray()
+        self._tag = tag
         self.dropped = 0
 
     def feed(self, data: bytes) -> bytes:
@@ -112,7 +122,11 @@ class MavlinkFrameFilter:
                 out += self._buf[:n]
             else:
                 self.dropped += 1
-                _log(f"dropped GCS msg id {msg_id} (total {self.dropped})")
+                # high-rate drops (200 Hz RAW_IMU) would flood the log —
+                # log the first and then every 5000th (~20 s at 250 Hz)
+                if self.dropped == 1 or self.dropped % 5000 == 0:
+                    _log(f"dropped {self._tag} msg id {msg_id} "
+                         f"(total {self.dropped})")
             del self._buf[:n]
         return bytes(out)
 
@@ -169,11 +183,13 @@ def _connect_relay(ctx: ssl.SSLContext, host: str, port: int) -> ssl.SSLSocket:
 def _serve_one_local_connection(local_sock: socket.socket, ctx: ssl.SSLContext,
                                  host: str, port: int, role: str) -> None:
     relay_sock = _connect_relay(ctx, host, port)
-    # vehicle only: strip GCS stream-rate stomps from the inbound leg
-    filt = MavlinkFrameFilter(DROP_TO_VEHICLE_MSG_IDS) if role == "vehicle" else None
+    # vehicle only: strip GCS stream-rate stomps from the inbound leg, and the
+    # local-only high-rate IMU stream from the outbound leg (LTE bandwidth)
+    filt_in  = MavlinkFrameFilter(DROP_TO_VEHICLE_MSG_IDS, "GCS") if role == "vehicle" else None
+    filt_out = MavlinkFrameFilter(DROP_TO_GCS_MSG_IDS, "outbound") if role == "vehicle" else None
     try:
-        t1 = threading.Thread(target=_pump, args=(local_sock, relay_sock, "local->relay"), daemon=True)
-        t2 = threading.Thread(target=_pump, args=(relay_sock, local_sock, "relay->local", filt), daemon=True)
+        t1 = threading.Thread(target=_pump, args=(local_sock, relay_sock, "local->relay", filt_out), daemon=True)
+        t2 = threading.Thread(target=_pump, args=(relay_sock, local_sock, "relay->local", filt_in), daemon=True)
         t1.start()
         t2.start()
         t1.join()

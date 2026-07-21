@@ -85,20 +85,34 @@ which also sets `MAVLINK_RELAY=1` for `launch_mavros_real.sh`, adding
 `gcs_url:="tcp://127.0.0.1:5760"` to mavros so it bridges its full FCU
 stream to the relay client. The Desktop `field_data_collection.sh` launcher
 does the same (relay client + `MAVLINK_RELAY=1`, added 2026-07-21), so MP
-can watch telemetry during data-collection flights too.
+can watch telemetry during data-collection flights too; it also pkills any
+stale vehicle client from a previous session before starting its own.
 
-**The vehicle client filters `REQUEST_DATA_STREAM` (msg id 66) from the
-GCS side** (added 2026-07-21). Mission Planner re-sends its stream-rate
-requests in bursts every ~15 s; on the shared Jetson channel those overwrote
-the `SET_MESSAGE_INTERVAL` rates `tools/imu_logger.py` needs, collapsing the
-200 Hz RAW_IMU recording stream to MP's 2 Hz Sensor rate for a few seconds
-at a time (holes in VIO datasets). The client's log line
-`dropped GCS msg id 66 (total N)` is this filter working — normal whenever
-MP is connected, not an error. Side effect: MP cannot *change* telemetry
-stream rates over the relay (they come from `launch_mavros_real.sh`'s 10 Hz
-request and the `SRn_*` params); everything else — arm, mode, RTL, params,
-mission upload — passes through unmodified. Verified live against real MP:
-RAW_IMU held 200 Hz through the bursts, command round-trips unaffected.
+**The vehicle client filters both directions** (added 2026-07-21):
+
+- *Inbound (GCS→vehicle): drops `REQUEST_DATA_STREAM` (msg id 66).* Mission
+  Planner re-sends its stream-rate requests in bursts every ~15 s; on the
+  shared Jetson channel those overwrote the `SET_MESSAGE_INTERVAL` rates
+  `tools/imu_logger.py` needs, collapsing the 200 Hz RAW_IMU recording
+  stream to MP's 2 Hz Sensor rate for a few seconds at a time (holes in VIO
+  datasets). Side effect: MP cannot *change* telemetry stream rates over the
+  relay (they come from `launch_mavros_real.sh`'s 10 Hz request and the
+  `SRn_*` params). Verified live against real MP: RAW_IMU held 200 Hz
+  through the bursts.
+- *Outbound (vehicle→GCS): drops `RAW_IMU` (27) and `ATTITUDE_QUATERNION`
+  (31).* mavros mirrors the whole FCU stream to the gcs bridge, so during
+  recording the 200 Hz + 50 Hz sidecar streams (~29 KB/s of TCP) went over
+  the same LTE uplink as the MediaMTX video push and saturated it — measured
+  2026-07-21: video send backlog ~650 KB (≈5–6 s of stream lag), RTT 32 ms →
+  1.4 s, ~6 % retransmissions. With the filter the relay idles at ~11 KB/s
+  (the normal 10 Hz telemetry set) and RTT returned to ~50 ms. MP loses
+  nothing it displays — its HUD uses the 10 Hz `ATTITUDE` message.
+
+The log lines `dropped GCS/outbound msg id N (total M)` are these filters
+working — normal whenever MP is connected, not an error (high-rate outbound
+drops are logged only every 5000th). Everything else — arm, mode, RTL,
+params, mission upload — passes through unmodified; command round-trips
+verified unaffected.
 
 **If you run the client standalone, mavros must also be started with
 `MAVLINK_RELAY=1 bash control/launch_mavros_real.sh`** — the relay client by
@@ -147,3 +161,4 @@ connection — MP supports multiple simultaneous links.
 | Mission Planner's Messages tab is empty on the relay connection | Expected — see "Known limitation" above, not a fault | No fix needed; check the radio connection's Messages tab instead, or use `/mavros/sys_status` for structured health data |
 | Vehicle client exits immediately with `OSError: [Errno 98] Address already in use` — or a client-code fix seems to have no effect | An older relay client still owns port 5760. Classic case (bit us 2026-07-21): `field_data_collection.sh` sitting at its final "Press Enter to close" prompt — its EXIT trap hasn't fired yet, so its (possibly old-code) client keeps serving while the new one silently isn't in the path | `ss -tlnp \| grep 5760` to see which PID owns the port; close the old launcher window (or kill that PID), then start the new client |
 | Recorded IMU rate dips to ~2 Hz while MP is connected via relay | `REQUEST_DATA_STREAM` stomps reaching the FC — the vehicle client in the path predates the 2026-07-21 msg-66 filter (see above; often the stale-client row is the real cause) | Make sure the *current* `control/mavlink_relay_client.py` is the one bound to 5760; its log must show `dropped GCS msg id 66` lines while MP is connected |
+| Ground-view video stream turns laggy (seconds of delay) whenever the relay runs alongside recording | 200 Hz RAW_IMU forwarded to MP saturating the shared LTE uplink — vehicle client predates the 2026-07-21 outbound filter (or is a stale instance, see above) | Current client drops msgs 27/31 outbound (log shows `dropped outbound msg id 27`); check `ss -tin dst 118.232.160.227` — relay leg should sit around ~11 KB/s, RTT tens of ms, video leg Send-Q near zero |
