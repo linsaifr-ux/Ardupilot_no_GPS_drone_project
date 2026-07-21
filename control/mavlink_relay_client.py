@@ -64,13 +64,71 @@ def _build_ssl_context(cert_dir: str, role: str) -> ssl.SSLContext:
     return ctx
 
 
-def _pump(src: socket.socket, dst: socket.socket, tag: str) -> None:
+# Mission Planner periodically re-sends REQUEST_DATA_STREAM (msg id 66), which
+# on ArduPilot overwrites the per-message SET_MESSAGE_INTERVAL rates on the
+# shared Jetson channel — tools/imu_logger.py's RAW_IMU @200 Hz collapses to
+# MP's 2 Hz Sensor rate for a few seconds until the sidecar re-requests,
+# tearing holes in VIO datasets. The vehicle client therefore drops msg 66 in
+# the controller->vehicle direction; MP still receives telemetry at whatever
+# rates launch_mavros_real.sh / the SRn params establish.
+DROP_TO_VEHICLE_MSG_IDS = {66}
+
+
+class MavlinkFrameFilter:
+    """Stateful splitter: drops whole MAVLink frames with the given msg ids.
+
+    Frames are delimited by the length field alone (no CRC validation, so
+    unknown-dialect messages pass through intact). A byte that isn't a frame
+    start (mid-frame resync garbage) is forwarded untouched.
+    """
+
+    def __init__(self, drop_ids):
+        self._drop = drop_ids
+        self._buf = bytearray()
+        self.dropped = 0
+
+    def feed(self, data: bytes) -> bytes:
+        self._buf += data
+        out = bytearray()
+        while self._buf:
+            b0 = self._buf[0]
+            if b0 == 0xFD:                     # MAVLink 2
+                if len(self._buf) < 10:
+                    break
+                n = 12 + self._buf[1] + (13 if self._buf[2] & 0x01 else 0)
+                msg_id = self._buf[7] | self._buf[8] << 8 | self._buf[9] << 16
+            elif b0 == 0xFE:                   # MAVLink 1
+                if len(self._buf) < 6:
+                    break
+                n = 8 + self._buf[1]
+                msg_id = self._buf[5]
+            else:                              # not a frame start — pass through
+                out.append(b0)
+                del self._buf[:1]
+                continue
+            if len(self._buf) < n:
+                break                          # incomplete frame — need more bytes
+            if msg_id not in self._drop:
+                out += self._buf[:n]
+            else:
+                self.dropped += 1
+                _log(f"dropped GCS msg id {msg_id} (total {self.dropped})")
+            del self._buf[:n]
+        return bytes(out)
+
+
+def _pump(src: socket.socket, dst: socket.socket, tag: str,
+          filt: "MavlinkFrameFilter | None" = None) -> None:
     """Copy bytes src -> dst until either side closes; closes dst on exit."""
     try:
         while True:
             data = src.recv(4096)
             if not data:
                 break
+            if filt is not None:
+                data = filt.feed(data)
+                if not data:
+                    continue
             dst.sendall(data)
     except OSError:
         pass
@@ -109,11 +167,13 @@ def _connect_relay(ctx: ssl.SSLContext, host: str, port: int) -> ssl.SSLSocket:
 
 
 def _serve_one_local_connection(local_sock: socket.socket, ctx: ssl.SSLContext,
-                                 host: str, port: int) -> None:
+                                 host: str, port: int, role: str) -> None:
     relay_sock = _connect_relay(ctx, host, port)
+    # vehicle only: strip GCS stream-rate stomps from the inbound leg
+    filt = MavlinkFrameFilter(DROP_TO_VEHICLE_MSG_IDS) if role == "vehicle" else None
     try:
         t1 = threading.Thread(target=_pump, args=(local_sock, relay_sock, "local->relay"), daemon=True)
-        t2 = threading.Thread(target=_pump, args=(relay_sock, local_sock, "relay->local"), daemon=True)
+        t2 = threading.Thread(target=_pump, args=(relay_sock, local_sock, "relay->local", filt), daemon=True)
         t1.start()
         t2.start()
         t1.join()
@@ -150,7 +210,7 @@ def main() -> None:
         local_sock, addr = listener.accept()
         _log(f"local client connected from {addr}")
         try:
-            _serve_one_local_connection(local_sock, ctx, args.relay_host, args.relay_port)
+            _serve_one_local_connection(local_sock, ctx, args.relay_host, args.relay_port, args.role)
         except Exception as e:
             _log(f"connection handler error: {e}")
         _log("local client disconnected — waiting for reconnect")

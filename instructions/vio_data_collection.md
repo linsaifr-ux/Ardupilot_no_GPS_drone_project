@@ -66,6 +66,20 @@ standalone 管線一致),與 MediaMTX relay(mode B)可同時開;
 純 UDP 發送無害。已 bench 驗證(RTP pt=96、SPS 正常、~4 Mbps,
 錄影 900/900 影格不受影響)。
 
+**MAVLink relay + Mission Planner 地雷(2026-07-21 已修):**
+`field_data_collection.sh` 現在同時啟動 MAVLink relay(vehicle client +
+`MAVLINK_RELAY=1`),讓 MP 可經網際網路看遙測。但 MP 每 ~15 秒會重發
+`REQUEST_DATA_STREAM`(msg 66),在共用通道上會把 sidecar 的 RAW_IMU
+200 Hz 蓋回 MP 預設的 2 Hz——imu.csv 每次被蓋都出現數秒 2 Hz 的洞,
+對 VIO 是災難。修法:`control/mavlink_relay_client.py` vehicle 端
+直接丟棄 GCS 方向的 msg 66(log 出現 `dropped GCS msg id 66` = 正常
+運作,非錯誤);已對真實 MP 實測,RAW_IMU 全程守住 200 Hz,MP 的
+遙測與控制指令不受影響。副作用:MP 在 relay 連線上改不了 stream rate
+(rate 由 launch script 與 SRn 參數決定)。若錄影中 IMU 仍掉到 2 Hz,
+先查 5760 埠是不是被**舊版** client 佔住(上一場的launcher視窗停在
+「Press Enter to close」不按 Enter,EXIT trap 不會執行,舊 client
+就一直活著):`ss -tlnp | grep 5760`。
+
 ## 3. 每次 survey 飛行的操作(新增步驟以 ★ 標示)
 
 1. 起動 mavros、record_field.py(與現行流程相同;Desktop 的

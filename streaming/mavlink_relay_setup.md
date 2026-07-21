@@ -2,11 +2,14 @@
 
 Gives Mission Planner a second, independent path to the FC (telemetry **and**
 control — arm/disarm/RTL/mode/param) alongside the existing 915MHz SiK radio,
-routed through the Jetson's own FC link (`SERIAL6`) and Frank's PC
+routed through the Jetson's own FC link and Frank's PC
 (`118.232.160.227`, the same box that runs MediaMTX for the video stream).
+The FC-side port of that link depends on the flight controller: `SERIAL1`
+(TELEM1) on the current Pixhawk 6C (since the 2026-07-21 FC swap), `SERIAL6`
+on the previous FC.
 
 ```
-FC ──SERIAL6── Jetson (mavros, gcs_url) ──mTLS──▶ Frank's PC (relay hub) ◀──mTLS── Mission Planner machine
+FC ──SERIAL1 (TELEM1)── Jetson (mavros, gcs_url) ──mTLS──▶ Frank's PC (relay hub) ◀──mTLS── Mission Planner machine
 ```
 
 Authenticated with mutual TLS (mTLS) — a connection is only accepted if it
@@ -24,12 +27,14 @@ the radio drops out of range.
 **Known limitation — no `STATUSTEXT` (prearm/warning messages).** Mission
 Planner's Messages tab will stay empty on this connection even though
 telemetry and control both work fully. This is permanent, not a bug:
-`SERIAL6_OPTIONS=1024` (set to stop the commander's VPE stream from
-flooding the radio link, see `instructions/how_to_run_real_hw.md`) marks
+the Jetson port's `SERIALn_OPTIONS=1024` (`SERIAL1_OPTIONS` on the current
+Pixhawk 6C, set by `control/real_hw_pixhawk6c.parm` to stop the commander's
+VPE stream from flooding the radio link, see
+`instructions/how_to_run_real_hw.md`) marks
 the Jetson's FC link "private," and ArduPilot's `STATUSTEXT` distribution
 unconditionally excludes private channels — confirmed via ArduPilot source
 and a live prearm-failure test. Don't try to fix this by clearing
-`SERIAL6_OPTIONS` — it reopens the VPE-flooding problem. If you need
+that option — it reopens the VPE-flooding problem. If you need
 prearm-type health info on this link, that would mean building a small
 status line from mavros's structured `/mavros/sys_status` data instead —
 ask if you want that.
@@ -78,7 +83,22 @@ bash control/launch_real_hw.sh --mavlink-relay
 ```
 which also sets `MAVLINK_RELAY=1` for `launch_mavros_real.sh`, adding
 `gcs_url:="tcp://127.0.0.1:5760"` to mavros so it bridges its full FCU
-stream to the relay client.
+stream to the relay client. The Desktop `field_data_collection.sh` launcher
+does the same (relay client + `MAVLINK_RELAY=1`, added 2026-07-21), so MP
+can watch telemetry during data-collection flights too.
+
+**The vehicle client filters `REQUEST_DATA_STREAM` (msg id 66) from the
+GCS side** (added 2026-07-21). Mission Planner re-sends its stream-rate
+requests in bursts every ~15 s; on the shared Jetson channel those overwrote
+the `SET_MESSAGE_INTERVAL` rates `tools/imu_logger.py` needs, collapsing the
+200 Hz RAW_IMU recording stream to MP's 2 Hz Sensor rate for a few seconds
+at a time (holes in VIO datasets). The client's log line
+`dropped GCS msg id 66 (total N)` is this filter working — normal whenever
+MP is connected, not an error. Side effect: MP cannot *change* telemetry
+stream rates over the relay (they come from `launch_mavros_real.sh`'s 10 Hz
+request and the `SRn_*` params); everything else — arm, mode, RTL, params,
+mission upload — passes through unmodified. Verified live against real MP:
+RAW_IMU held 200 Hz through the bursts, command round-trips unaffected.
 
 **If you run the client standalone, mavros must also be started with
 `MAVLINK_RELAY=1 bash control/launch_mavros_real.sh`** — the relay client by
@@ -125,3 +145,5 @@ connection — MP supports multiple simultaneous links.
 | Relay connects fine but flaps every ~10s (`mavconn: tcp3: send: channel closed!` in mavros) | Fixed 2026-07-08 — `_connect_relay()` left a 10s socket timeout active after connecting, so idle periods (e.g. no controller connected yet) spuriously tore the link down | Pull latest `control/mavlink_relay_client.py`; if it recurs, check `_connect_relay()` calls `raw.settimeout(None)` after `create_connection()` |
 | Everything *connects* (vehicle client up, MP's TLS accepted) but MP gets no data and times out; Jetson-side `ss` shows the vehicle client's Send-Q/Recv-Q piling up | Fixed 2026-07-09 — one earlier controller connection died without a TCP close (LTE/NAT drop, killed process); the server's blocking `sendall()` to that half-open socket wedged the whole hub for everyone | Restart the relay server on Frank's PC (instant un-wedge) **and update it to the latest `streaming/mavlink_relay_server.py`** — per-peer writer threads + bounded queues evict dead peers instead of wedging, TCP keepalive detects half-open drops in ~60s. Also restart the Jetson vehicle client once to pick up its matching keepalive fix |
 | Mission Planner's Messages tab is empty on the relay connection | Expected — see "Known limitation" above, not a fault | No fix needed; check the radio connection's Messages tab instead, or use `/mavros/sys_status` for structured health data |
+| Vehicle client exits immediately with `OSError: [Errno 98] Address already in use` — or a client-code fix seems to have no effect | An older relay client still owns port 5760. Classic case (bit us 2026-07-21): `field_data_collection.sh` sitting at its final "Press Enter to close" prompt — its EXIT trap hasn't fired yet, so its (possibly old-code) client keeps serving while the new one silently isn't in the path | `ss -tlnp \| grep 5760` to see which PID owns the port; close the old launcher window (or kill that PID), then start the new client |
+| Recorded IMU rate dips to ~2 Hz while MP is connected via relay | `REQUEST_DATA_STREAM` stomps reaching the FC — the vehicle client in the path predates the 2026-07-21 msg-66 filter (see above; often the stale-client row is the real cause) | Make sure the *current* `control/mavlink_relay_client.py` is the one bound to 5760; its log must show `dropped GCS msg id 66` lines while MP is connected |

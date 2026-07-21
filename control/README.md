@@ -82,7 +82,14 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 - `SERIAL6_OPTIONS=1024` (2026-07-06): no MAVLink forwarding to/from the Jetson port — otherwise the FC copies the 20 Hz VPE broadcasts onto the telemetry radio and Mission Planner hangs on "Getting Params". FC reboot required after setting
 - `SR3_*=10` (2026-07-06): persistent 10 Hz stream rates for SERIAL6 (4th MAVLink port → SR3), so telemetry survives FC reboots without re-requesting
 - RC aux channel: `RCx_OPTION=90` (EKF Source Select — LOW=SRC1/GPS, HIGH=SRC2/ExternalNav)
-- Upload via Mission Planner or MAVProxy: `param load control/real_hw.parm`
+- **Written for the previous FC (4.8-dev names, Jetson on SERIAL6) — for the current Pixhawk 6C use `real_hw_pixhawk6c.parm` instead.** Keep the two files in sync when tuning changes.
+
+**`real_hw_pixhawk6c.parm`** — same config adapted (2026-07-21) for the current FC, a Pixhawk 6C on ArduCopter 4.6.3 with the Jetson link on `SERIAL1`/TELEM1:
+- `SERIAL1_OPTIONS=1024` + `SR1_*=10` replace the SERIAL6/SR3 section (SERIAL1 = 2nd MAVLink port → SR1)
+- 4.6.3 names: `BRD_SAFETY_DEFLT`, `GPS1_TYPE`, `PSC_POSXY_P`/`PSC_VELXY_{P,I,D}`; `FS_GPS_ENABLE`/`GPS_ARMING_MIN_SAT` dropped (don't exist on 4.6.3)
+- Load with `python3 control/load_fc_params.py --file control/real_hw_pixhawk6c.parm --reboot` (or Mission Planner), then confirm with a second run — it must report everything already-correct **after the reboot**. As of 2026-07-21 these params are NOT loaded on the FC (loaded, then reverted to FC defaults on request) — the FC flies stock until this is applied
+
+**`load_fc_params.py`** — loads a .parm file over `/dev/ttyUSB0:921600` with per-param read-back verification; `--reboot` reboots the FC afterwards. mavros must not be running (it owns the port). Verify across a reboot: GCS stream-rate requests shadow `SRn_*` params in RAM, so those can read "correct" without ever having been saved.
 
 **`jetson_clocks.service`** — systemd unit, locks GPU/EMC/CPU to max on every boot (`nvpmodel MAXN_SUPER` alone only raises the ceiling, doesn't force it — see `detection/README.md` Performance section). Install once: `sudo cp control/jetson_clocks.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now jetson_clocks.service`. Verify with `systemctl is-active jetson_clocks.service`.
 
@@ -97,13 +104,13 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 
 | Script | Purpose |
 |--------|---------|
-| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (Serial6). Auto-requests all data streams at 10 Hz after connect (MAVROS sends REQUEST_DATA_STREAM rate=0 on startup). The request is runtime-only — `SR3_*=10` in real_hw.parm is the persistent fallback that keeps streams alive if the FC reboots mid-session. |
+| `launch_mavros_real.sh` | MAVROS2 → ArduPilot FC via `/dev/ttyUSB0:921600` (FC side: SERIAL1/TELEM1 on the current Pixhawk 6C; SERIAL6 on the previous FC). Auto-requests all data streams at 10 Hz after connect (MAVROS sends REQUEST_DATA_STREAM rate=0 on startup). The request is runtime-only — `SR1_*=10` in real_hw_pixhawk6c.parm is the persistent fallback that keeps streams alive if the FC reboots mid-session. |
 | `launch_camera.sh` | `csi_camera_node.py`: IMX219 CSI (nvarguscamerasrc, sensor-id 0), 1640×1232 @ 30 fps → `/drone/camera/image_raw` (rgb8). Color conversion happens in VIC hardware (`nvvidconv` → RGBA, alpha stripped in Python ~1 ms) — no CPU `videoconvert` element (removed 2026-07-09). |
 | `ros2_env.sh` + `fastdds_shm_profile.xml` | Shared ROS2 env sourced by every launcher: FastDDS profile with a 64 MB shared-memory segment. Without it, 6 MB camera frames fall back to fragmented BEST_EFFORT UDP and each subscriber silently drops ~30% of them (found 2026-07-09). **Source `control/ros2_env.sh` before running any ROS node by hand.** |
 | `hw_bridge.py` | Publishes `/drone/state` (local ENU from `/mavros/local_position/pose`, for control math), and `/drone/pose`/`/drone/agl` (real WGS84 lat/lon/AGL relayed straight from ArduPilot's own EKF output — `/mavros/global_position/global` + `rel_alt` — so they match Mission Planner/QGC regardless of which EKF source, GPS or ExternalNav/VPE, is active) |
 | `launch_real_hw.sh` | Full real-hardware stack: MAVROS + camera + hw_bridge + AnyLoc + YOLO + commander. Pass `--stream-host IP` for direct UDP ground view stream, or `--stream-server IP` for RTSP push to MediaMTX relay — either adds `ground_view_stream.py` alongside `launch_camera.sh` (both always run). Pass `--mavlink-relay` for a second, internet-based Mission Planner path via Frank's PC (mTLS, see `streaming/mavlink_relay_setup.md`) — backup only, not a replacement for the SiK radio. |
 | `launch_gstreamer.sh` | Simple H.265 camera stream to ground station — camera + AnyLoc tile only, no YOLO. Opens camera directly — don't run with `launch_camera.sh` or `ground_view_stream.py`. |
-| `mavlink_relay_client.py` | mTLS bridge between a local plain-TCP MAVLink endpoint (mavros's `gcs_url`, or Mission Planner) and Frank's PC's relay hub. Same script, run with `--role vehicle` (Jetson) or `--role controller` (MP machine) — see `streaming/mavlink_relay_setup.md`. TCP keepalive since 2026-07-09 so a silent LTE/NAT drop reconnects in ~60 s instead of hanging forever. |
+| `mavlink_relay_client.py` | mTLS bridge between a local plain-TCP MAVLink endpoint (mavros's `gcs_url`, or Mission Planner) and Frank's PC's relay hub. Same script, run with `--role vehicle` (Jetson) or `--role controller` (MP machine) — see `streaming/mavlink_relay_setup.md`. TCP keepalive since 2026-07-09 so a silent LTE/NAT drop reconnects in ~60 s instead of hanging forever. Since 2026-07-21 the vehicle role drops incoming `REQUEST_DATA_STREAM` (msg 66) so MP's periodic stream-rate requests can't collapse `imu_logger.py`'s 200 Hz RAW_IMU stream — the `dropped GCS msg id 66` log line is normal with MP connected. |
 
 **Simulation (SITL):**
 

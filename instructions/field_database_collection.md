@@ -92,6 +92,14 @@ Terminal 2   source /opt/ros/humble/setup.bash && python3 tools/record_field.py 
 
 The recorder reads GPS, AGL, and heading **directly from MAVROS** (`/mavros/global_position/global`, `/mavros/global_position/rel_alt`, `/mavros/global_position/compass_hdg`) — `hw_bridge.py` is not needed for collection.
 
+The Desktop `~/Desktop/field_data_collection.sh` launcher wraps all of this
+(auto-numbered `field_data/surveyN`, MediaMTX + OpenHD streams) and since
+2026-07-21 also starts the MAVLink relay (`mavlink_relay_client.py --role
+vehicle` + `MAVLINK_RELAY=1` mavros) so Mission Planner can watch telemetry
+over the internet during the flight — see `streaming/mavlink_relay_setup.md`.
+Close the launcher window (press Enter at its final prompt) when done: left
+open, its relay client keeps port 5760 and blocks the next session's client.
+
 Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for the same Argus CaptureSession.
 
 ---
@@ -159,7 +167,11 @@ Live status printed to terminal:
 ```
 `imu=` shows the FC IMU stream rate; a `⚠` marks <80 Hz (insufficient for
 VIO). Expect ~15–30 s at 50 Hz right after mavros starts before it locks at
-200 Hz — wait for `imu=200Hz` before takeoff (details in
+200 Hz — wait for `imu=200Hz` before takeoff. If the rate keeps dipping to
+~2 Hz mid-recording while Mission Planner is connected via the MAVLink
+relay, an outdated relay client is in the path — since 2026-07-21 the
+vehicle client filters MP's stream-rate stomps (msg 66); see the
+troubleshooting table in `streaming/mavlink_relay_setup.md`. (Details in
 `instructions/vio_data_collection.md`).
 
 > **Known issue:** if GPS fix hasn't been acquired yet, status shows `waiting for GPS …` instead. Recording still runs — video and non-GPS telemetry columns (AGL, heading) still write to CSV. Wait for GPS lock before starting the collection flight, or accept that lat/lon columns will be empty for the first few seconds.

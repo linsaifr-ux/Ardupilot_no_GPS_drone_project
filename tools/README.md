@@ -6,7 +6,7 @@ Standalone tools for monitoring, streaming, and analysing drone flights.
 
 ## record_field.py — Field database collection recorder
 
-Records 1640×1232 30fps H.264 video from the IMX219 CSI camera directly (via OpenCV + GStreamer `nvarguscamerasrc`/ISP + `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading/RC-channels at 5 Hz via ROS2) and a per-frame capture-timestamp CSV. Frames are rotated 180° after capture. Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server.
+Records 1640×1232 30fps H.265 video (H.264→H.265 2026-07-07) from the IMX219 CSI camera directly (via OpenCV + GStreamer `nvarguscamerasrc`/ISP + `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading/RC-channels at 5 Hz via ROS2) and a per-frame capture-timestamp CSV. Frames are rotated 180° after capture. Auto-spawns the `imu_logger.py` sidecar (FC IMU at 200 Hz + attitude at 50 Hz for VIO — its own process, never in-process; see `instructions/vio_data_collection.md`). Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server, and/or H.264 RTP to an OpenHD ground station.
 
 **Do NOT run `launch_camera.sh` at the same time** — both open an Argus CaptureSession on the same sensor.  
 Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*` and RC input from `/mavros/rc/in`. `hw_bridge.py` is not needed.
@@ -55,13 +55,17 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 | `--stream-port N` | 5000 | UDP port (mode A only) |
 | `--stream-server IP` | off | MediaMTX relay server IP — RTSP push stream |
 | `--stream-rtsp-path P` | `/drone` | RTSP path (mode B only) |
-| `--stream-bitrate N` | 2000000 | H.265 stream bitrate (bps, both modes) |
-| `--bitrate N` | 8000000 | H.264 recording bitrate (bps) |
+| `--stream-bitrate N` | 2000000 | H.265 stream bitrate (bps, modes A/B) |
+| `--stream-openhd [IP]` | off | Mode C: H.264 RTP/UDP to OpenHD ground station (default 192.168.2.2), coexists with A/B — shares the recorder's capture |
+| `--openhd-port N` | 5601 | OpenHD UDP port |
+| `--openhd-bitrate N` | 4000000 | OpenHD H.264 bitrate (bps) |
+| `--bitrate N` | 8000000 | H.265 recording bitrate (bps) |
 | `--duration N` | 0 | Stop after N seconds (0 = Ctrl+C) |
+| `--calib` | off | Tag as camera-IMU calibration session (`field_data/calib_<ts>/`) |
 
 `--stream-host` and `--stream-server` are mutually exclusive.
 
-**Output:** `video.mkv`, `telemetry.csv` (now includes an `rc_channels` column — raw `/mavros/rc/in` PWM list, useful for confirming the EKF-source switch stayed on GPS for the whole recording), `meta.json`, and `frame_times.csv` (`frame_idx, unix_time` — real per-frame capture time, more reliable than `meta.json`'s `video_start_unix + frame_idx/fps` across camera dropouts) in the output directory.  
+**Output:** `video.mkv`, `telemetry.csv` (now includes an `rc_channels` column — raw `/mavros/rc/in` PWM list, useful for confirming the EKF-source switch stayed on GPS for the whole recording), `meta.json`, `frame_times.csv` (`frame_idx, unix_time` — real per-frame capture time, more reliable than `meta.json`'s `video_start_unix + frame_idx/fps` across camera dropouts), and the sidecar's `imu.csv` (200 Hz), `attitude.csv` (50 Hz), `imu_rates.json` in the output directory.  
 **Storage:** ~60 MB/min at default bitrate.
 
 ---

@@ -29,7 +29,7 @@ Mission Planner (PC)
                                          ↕ MAVLink
                               /dev/ttyUSB0:921600
                                          ↕
-                             ArduPilot FC (real_hw.parm: SRC1=GPS, SRC2=ExternalNav)
+                             ArduPilot FC (real_hw_pixhawk6c.parm: SRC1=GPS, SRC2=ExternalNav)
 ```
 
 VPE phases:
@@ -40,7 +40,7 @@ VPE phases:
   the position-teleport + phantom-velocity lurch (full diagnosis & SITL
   validation: `instructions/vpe_jump_runaway_diagnosis.md`)
 
-EKF source switching (real_hw.parm):
+EKF source switching (real_hw_pixhawk6c.parm):
 - **SRC1** (RC switch LOW): GPS — used for arming and takeoff
 - **SRC2** (RC switch HIGH): ExternalNav/AnyLoc — flip at cruise altitude once AnyLoc is confident
 
@@ -73,35 +73,47 @@ ros2 pkg list | grep mavros   # should show: mavros  mavros_extras  mavros_msgs
 
 ### 4. Upload ArduPilot parameters to FC
 
-Upload `control/real_hw.parm` — **not** `no_gps.parm` (that has SITL-only settings).
+For the **current FC (Pixhawk 6C, ArduCopter 4.6.3, since the 2026-07-21 FC
+swap)** upload `control/real_hw_pixhawk6c.parm` — the 6C keeps the Jetson
+link on `SERIAL1`/TELEM1 (was `SERIAL6`) and 4.6.3 uses older names for a
+few params, both handled in that file. `control/real_hw.parm` is the
+previous FC's version — keep the two in sync when tuning changes. Never
+upload `no_gps.parm` (SITL-only settings).
+
+> **Status note (2026-07-21):** the Pixhawk 6C currently flies on its stock
+> params — the file below was loaded, then reverted on request. Field data
+> collection works without it; run this step before any VPE/mission flight.
 
 ```bash
-# Via Mission Planner: Config → Full Parameter List → Load from file → real_hw.parm
-# Or via MAVProxy:
-mavproxy.py --master=/dev/ttyUSB0,921600
-  > param load control/real_hw.parm
-  > param save
-  > reboot
+# From the Jetson (mavros must be stopped — it owns the serial port);
+# verifies every param by read-back, --reboot applies SERIAL1_OPTIONS:
+python3 control/load_fc_params.py --file control/real_hw_pixhawk6c.parm --reboot
+# Re-run after the reboot: it must report everything already-correct.
+# (SRn_* stream-rate params can read "correct" in RAM without being saved —
+# only the post-reboot check proves persistence.)
+
+# Or via Mission Planner: Config → Full Parameter List → Load from file
 ```
 
-Key parameters in `real_hw.parm`:
+Key parameters (4.6.3 names from `real_hw_pixhawk6c.parm`; the older-FC
+equivalents in `real_hw.parm` differ where noted):
 
 | Parameter | Value | Why |
 |---|---|---|
 | `FRAME_CLASS` / `FRAME_TYPE` | 2 / 1 | Hexarotor X — matches the real airframe (was wrongly quad-X in this file until 2026-07-06; the FC itself was always correct) |
-| `GPS_TYPE` | 1 | GPS enabled — used for SRC1 arming |
+| `GPS1_TYPE` | 1 | GPS enabled — used for SRC1 arming (`GPS_TYPE` on the previous FC) |
 | `EK3_SRC1_POSXY` | 3 | SRC1 = GPS (arm + takeoff) |
 | `EK3_SRC2_POSXY` | 6 | SRC2 = ExternalNav/AnyLoc (survey) |
 | `EK3_SRC2_VELXY` | 0 | **No velocity on SRC2** — the Jetson vision_speed is differentiated EKF output on real hw (circular); IMU + 20 Hz VPE position suffices. Was 6 in SITL only. |
 | `EK3_SRC2_YAW` | 1 | Compass on SRC2 — never 6; VPE yaw is hardcoded North, not a measurement |
 | `VISO_TYPE` | 1 | MAVLink visual odometry enabled |
-| `BRD_SAFETYENABLE` | 1 | Physical safety button required |
-| `PSC_NE_VEL_I` | 0.0 | Must be 0 — non-zero causes integral windup |
+| `BRD_SAFETY_DEFLT` | 1 | Physical safety button required (`BRD_SAFETYENABLE` on the previous FC) |
+| `PSC_VELXY_I` | 0.0 | Must be 0 — non-zero causes integral windup (`PSC_NE_VEL_I` on the previous FC) |
 | `GUID_TIMEOUT` | 30 | Prevents failsafe on Jetson CPU spikes |
 | `EK3_GLITCH_RAD` | 50 | Accept AnyLoc jumps up to 50 m |
 | `ARMING_CHECK` | 0 | Skip software pre-arm (physical safety switch is protection) |
-| `SERIAL6_OPTIONS` | 1024 | Don't forward MAVLink to/from the Jetson port. Without it the FC copies the commander's 20 Hz VPE broadcasts onto the telemetry radio/USB, and Mission Planner hangs on "Getting Params". Needs FC reboot to take effect |
-| `SR3_*` (EXT_STAT, EXTRA1-3, POSITION, RAW_SENS, RC_CHAN) | 10 | Persistent 10 Hz stream rates for the Jetson link (SERIAL6 = 4th MAVLink port → SR**3**). Keeps telemetry flowing after an FC reboot mid-session — the launch script's stream request is runtime-only |
+| `SERIAL1_OPTIONS` | 1024 | Don't forward MAVLink to/from the Jetson port. Without it the FC copies the commander's 20 Hz VPE broadcasts onto the telemetry radio/USB, and Mission Planner hangs on "Getting Params". Needs FC reboot to take effect (`SERIAL6_OPTIONS` on the previous FC) |
+| `SR1_*` (EXT_STAT, EXTRA1-3, POSITION, RAW_SENS, RC_CHAN) | 10 | Persistent 10 Hz stream rates for the Jetson link (SERIAL1 = 2nd MAVLink port → SR**1**; was SERIAL6→SR3 on the previous FC). Keeps telemetry flowing after an FC reboot mid-session — the launch script's stream request is runtime-only |
 
 Set RC aux switch for EKF source:
 - In Mission Planner: Config → Full Parameter List → find `RCx_OPTION` on a 2/3-pos switch → set to **90** (EKF Source Select)
@@ -179,7 +191,7 @@ Verify before flying with `systemctl is-active jetson_clocks.service` (expect `a
 
 ### 7. MAVLink relay over the internet (optional — backup GCS link)
 
-Gives Mission Planner a second path to the FC (telemetry **and** arm/RTL/mode/param control) via the Jetson's own FC link (`SERIAL6`) and Frank's PC (`118.232.160.227`), for when the 915MHz SiK radio is out of range. Full setup in `streaming/mavlink_relay_setup.md`; summary:
+Gives Mission Planner a second path to the FC (telemetry **and** arm/RTL/mode/param control) via the Jetson's own FC link (`SERIAL1`/TELEM1 on the current Pixhawk 6C; `SERIAL6` on the previous FC) and Frank's PC (`118.232.160.227`), for when the 915MHz SiK radio is out of range. Full setup in `streaming/mavlink_relay_setup.md`; summary:
 
 ```bash
 # Once, any machine with openssl:
@@ -202,11 +214,11 @@ python3 control/mavlink_relay_client.py --role controller
 # Then in Mission Planner: add a TCP connection to 127.0.0.1:5760, alongside the radio link.
 ```
 
-**Why this doesn't use FC-level MAVLink signing:** ArduPilot's signing is all-or-nothing across every serial port ([confirmed via source + an exact-match upstream issue](https://github.com/ArduPilot/ardupilot/issues/28736)) — turning it on would also require mavros's unsigned `SERIAL6` VPE/EKF feed to be signed, which mavros/libmavconn has no support for, and would break the whole no-GPS localization stack. Instead, both relay hops are authenticated with mutual TLS (private CA, client certs) — the FC and mavros are never touched or made aware this exists.
+**Why this doesn't use FC-level MAVLink signing:** ArduPilot's signing is all-or-nothing across every serial port ([confirmed via source + an exact-match upstream issue](https://github.com/ArduPilot/ardupilot/issues/28736)) — turning it on would also require mavros's unsigned Jetson-port VPE/EKF feed to be signed, which mavros/libmavconn has no support for, and would break the whole no-GPS localization stack. Instead, both relay hops are authenticated with mutual TLS (private CA, client certs) — the FC and mavros are never touched or made aware this exists.
 
 **This is a backup, not a replacement for the radio.** It depends on Jetson LTE + Frank's PC being reachable. Bench-test (props off) before ever trusting arm/RTL through it — see the testing checklist in `streaming/mavlink_relay_setup.md`.
 
-**Known limitation:** Mission Planner's Messages tab (prearm/warning `STATUSTEXT`) stays empty on this connection — telemetry and control both work fully, but `SERIAL6_OPTIONS=1024` (step 4 of "Upload ArduPilot parameters", set to stop the commander's VPE stream from flooding the radio) also excludes SERIAL6 from ArduPilot's `STATUSTEXT` distribution (verified via source — one option bit controls both). This is a permanent tradeoff, not a bug; see `streaming/mavlink_relay_setup.md` for details. Don't clear `SERIAL6_OPTIONS` to fix it — that reopens the VPE-flooding problem.
+**Known limitation:** Mission Planner's Messages tab (prearm/warning `STATUSTEXT`) stays empty on this connection — telemetry and control both work fully, but the Jetson port's `SERIAL1_OPTIONS=1024` (step 4 of "Upload ArduPilot parameters", set to stop the commander's VPE stream from flooding the radio; `SERIAL6_OPTIONS` on the previous FC) also excludes that port from ArduPilot's `STATUSTEXT` distribution (verified via source — one option bit controls both). This is a permanent tradeoff, not a bug; see `streaming/mavlink_relay_setup.md` for details. Don't clear the option to fix it — that reopens the VPE-flooding problem.
 
 Cross-machine tested 2026-07-08: both the vehicle leg (Jetson) and controller leg (MP machine) confirmed carrying live telemetry and control over the real deployed link.
 
@@ -412,7 +424,7 @@ python3 control/ardupilot_commander.py --manual-takeoff
 > the VPE feeder, arm on GPS, climb, flip the aux switch to SRC2, then switch
 > to **AUTO** from Mission Planner. **Never switch to GUIDED** in this flow —
 > GUIDED triggers the commander's scripted survey. Mission Planner can stay
-> connected the whole time (radio or USB) — `SERIAL6_OPTIONS=1024` stops the
+> connected the whole time (radio or USB) — `SERIAL1_OPTIONS=1024` stops the
 > FC from forwarding the VPE flood onto MP's link. The commander sets the EKF
 > origin *and the VPE reference frame* from your arm GPS position; when
 > Phase 2 activates it prints `VPE reference: … (EKF origin|arm GPS)` — if it
@@ -657,8 +669,8 @@ Emergency
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| All `/mavros/*` data topics silent (no IMU, pose, altitude) | MAVROS sends REQUEST_DATA_STREAM rate=0 on startup, or an FC reboot dropped the runtime stream request | `launch_mavros_real.sh` re-requests 10 Hz automatically at connect; `SR3_*=10` in real_hw.parm keeps streams alive across FC reboots. Manual fix: `ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate "{stream_id: 0, message_rate: 10, on_off: true}"` (stream_id 0 = all) |
-| Mission Planner stuck on "Getting Params" / mission upload stalls while the stack runs | FC forwards the commander's 20 Hz VPE broadcasts onto MP's link (57600 radio saturates) | `SERIAL6_OPTIONS=1024` on the FC (in real_hw.parm since 2026-07-06) + reboot FC. Verified: MP param download + mission upload work with the full stack running |
+| All `/mavros/*` data topics silent (no IMU, pose, altitude) | MAVROS sends REQUEST_DATA_STREAM rate=0 on startup, or an FC reboot dropped the runtime stream request | `launch_mavros_real.sh` re-requests 10 Hz automatically at connect; `SR1_*=10` in real_hw_pixhawk6c.parm keeps streams alive across FC reboots. Manual fix: `ros2 service call /mavros/set_stream_rate mavros_msgs/srv/StreamRate "{stream_id: 0, message_rate: 10, on_off: true}"` (stream_id 0 = all) |
+| Mission Planner stuck on "Getting Params" / mission upload stalls while the stack runs | FC forwards the commander's 20 Hz VPE broadcasts onto MP's link (57600 radio saturates) | `SERIAL1_OPTIONS=1024` on the FC (real_hw_pixhawk6c.parm; `SERIAL6_OPTIONS` on the previous FC, set 2026-07-06) + reboot FC. Verified on the previous FC: MP param download + mission upload work with the full stack running |
 | FC reports "computer vision position: Fail" / VPE gone though stack looks up | Commander hit its 10-min arm timeout and exited (`ABORT: timed out waiting for arm`) | Restart the commander; healthy check: `ros2 topic hz /uas1/mavlink_sink` ≈ 40 msg/s (1 msg/s = only heartbeat, commander dead) |
 | `ros2 topic hz/echo` shows nothing for a topic that is actually publishing | DDS discovery latency on the loaded Jetson (load ~6 with full stack) | Wait — use 25 s+ timeouts before concluding a topic is dead |
 | `/dev/ttyUSB0` permission denied | Not in `dialout` group | `sudo chmod 666 /dev/ttyUSB0` |
@@ -670,7 +682,7 @@ Emergency
 | Arm rejected: Safety Switch | Safety button not pressed | Press physical button; LED must go green |
 | Arm rejected: Need Position | VPE not publishing or EKF not converged | Check `ros2 topic hz /mavros/vision_pose/pose_cov` (expect 20 Hz); wait 30 s |
 | EKF never reaches POS_ABS on SRC2 | ExternalNav params wrong | Verify `VISO_TYPE=1`, `EK3_SRC2_POSXY=6`, `EK3_SRC2_VELXY=0` in FC params; check VPE topic hz |
-| EKF failsafe during survey | AnyLoc jump > glitch radius | Verify `EK3_GLITCH_RAD=50` in real_hw.parm |
+| EKF failsafe during survey | AnyLoc jump > glitch radius | Verify `EK3_GLITCH_RAD=50` is on the FC (real_hw_pixhawk6c.parm) |
 | AnyLoc venv import error | Wrong Python used | Confirm script uses `/home/jetson/venv/anyloc/bin/python3` |
 | YOLO venv import error | Wrong Python used | Confirm script uses `/home/jetson/venv/yolo/bin/python3` |
 | AnyLoc not activating | AGL below 50 m threshold | Normal — activates above `MIN_AGL=50`; use `--test` flag to bypass on ground |
@@ -706,7 +718,7 @@ Emergency
 4. **`GUID_TIMEOUT = 30`**: default 3 s causes failsafe on Jetson CPU spikes during VPE inference.
 5. **Safety button required**: `BRD_SAFETYENABLE=1`; force-arm (`ALLOW_FORCE_ARM=1`) is SITL only.
 6. **`home_elevation.json` must match takeoff point**: all waypoints are ENU offsets from this origin.
-7. **`real_hw.parm` not `no_gps.parm`**: `no_gps.parm` has SITL-only entries — never upload to real FC.
+7. **`real_hw_pixhawk6c.parm` (current FC) not `no_gps.parm`**: `no_gps.parm` has SITL-only entries — never upload to real FC. (`real_hw.parm` is the previous FC's version of the same config.)
 8. **hw_bridge before commander**: commander waits for `/drone/state`; hw_bridge must be running first.
 9. **AnyLoc fuses at ≥ 50 m only**: `MIN_LOCALISATION_AGL=50.0` in commander and `MIN_AGL=50.0` in anyloc node must match. (YOLO has no altitude gate — it runs at any AGL.)
 10. **venv/anyloc for AnyLoc, venv/yolo for YOLO**: system Python3 lacks torch/faiss/ultralytics. Do not use `conda run`.
