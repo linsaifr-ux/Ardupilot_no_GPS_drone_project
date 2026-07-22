@@ -111,10 +111,13 @@ OpenVINS 需要:相機內參、相機-IMU 外參(旋轉+平移)、時間偏移�
    python3 tools/record_field.py --calib --duration 90
    ```
    輸出到 `field_data/calib_<時間>/`(有 video.mkv + imu.csv)。
-3. 轉 rosbag + 跑 Kalibr(在 PC 上做;Jetson 碟太滿):
-   video.mkv → 影格(`tools/extract_frames.py`,時間用 frame_times.csv)
+3. 轉 rosbag + 跑 Kalibr(在 PC 上做):
+   video.mkv → 影格(ffmpeg 全抽 + 按 frame_times.csv 改名奈秒時戳;
+   ⚠ 不要用 `tools/extract_frames.py`,那是 AnyLoc DB 建置器,會按
+   GPS/AGL 過濾,手持標定段會被濾成 0 張)
    + imu.csv → `kalibr_bagcreater` → `kalibr_calibrate_cameras`
    (pinhole-radtan)→ `kalibr_calibrate_imu_camera`。
+   完整逐步版:vpe_jump_runaway_diagnosis.md §13。
    IMU noise 參數先用 Pixhawk 級 IMU 通用值
    (σ_g≈1.7e-4, σ_a≈2e-3, σ_bg≈2e-5, σ_ba≈3e-3),之後再精修。
 4. 注意:標定必須在**錄好的影像方向**上做——錄影機存檔前已把畫面轉 180°

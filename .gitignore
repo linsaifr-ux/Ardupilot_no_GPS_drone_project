@@ -110,6 +110,10 @@ third_party
 #contest ref
 114rule.pdf
 
+# Kalibr AprilGrid target — keep the local copy, don't commit the binary;
+# source URL recorded in instructions/vpe_jump_runaway_diagnosis.md §13-A
+instructions/april_6x6_80x80cm_A0.pdf
+
 # LaTeX build artefacts
 instructions/report/*.aux
 instructions/report/*.log
@@ -147,6 +151,12 @@ field_data/**/frames.csv
 field_data/**/telemetry.csv
 field_data/**/meta.json
 field_data/**/frame_times.csv
+
+# OpenVINS offline eval (field_data/**/vio_eval/): trajectory CSVs are derived
+# from the raw recording (which is not in git) — keep README/plots/configs/
+# scripts tracked, ignore the bulky trajectory dumps
+field_data/**/vio_eval/vio_full.csv
+field_data/**/vio_eval/vio_cruise.csv
 
 # Streaming directory — ignore only the MediaMTX binary (large, download separately)
 # Source files, docs, and config in streaming/ are tracked normally

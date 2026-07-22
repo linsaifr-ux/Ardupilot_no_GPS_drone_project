@@ -1,0 +1,24 @@
+%YAML:1.0
+
+# IMX219 CSI cam, nadir-mounted, recorded video already rotated 180 deg
+# (meta.json frame_rotation_deg=180) -- this calibration is for the RECORDED
+# orientation. Intrinsics derived from vendor FOV (62.2 x 48.8 deg @ full
+# sensor, 1640x1232 is 2x2-binned full FOV): fx=820/tan(31.1deg), zero
+# distortion as a starting point; calib_cam_intrinsics refines online.
+#
+# Extrinsics GUESS (no Kalibr session yet): camera looks straight down
+# (z_cam = -z_body), image top = body forward => R_CtoI columns are the
+# camera axes in FLU body frame: x_cam=(0,-1,0) y_cam=(-1,0,0) z_cam=(0,0,-1).
+cam0:
+  T_imu_cam: # rotation from camera to IMU R_CtoI, position of camera in IMU p_CinI
+    - [0.0, -1.0, 0.0, 0.0]
+    - [-1.0, 0.0, 0.0, 0.0]
+    - [0.0, 0.0, -1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: []
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [1359.4, 1358.0, 820.0, 616.0] # fu, fv, cu, cv
+  resolution: [1640, 1232]
+  rostopic: /camera/image_raw

@@ -1,6 +1,6 @@
 # VPE 位置跳動導致飛機暴衝 — 問題診斷報告
 
-> 日期:2026-07-17(診斷)/ 2026-07-18(6-1 已實作並離線驗證,實飛驗證待做)
+> 日期:2026-07-17(診斷)/ 2026-07-18(6-1 已實作並離線驗證,實飛驗證待做)/ 2026-07-22(第 11 節:真實 OpenVINS 首次離線結果;第 12 節:路線建議、氣壓計尺度修正、標定 FAQ;第 13 節:Kalibr 逐步操作)
 > 狀態:**6-1 slew limiter 已實作**(`control/vpe_slew.py` + commander 接線,離線驗證見第 8 節);其餘方案未做
 > 相關檔案:`control/ardupilot_commander.py`、`control/vpe_slew.py`、`anyloc/ros2_node_vo_primary.py`、`control/real_hw.parm`
 
@@ -246,3 +246,230 @@ VIO 漂移率小,可收緊到 10 m + 0.2 m/s。輸出
   rolling shutter、相機-IMU 標定(Kalibr)、震動、與 YOLO/DINOv2 搶算力
   ——數週級整合工程。長航程(>幾分鐘)漂移累積後仍需 AnyLoc 修正,
   gate 會隨時間放寬,屆時 slew 的保護重新變得重要。
+
+## 11. 真實 OpenVINS 首次離線結果 — 對第 10 節模型的現實檢驗(2026-07-22)
+
+第 10 節的「1% 漂移、無跳躍」是**誤差模型**;survey17(2026-07-21 傍晚,
+真實 17.5 分鐘飛行、3.8 km、200 Hz IMU 全程)是第一份能跑真 OpenVINS 的
+資料集。結果(**未標定**:內參由 FOV 推算、零畸變、外參手推 nadir 猜測;
+完整細節 `field_data/survey17/vio_eval/README.md`):
+
+| 段落 | 結果 |
+|---|---|
+| 前段 225–400 s(744 m、20 m AGL) | 漂移 <1%(3–6 m);高度誤差 rmse **1.8 m** / max 5.1 m — **達到第 10 節模型等級** |
+| 垂直爬升 400–440 s(20→104 m 全油門) | **濾波器崩潰**:垂直 1.45x 高估、加速度計 bias 暴走、隨後全面發散 |
+| 巡航 448–775 s(空中動態重新初始化,2.7 km) | 形狀好,但 XY **尺度塌縮到 0.43x**(XY rmse ~109 m);高度 rmse 6.3 m,但緩慢下漂 −13 m,**777 s 即發散**(比 850 s 開始下降還早) |
+| 下降 850 s+ | 再次崩潰 |
+
+**對本報告論點的影響:**
+
+1. **第 5 節「VIO 不能單獨解決跳動」維持成立,且多了一個新理由:**
+   未標定的真實 OpenVINS 自己就會產生尺度塌縮與發散——比 AnyLoc 跳點
+   更糟的輸入。VIO 取代 VO 之前,slew limiter 與 jump gate 一個都不能拆。
+2. **第 10 節的 1% 模型「前段」已被真實資料證實**,但只在低空穩定段;
+   「收緊 gate 到 10 m」的前提(全程 1% 漂移)目前只有部分段落成立。
+   **Kalibr 標定是驗收門檻**——尺度與爬升發散的判決要等標定後重跑。
+3. **高度通道是 VIO 表現最好的軸**(1.8–6.3 m rmse vs 巡航 XY ~109 m),
+   但仍會漂(巡航 −13 m);氣壓計 AGL 是天然的外部約束。
+4. **氣壓 vs GPS 高度基準在 survey17 上不可分辨**:telemetry 的
+   `alt_amsl` 與 `alt_agl` 是同一個 EKF 垂直狀態(差固定 home 高 ~91 m,
+   全程相差 ≤0.8 m);FC 出廠預設 `EK3_SRC1_POSZ=1` 代表這個高度
+   **本來就是氣壓計主導**。要做真正的氣壓/GPS 對照,錄製端需加錄
+   `/mavros/global_position/raw/fix`(原始 GPS 高度)。
+5. 餵資料必須從乾淨的靜止窗開始(手提移動中初始化立刻毀掉);
+   若標定後爬升段仍發散,首要嫌疑是 200 Hz RAW_IMU **未濾波震動混疊**
+   (FC EKF 用的是濾波後 delta-velocity,我們拿到的是原始樣本)。
+
+分析工具:`~/openvins_ws/`(ROS-free OpenVINS v2.6.3 + `run_video_msckf`
+餵料器 + `compare_vio_gps.py`);高度對照
+`field_data/survey17/vio_eval/vio_alt_baro_compare.py` + 同名 .png。
+
+## 12. 路線建議與常見問題(2026-07-22 討論整理)
+
+### 12-1. 目前的最佳解:分層架構,不是單一技術
+
+| 時程 | 內容 |
+|---|---|
+| **下次飛行(現在就能飛)** | plan-B + slew limiter(唯一同時消除位置階躍與幽靈速度、且已離線+SITL 驗證的組合)。搭配:`EK3_GLITCH_RAD` 50→25(>25 m 走 EKF reset 溫和路徑、<25 m 由 slew 平滑,互補)、調低 `WPNAV_SPEED`、確認跑的是 `full_run.sh`(plan-B)而非 plan-A 鏈 |
+| **下個工作天(最高價值行動)** | **Kalibr 標定**——尺度塌縮、爬升發散判決、gate 能否收緊,全部卡在它;一張 AprilGrid + 一次桌上錄製而已(見 12-3) |
+| **目標架構** | OpenVINS 做里程計層 + 氣壓計 AGL 綁高度/尺度 + AnyLoc 走收緊的 jump gate 做絕對修正 + slew limiter 留守餵入端 |
+| **明確不做** | 現在就讓 OpenVINS 進迴路、或設計 VIO-only 導航(survey17 證明未標定 VIO 每個大油門垂直段都發散) |
+
+各層互補的理由:OpenVINS 補 LK-VO 做不到的(真實速度輸出 → 從源頭消除幽靈速度;~1% 漂移 → gate 可收到 ~10 m);氣壓計補單目 VIO 做不到的(尺度與高度漂移,成本為零);AnyLoc 補兩者都做不到的(絕對位置);slew limiter 留著,因為 survey17 證明壞掉的 VIO 產生比 AnyLoc 跳點更糟的輸入——護欄永遠不拆。
+
+### 12-2. 氣壓計能修正 VIO 尺度嗎?——分軸、分飛行階段回答
+
+survey17 的巡航段尺度修正(第 11 節的 0.43x)是**用 GPS 真值離線擬合**出來的
+單一常數(similarity 對齊解一個 k,見 `vio_eval/vio_path_compare.py`)——
+診斷用,實飛時沒有 GPS 可擬合。實飛的尺度約束來源:
+
+| 情境 | 氣壓計的作用 |
+|---|---|
+| **高度通道(任何時候)** | 直接取代——機上本來就是氣壓主導(`EK3_SRC1_POSZ=1`),VIO 只餵 XY;VIO 的 −13 m 下漂與 1.45x 爬升高估根本到不了飛機 |
+| **爬升/下降段** | **真正的尺度修正器**——VIO 說爬了 120 m、氣壓說 84 m → 1.4x 尺度誤差直接可觀測;單目尺度是全軸共用一個因子,修正會連 XY 一起拉回 |
+| **等高巡航段** | **完全沒用**——垂直零運動 = 高度感測器拿不到任何尺度資訊;survey17 的 0.43x 塌縮正是發生在 2.7 km 等高巡航,氣壓計看不見它 |
+
+結論:任務剖面是長距離等高航線 → 巡航中唯一能綁 XY 尺度的是 **AnyLoc 絕對修正**
+(每個被接受的錨點都隱含量測了「距上個錨點以來的累積尺度誤差」)。
+另一個前提:爬升段目前會直接毀掉濾波器——「氣壓當尺度修正器」要等
+Kalibr(或 IMU 濾波)先把爬升發散治好才用得上,又一個標定是門檻的理由。
+
+### 12-3. Kalibr 標定 FAQ
+
+**Q:每次飛行都要標定嗎?** 不用,**一次/每次機構變動**:
+- 內參(焦距/畸變)= 鏡頭屬性,鏡頭不動就永久有效。
+- 相機-IMU 外參 = 安裝屬性,**重新拆裝相機、動 FC、硬著陸**才需重做
+  (memory 既有原則:one calibration session per camera remount)。
+- 時間偏移 OpenVINS 線上估(輸出的 `cam_dt`),IMU 噪聲參數靜置錄一次即可。
+- 觸發事件之外,若 VIO 品質無故明顯變差,做一次 sanity 重標。
+
+**Q:survey17 的資料夠不夠拿來標定?** 不夠——不是量的問題,是**種類**錯了:
+1. 標定需要**已知幾何的標靶**(AprilGrid 角點 = 對已知真值的量測);
+   survey17 拍的是 3D 位置未知的田野道路,無公制參考。
+2. 需要的運動是**近距離、三軸激烈旋轉**(手持畫 8 字);survey 航線刻意
+   平滑等速——跟尺度塌縮同一個物理:無激勵就無可觀測性。
+3. 20–104 m AGL 視差相對景深太小,焦距/平移外參幾乎無約束
+   (標定要 0.5–2 m 近距離,讓參數誤差放大成看得見的像素誤差)。
+
+**實際成本**:印一張 AprilGrid(A3+ 平板),**飛行構型**的機體
+(相機裝好、`frame_rotation_deg=180` 錄製方向、IMU 率跑著)在標靶前
+揮舞 ~5 分鐘,`record_field.py --calib` 錄下——桌上作業,不用飛、
+不用出門;Kalibr 在 PC 跑(Jetson 磁碟 ~95% 滿)。
+
+**低期望值的順手實驗**:OpenVINS 有線上標定 flag(濾波內精修內外參),
+可在 survey17 前段試開——但從 FOV 猜測起點 + 弱激勵通常只收斂一部分,
+是迴路內精修、不是門檻級標定的替代品。
+
+### 12-4. 軌跡對照圖
+
+`field_data/survey17/vio_eval/vio_path_compare.png`(產生腳本同目錄
+`vio_path_compare.py`):左 = XY 航跡(GPS 真值 vs 對齊後的 VIO 前段/巡航段,
+含尺度修正後的虛線版——survey 航線幾乎疊回真值,證明是尺度問題不是形狀問題);
+右 = 高度(氣壓 AGL vs VIO,爬升段紅色陰影,777 s 發散尾巴可見)。
+
+## 13. Kalibr 標定 — 逐步操作程序(2026-07-22)
+
+精簡版在 `instructions/vio_data_collection.md` §4;本節為完整可執行版。
+原則回顧(12-3):一次/每次機構變動,不是每次飛行。
+
+### 步驟 A. 準備(一次性)
+
+1. **印 AprilGrid**:Kalibr 官方 `aprilgrid.pdf`(6×6),**A1 以上**,
+   貼在平整硬板上(翹曲會直接變成內參誤差)。
+   檔案已存 repo:`instructions/april_6x6_80x80cm_A0.pdf`
+   (wiki 的 Google Drive 連結已死;此檔取自
+   https://github.com/ethz-asl/kalibr/files/8514447/april_6x6_80x80cm_A0.pdf,
+   kalibr issue #514)。A0 100% 列印時 tagSize=0.088、tagSpacing=0.3
+   (=下方 target.yaml 範例值);或建好 Kalibr Docker 後用
+   `kalibr_create_target_pdf --type apriltag --nx 6 --ny 6 --tsize 0.08
+   --tspace 0.3` 產生合乎自家印表機紙張的版本。**務必 100% 原尺寸列印
+   (勿「縮放至頁面」),印完用尺量實際尺寸**填 target.yaml。
+2. **量實際尺寸**填 `target.yaml`(印表機會縮放,務必用尺量):
+   ```yaml
+   target_type: 'aprilgrid'
+   tagCols: 6
+   tagRows: 6
+   tagSize: 0.088        # 單一 tag 邊長(公尺),量實物!
+   tagSpacing: 0.3       # 間距/邊長比,量實物!
+   ```
+3. **PC 裝 Kalibr**(不在 Jetson 跑):官方 repo(ethz-asl/kalibr)的
+   Docker 路線最省事,`Dockerfile_ros1_20_04` build 一次。
+
+### 步驟 B. 錄製標定段(Jetson,整機飛行構型)
+
+1. **FC 上電**(IMU 來自 FC——手持時整機一起動)、相機裝在飛行位置。
+   若相機開不起來:`sudo systemctl restart nvargus-daemon`(殘留
+   CaptureSession 地雷)。
+2. 啟動錄製,確認顯示 **imu=200Hz** 再開始動作:
+   ```bash
+   source control/ros2_env.sh
+   python3 tools/record_field.py --calib --duration 120
+   ```
+3. **激發動作**(全程標靶保持在畫面內、動作平滑——rolling shutter 怕急動):
+   - 靜置 5–10 s(bias 初始化);
+   - 距標靶 **0.5–1.5 m**(標靶接近滿框);
+   - 每軸旋轉 ±30–40°:pitch 上下點頭、yaw 左右搖、roll 側傾,各 2–3 回;
+   - 三軸平移:前後(對焦深)、左右、上下,各 2–3 回;
+   - 綜合 8 字揮舞 20–30 s;
+   - 結尾靜置 5 s。
+4. **當場驗收**(不合格重錄,成本只有兩分鐘):
+   - `meta.json` 的 `imu_achieved_hz_at_stop` = 200.0;
+   - 抽看影片:影格清晰無拖影、角點銳利、標靶極少出框。
+
+### 步驟 C. 轉 Kalibr 輸入格式(PC)
+
+1. 把 `field_data/calib_<時間>/` 整包拷到 PC。
+2. 抽影格(**用錄好的方向,絕不要自己再轉 180°**——錄影存檔前已轉,
+   `meta.json frame_rotation_deg: 180`)。
+   ⚠ `tools/extract_frames.py` **不能用**——它是 AnyLoc 資料庫建置器,
+   會按 GPS 距離(30 m)+ AGL≥50 m 過濾,手持標定錄影會被濾成 0 張
+   (vio_data_collection.md §4 寫它可用是錯的,已知勘誤)。
+   實際做法(kalibr_bagcreater 要求 `cam0/<奈秒時戳>.png`):
+   ```bash
+   mkdir cam0 && ffmpeg -i calib_<時間>/video.mkv -vsync 0 tmp_%06d.png
+   # 再用 frame_times.csv 逐張改名成奈秒時戳(第 n 張 ↔ 第 n 列 unix_time×1e9)
+   # 順手驗證:張數 == frame_times.csv 列數,不等表示掉幀,按缺口切段
+   ```
+3. `imu.csv` → Kalibr 的 `imu0.csv`(用 `stamp_ros` 欄,轉奈秒:
+   `timestamp, omega_x, omega_y, omega_z, alpha_x, alpha_y, alpha_z`)。
+4. 打包:`kalibr_bagcreater --folder . --output-bag calib.bag`
+
+### 步驟 D. 相機內參
+
+```bash
+kalibr_calibrate_cameras --bag calib.bag --topics /cam0/image_raw \
+    --models pinhole-radtan --target target.yaml
+```
+驗收:重投影誤差 **< 0.5 px**(報表 PDF 會給);畸變係數非零但不誇張。
+產出 `camchain.yaml`。
+
+### 步驟 E. IMU 噪聲檔 `imu.yaml`
+
+```yaml
+accelerometer_noise_density: 2.0e-3   # Pixhawk 級通用值起步
+accelerometer_random_walk:   3.0e-3
+gyroscope_noise_density:     1.7e-4
+gyroscope_random_walk:       2.0e-5
+update_rate: 200
+rostopic: /imu0
+```
+註:MAVLink RAW_IMU 是未濾波原始樣本,實務上把 noise density **放大 5–10x**
+餵給 OpenVINS 常更穩;Kalibr 這關先用上表即可。
+
+### 步驟 F. 相機-IMU 外參 + 時間偏移
+
+```bash
+kalibr_calibrate_imu_camera --bag calib.bag \
+    --cam camchain.yaml --imu imu.yaml --target target.yaml
+```
+驗收:
+- `T_cam_imu` 旋轉部份接近手推的 nadir 構型(vio_eval/config_used 的猜測值
+  可當 sanity 對照,差太遠=座標系搞反);
+- 時間偏移量級毫秒、且報表中穩定(不漂);
+- 重投影誤差 < 1 px,加速度/角速度殘差圖是白噪聲(有結構=激發不足,重錄 B)。
+
+### 步驟 G. 套用 + 驗收(回 Jetson,判決時刻)
+
+1. 把 Kalibr 產出寫進 OpenVINS 設定(取代 FOV 猜測版):
+   `kalibr_imucam_chain.yaml` + `kalibr_imu_chain.yaml`
+   (格式同 `field_data/survey17/vio_eval/config_used/`)。
+2. **重跑 survey17**:`~/openvins_ws` 的 `run_video_msckf` 三段
+   (前段 210 s 起、全程、巡航 448 s 起)+ `compare_vio_gps.py`。
+3. 判準(對照第 11 節未標定基線):
+   | 指標 | 未標定 | 標定後期望 |
+   |---|---|---|
+   | 前段尺度 | 0.79x | → ~1.0 |
+   | 巡航尺度 | 0.43x | 大幅改善(殘餘漂移仍在,由 AnyLoc/氣壓綁) |
+   | 爬升段 | 全面發散 | **若仍發散 → 病因是 IMU 震動混疊,轉向 INS_ notch/濾波 或獨立 IMU,標定已排除** |
+4. 達標 → 依 vio_data_collection.md §5.4 評估即時整合
+   (plan-B + slew 不動,gate 收緊到 ~10 m + 0.2 m/s)。
+
+### 常見地雷(本專案已知)
+
+- 影像方向:標定與飛行推理必須同方向(錄檔已 180°,別重複轉)。
+- 手持錄製 FC 沒上電 → 沒有 IMU,白錄。
+- 新開終端跑任何節點前 `source control/ros2_env.sh`(64MB SHM,否則掉幀)。
+- 標靶出框太久、動作太猛(拖影)、距離太遠(>2 m)= 激發不足,
+  Kalibr 會收斂但共變異數大——報表的參數不確定度要看。
+- Jetson 磁碟已清到 77%(2026-07-22),但 Kalibr 本體仍建議在 PC 跑
+  (ROS1 相依 + 記憶體)。

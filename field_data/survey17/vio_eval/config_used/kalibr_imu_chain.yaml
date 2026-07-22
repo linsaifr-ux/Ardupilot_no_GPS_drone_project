@@ -1,0 +1,19 @@
+%YAML:1.0
+
+# Pixhawk 6C IMU over MAVLink RAW_IMU @200Hz via mavros /mavros/imu/data_raw (FLU, SI units).
+# Noise densities derived from survey17's 150s static segment (includes MAVLink
+# transport jitter + quantization), random walks are generic Pixhawk-class values.
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 6.0000e-3  # measured: std 0.083 m/s^2 @200Hz
+  accelerometer_random_walk: 3.0000e-3
+  gyroscope_noise_density: 1.0000e-3      # measured: std ~0.014 rad/s @200Hz
+  gyroscope_random_walk: 1.0000e-4
+  model: calibrated
+  rostopic: /mavros/imu/data_raw
+  time_offset: 0.0
+  update_rate: 200.0
