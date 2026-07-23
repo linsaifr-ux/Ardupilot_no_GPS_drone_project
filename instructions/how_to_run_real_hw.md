@@ -148,16 +148,18 @@ To build a **real-field database** from actual drone footage (better match at in
 source /opt/ros/humble/setup.bash
 source control/ros2_env.sh   # FastDDS SHM — without it big frames drop ~30%/subscriber
 # Direct UDP to ground station:
-python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP> --imu-hz 333
 # Or push RTSP to MediaMTX relay (watch in VLC/browser, no GStreamer on ground station):
-python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
+python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227 --imu-hz 333
 # Optionally add --stream-openhd to also feed the OpenHD ground station
 # (H.264 RTP → 192.168.2.2:5601, same overlay view, coexists with the relay stream)
 # → writes field_data/survey1/video.mkv  telemetry.csv  meta.json  frame_times.csv
-#   + imu.csv (200 Hz FC IMU via the auto-spawned tools/imu_logger.py sidecar)
+#   + imu.csv (FC IMU via the auto-spawned tools/imu_logger.py sidecar; --imu-hz 333
+#     is the field standard since 2026-07-23 → ~346 Hz actual, removes stream-decimation
+#     vibration aliasing — vpe_jump_runaway_diagnosis.md §14-6; default is 200)
 #   + attitude.csv (50 Hz) — every recording doubles as a VIO/OpenVINS dataset
 #   (procedure & rate checks: instructions/vio_data_collection.md — wait for
-#    imu=200Hz in the status line before takeoff)
+#    imu=346Hz — or 200Hz at the default rate — in the status line before takeoff)
 # MKV format: stays playable even after power-off mid-flight
 
 # 2. Extract geo-tagged frames

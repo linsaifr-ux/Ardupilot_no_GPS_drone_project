@@ -22,7 +22,7 @@ A real-imagery database uses the actual camera, actual lighting, and actual terr
 |---|---|---|
 | Video | GStreamer (nvarguscamerasrc/ISP) → OpenCV, not through ROS | H.265, 1640×1232 30fps, ~60 MB/min (8 Mbps default) |
 | Telemetry | ROS2 subscriptions | lat/lon/AGL/heading + RC channels at 5 Hz → CSV |
-| IMU (VIO) | `tools/imu_logger.py` **sidecar process** (auto-started; must stay a separate process — the camera loop's GIL starves an in-process subscriber) | FC gyro+accel at 200 Hz + attitude at 50 Hz → CSV (see `instructions/vio_data_collection.md`) |
+| IMU (VIO) | `tools/imu_logger.py` **sidecar process** (auto-started; must stay a separate process — the camera loop's GIL starves an in-process subscriber) | FC gyro+accel at `--imu-hz` (200 default; field standard 333 → ~346 Hz actual since 2026-07-23) + attitude at 50 Hz → CSV (see `instructions/vio_data_collection.md`) |
 
 Video goes **directly through Argus, not through ROS**. This means:
 
@@ -85,9 +85,9 @@ Spacing values are for the IMX219's ~78.4 m footprint width at 65 m AGL — reco
 
 ```
 Terminal 1   bash control/launch_mavros_real.sh
-Terminal 2   source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+Terminal 2   source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP> --imu-hz 333
              # or stream via MediaMTX relay server (no GStreamer needed on ground station):
-             source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
+             source /opt/ros/humble/setup.bash && python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227 --imu-hz 333
 ```
 
 The recorder reads GPS, AGL, and heading **directly from MAVROS** (`/mavros/global_position/global`, `/mavros/global_position/rel_alt`, `/mavros/global_position/compass_hdg`) — `hw_bridge.py` is not needed for collection.
@@ -97,9 +97,10 @@ The Desktop `~/Desktop/field_data_collection.sh` launcher wraps all of this
 2026-07-21 also starts the MAVLink relay (`mavlink_relay_client.py --role
 vehicle` + `MAVLINK_RELAY=1` mavros) so Mission Planner can watch telemetry
 over the internet during the flight — see `streaming/mavlink_relay_setup.md`
-(the relay client filters MP's stream-rate stomps and the outbound 200 Hz
-IMU mirror, so neither the IMU recording nor the video stream's LTE
-bandwidth is affected by MP being connected). Close the launcher window
+(the relay client filters MP's stream-rate stomps and the outbound
+high-rate IMU mirror, so neither the IMU recording nor the video stream's
+LTE bandwidth is affected by MP being connected). Since 2026-07-23 the
+launcher also passes `--imu-hz 333` to the recorder. Close the launcher window
 (press Enter at its final prompt) when done; the launcher also reaps any
 stale relay client from a previous session at startup.
 
@@ -113,15 +114,16 @@ All frames are **rotated 180°** after capture before recording and streaming.
 
 ```bash
 source /opt/ros/humble/setup.bash
+# --imu-hz 333 on all variants = field standard since 2026-07-23 (VIO datasets)
 
 # Without stream
-python3 tools/record_field.py --output field_data/survey1
+python3 tools/record_field.py --output field_data/survey1 --imu-hz 333
 
 # Mode A — live preview streamed directly to ground station (UDP, requires GStreamer on GS)
-python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP>
+python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP> --imu-hz 333
 
 # Mode B — live preview pushed to MediaMTX relay server (RTSP, watch in VLC or browser)
-python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227
+python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227 --imu-hz 333
 ```
 
 **Mode A — receive on ground station:**
@@ -160,6 +162,7 @@ Options:
 | `--bitrate` | 8000000 | H.265 recording bitrate in bps |
 | `--duration` | 0 | Stop after N seconds (0 = Ctrl+C) |
 | `--calib` | off | Tag as camera-IMU calibration session (`field_data/calib_<ts>/`) |
+| `--imu-hz` | 200 | RAW_IMU stream rate. Field standard since 2026-07-23: **333** (~346 Hz actual, firmware's grantable max — removes stream-decimation vibration aliasing, `vpe_jump_runaway_diagnosis.md` §14-6). The Desktop launcher passes it. |
 
 All stream views carry the same telemetry overlay bar: `LAT LON clock` /
 `AGL HDG IMU-rate`.
@@ -168,9 +171,10 @@ Live status printed to terminal:
 ```
 [REC]    42s  lat=23.451234  lon=120.287654  agl=65.2 m  hdg=045°  imu=200Hz
 ```
-`imu=` shows the FC IMU stream rate; a `⚠` marks <80 Hz (insufficient for
-VIO). Expect ~15–30 s at 50 Hz right after mavros starts before it locks at
-200 Hz — wait for `imu=200Hz` before takeoff. If the rate keeps dipping to
+`imu=` shows the FC IMU stream rate; a `⚠` marks <40% of the requested rate
+(insufficient for VIO). Expect ~15–30 s at 50 Hz right after mavros starts
+before it locks at full rate — wait for `imu=346Hz` (with `--imu-hz 333`;
+`imu=200Hz` at the default) before takeoff. If the rate keeps dipping to
 ~2 Hz mid-recording while Mission Planner is connected via the MAVLink
 relay, an outdated relay client is in the path — since 2026-07-21 the
 vehicle client filters MP's stream-rate stomps (msg 66); see the
@@ -194,8 +198,9 @@ frame_times.csv   frame_idx, unix_time — actual capture time per frame, logged
                   directly so it stays correct across camera dropouts/reconnects
                   (video_start_unix + frame_idx/fps assumes constant fps and drifts
                   after a dropout — prefer this file for timing-sensitive work)
-imu.csv           stamp_ros, recv_unix, wx, wy, wz, ax, ay, az — FC IMU at 200 Hz
-                  (written by the imu_logger.py sidecar; VIO input)
+imu.csv           stamp_ros, recv_unix, wx, wy, wz, ax, ay, az — FC IMU at the
+                  requested rate (200 default / ~346 actual with --imu-hz 333;
+                  written by the imu_logger.py sidecar; VIO input)
 attitude.csv      stamp_ros, recv_unix, qw, qx, qy, qz — fused FC attitude, 50 Hz
 imu_rates.json    live 2 s rate report from the sidecar
 ```
@@ -282,7 +287,7 @@ ln -sfn database_zone_z20_vits14 anyloc/database   # active — zone-sized, zoom
 
 | File | Purpose |
 |---|---|
-| `tools/record_field.py` | Record video + telemetry + 200 Hz IMU during the survey flight |
+| `tools/record_field.py` | Record video + telemetry + high-rate IMU (200/333 Hz) during the survey flight |
 | `tools/imu_logger.py` | IMU sidecar (auto-spawned by record_field.py — never run the subscription in-process) |
 | `tools/extract_frames.py` | Extract geo-tagged frames from the recording |
 | `anyloc/build_database_real.py` | Build AnyLoc database from extracted frames |

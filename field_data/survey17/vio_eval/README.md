@@ -74,9 +74,63 @@ Takeaway: for a baro-vs-GPS reference test, record raw GPS fix alongside; for
 bounding VIO scale/alt in integration, baro AGL is available and is exactly what
 the FC already flies on.
 
+## Re-run with real Kalibr calibration (2026-07-23)
+
+Kalibr session calib_20260723_001209 (run on the PC, results in that folder's
+`kalibr_output/`) wired into `~/openvins_ws/config/survey17_kalibr` (static
+init) and `survey17_kalibr_dyn` (dynamic init): fx/fy 1339.3/1335.9,
+cx/cy 818.6/639.8, radtan [0.064, -0.204, 0.0003, -0.0022], Kalibr T_ic
+extrinsics (|t| = 0.358 m — confirmed against the airframe: camera really
+sits 35.8 cm from the FC IMU),
+timeshift_cam_imu -0.056 s, sigma_px 1.5→1, online refinement kept on.
+Online estimates agreed with Kalibr (dt converged -0.059 s; cruise extrinsic
+z stayed -0.363 m), which cross-validates the calibration.
+
+Same segments, same methodology (`vio_kalibr_stats.py`):
+
+| Segment | Uncalibrated | Kalibr-calibrated |
+|---|---|---|
+| Early 225–430 s (667 m) ATE2D rmse | 16.7 m (scale corr 0.80 → 4.7 m) | 18.3 m (scale corr 0.78 → 5.9 m) — **unchanged** |
+| Climb 400–440 s | diverges ~483 s | **still diverges ~473 s** |
+| Cruise 448–775 s ATE2D rmse | 108.8 m (VIO scale 0.34x, corr 35.3 m) | **85.9 m** (VIO scale 0.48x, corr 27.5 m) |
+| Cruise 448–850 s ATE2D rmse | 348.1 m (diverged at ~777 s) | **88.7 m** (survives to descent ~815 s) |
+| Cruise alt vs baro AGL rmse (448–775) | 6.2 m | 9.3 m (max 22.5; no -13 m ramp, but dips to -25 m near 810 s) |
+
+Verdict of the calibration gate:
+- Calibration **is not what was limiting**. Early-segment accuracy and scale
+  are unchanged; the 1.26x early / ~0.5x cruise scale error and the
+  high-throttle climb divergence all persist with a good camera model.
+- What it did buy: cruise robustness (no mid-cruise divergence at 777 s —
+  runs until the descent) and a ~20 % better cruise ATE.
+- Per the pre-registered suspect list, the remaining failure modes now point
+  at the **IMU path: vibration aliasing on raw 200 Hz MAVLink RAW_IMU**
+  (unfiltered, unlike the FC-EKF's delta-velocities) — next steps would be
+  INS_ notch/filter review, feeding FC-filtered IMU, or a dedicated IMU —
+  and at rolling shutter. Monocular scale still needs an external bound
+  (baro/AnyLoc) in any real integration regardless.
+- Plot: `vio_path_compare_kalibr.png` (+ `.py`); runs `vio_full_kalibr.csv`
+  (static init 210 s), `vio_cruise_kalibr.csv` (dyn init 448 s), logs
+  `run_*_kalibr.log`.
+
+## IMU vibration-aliasing evidence (2026-07-23)
+
+`imu_vibe_spectrum.py` → `imu_vibe_spectrum.png`: Welch spectra of imu.csv
+per flight phase. Motors-off pad window is clean (accel std 0.004–0.007
+m/s²); every in-flight window shows a ~60 dB-raised floor flat to the
+100 Hz Nyquist (the aliasing signature — folded prop/motor harmonics) plus
+wandering ~78 Hz lines in the climb. This, with the §14-2 result above,
+shifts the blame for the remaining VIO failures from calibration to the
+IMU path. Fix plan and live FC measurements:
+`instructions/vpe_jump_runaway_diagnosis.md` §14-4~14-7.
+
 ## Files
 - `vio_full.csv` — full-flight run (static init at liftoff; diverges post-climb)
 - `vio_cruise.csv` — cruise run (dynamic init at 448 s; diverges at descent)
+- `vio_full_kalibr.csv` / `vio_cruise_kalibr.csv` — same runs with the real
+  Kalibr calibration (2026-07-23; gitignored like all traj CSVs)
 - `vio_early_seg.png`, `vio_cruise_seg.png`, `vio_full_compare.png` — plots
+  (uncalibrated); `vio_path_compare_kalibr.png` — calibrated counterpart
+- `vio_kalibr_stats.py` — baseline-vs-calibrated segment stats table
+- `imu_vibe_spectrum.py` / `.png` — vibration aliasing evidence (above)
 - traj csv columns: t(unix), px..pz (m, world z-up), qx..qw (JPL q_GtoI),
   vx..vz, cam_dt, gyro/accel biases

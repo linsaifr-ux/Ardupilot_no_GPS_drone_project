@@ -1,6 +1,6 @@
 # VPE 位置跳動導致飛機暴衝 — 問題診斷報告
 
-> 日期:2026-07-17(診斷)/ 2026-07-18(6-1 已實作並離線驗證,實飛驗證待做)/ 2026-07-22(第 11 節:真實 OpenVINS 首次離線結果;第 12 節:路線建議、氣壓計尺度修正、標定 FAQ;第 13 節:Kalibr 逐步操作)
+> 日期:2026-07-17(診斷)/ 2026-07-18(6-1 已實作並離線驗證,實飛驗證待做)/ 2026-07-22(第 11 節:真實 OpenVINS 首次離線結果;第 12 節:路線建議、氣壓計尺度修正、標定 FAQ;第 13 節:Kalibr 逐步操作)/ 2026-07-23(第 14 節:Kalibr 結果 + 標定後重跑判決——標定不是瓶頸,IMU 震動混疊已實證,解法排序;14-6 實機量測:333 Hz 串流驗證、batch logging 已上機;14-7 外場飛行計畫)
 > 狀態:**6-1 slew limiter 已實作**(`control/vpe_slew.py` + commander 接線,離線驗證見第 8 節);其餘方案未做
 > 相關檔案:`control/ardupilot_commander.py`、`control/vpe_slew.py`、`anyloc/ros2_node_vo_primary.py`、`control/real_hw.parm`
 
@@ -383,8 +383,12 @@ Kalibr(或 IMU 濾波)先把爬升發散治好才用得上,又一個標定是門
 2. 啟動錄製,確認顯示 **imu=200Hz** 再開始動作:
    ```bash
    source control/ros2_env.sh
-   python3 tools/record_field.py --calib --duration 120
+   python3 tools/record_field.py --calib --duration 120 \
+       --stream-server 118.232.160.227
    ```
+   `--calib` 不會自動開串流;`--stream-server` 才有即時預覽
+   (瀏覽器 http://118.232.160.227:8889/drone),用來確認標靶滿框、
+   不出界。串流是 4:3 中裁 16:9,比錄影檔窄——串流內可見即安全。
 3. **激發動作**(全程標靶保持在畫面內、動作平滑——rolling shutter 怕急動):
    - 靜置 5–10 s(bias 初始化);
    - 距標靶 **0.5–1.5 m**(標靶接近滿框);
@@ -450,6 +454,9 @@ kalibr_calibrate_imu_camera --bag calib.bag \
 
 ### 步驟 G. 套用 + 驗收(回 Jetson,判決時刻)
 
+> ✅ 2026-07-23 已執行完畢——結果與判決見第 14 節(走到了「仍發散 →
+> IMU 震動混疊」那條分支,且已用頻譜實證)。
+
 1. 把 Kalibr 產出寫進 OpenVINS 設定(取代 FOV 猜測版):
    `kalibr_imucam_chain.yaml` + `kalibr_imu_chain.yaml`
    (格式同 `field_data/survey17/vio_eval/config_used/`)。
@@ -472,4 +479,165 @@ kalibr_calibrate_imu_camera --bag calib.bag \
 - 標靶出框太久、動作太猛(拖影)、距離太遠(>2 m)= 激發不足,
   Kalibr 會收斂但共變異數大——報表的參數不確定度要看。
 - Jetson 磁碟已清到 77%(2026-07-22),但 Kalibr 本體仍建議在 PC 跑
+
+## 14. Kalibr 結果與標定後重跑 — 判決:標定不是瓶頸,IMU 震動混疊是(2026-07-23)
+
+第 13 節的程序已全部走完:錄製(第 5 次通過,`field_data/calib_20260723_001209`)
+→ PC Kalibr → 結果拷回 `calib_20260723_001209/kalibr_output/` → 寫入 OpenVINS
+→ survey17 重跑。本節記錄結果與新診斷。
+
+### 14-1. Kalibr 標定結果(全部通過驗收)
+
+| 項目 | 結果 | 驗收對照 |
+|---|---|---|
+| 內參 fx/fy | 1339.3 / 1335.9 | FOV 推算值 1359 的 1.5% 內 ✓ |
+| 主點 cx/cy | 818.6 / 639.8 | 接近影像中心 ✓ |
+| 畸變 radtan | k1 0.064、k2 −0.204、p1 0.0003、p2 −0.0022 | 非零且合理 ✓ |
+| 相機內參重投影 | std ~0.40/0.49 px | < 0.5 px ✓ |
+| cam-IMU 重投影 | mean 0.65 px | < 1 px ✓ |
+| 外參旋轉 | 與手推 nadir 猜測差 ~1° | ✓(座標系沒搞反) |
+| 外參平移 | **\|t\| = 0.358 m**(多在光軸方向) | 手冊寫的「~10 cm」是錯的——**實機量測確認相機離 FC IMU 就是 35.8 cm**(2026-07-23 Frank 確認) |
+| 時間偏移 | **−0.056 s**(影像時戳比 IMU 晚 ~56 ms) | CSI/ISP 管線延遲量級合理;OpenVINS 直接吃 camchain 的 `timeshift_cam_imu` |
+
+**交叉驗證**:OpenVINS 線上精修(calib flags 開著)自己收斂回 Kalibr 值——
+時間偏移 −0.059 s、外參 z −0.363 m。兩套獨立方法互相印證,標定本身可信。
+
+套用位置:`~/openvins_ws/config/survey17_kalibr`(靜態初始化)與
+`survey17_kalibr_dyn`(動態初始化);`sigma_px` 1.5→1;IMU 噪聲沿用實測
+MAVLink 路徑值(非 Kalibr 模板值)。
+
+### 14-2. 標定後 survey17 重跑(方法與第 11 節完全相同)
+
+| 段落 | 未標定 | 標定後 |
+|---|---|---|
+| 前段 225–430 s ATE2D | 16.7 m(尺度 0.80,修正後 4.7 m) | 18.3 m(尺度 0.78,修正後 5.9 m)— **不變** |
+| 爬升 400–440 s | ~483 s 發散 | **仍在 ~473 s 發散** |
+| 巡航 448–775 s ATE2D | 108.8 m(尺度 0.34x,修正後 35.3 m) | **85.9 m**(尺度 0.48x,修正後 27.5 m) |
+| 巡航到下降 448–850 s | 348 m(777 s 中途發散) | **88.7 m(活到下降 ~815 s)** |
+| 巡航高度 vs 氣壓 rmse | 6.2 m(−13 m 持續下漂) | 9.3 m(無下漂趨勢,810 s 附近短暫 −25 m) |
+
+**判決(第 13-G 節預告的分支走到了「仍發散」那條):標定不是瓶頸。**
+- 買到的:巡航強健性(不再 777 s 無故中途發散)+ 巡航 ATE 改善 ~20%。
+- 沒買到的:前段精度不變、爬升照樣崩、巡航尺度仍塌一半(0.48x)。
+- 依第 11 節第 5 點的預告,病因指向 **200 Hz RAW_IMU 震動混疊**(次要:
+  rolling shutter)。標定這個變因已徹底排除。
+
+工具:統計 `field_data/survey17/vio_eval/vio_kalibr_stats.py`、
+圖 `vio_path_compare_kalibr.png`(+ 同名 .py)、
+軌跡 `vio_full_kalibr.csv` / `vio_cruise_kalibr.csv`、log `run_*_kalibr.log`,
+細節 `vio_eval/README.md`「Re-run with real Kalibr calibration」節。
+
+### 14-3. 震動混疊:已用 survey17 資料實證(不再只是嫌疑)
+
+`vio_eval/imu_vibe_spectrum.py`(圖 `imu_vibe_spectrum.png`)對四個飛行
+階段做 Welch 頻譜:
+
+| 窗 | 加速度計 std (m/s²) | 特徵 |
+|---|---|---|
+| 地面靜置(馬達關) | 0.004–0.007 | 乾淨——**感測器與 MAVLink 傳輸鏈本身無罪** |
+| 低空航線 300–360 s | 0.38–0.87 | 頻譜地板抬升 ~60 dB,**平坦延伸到 100 Hz Nyquist** |
+| 全油門爬升 400–440 s | 0.06–0.42 | 78–79 Hz 游走譜線(如真實 278 Hz 摺到 78 Hz) |
+| 巡航 500–700 s | 0.19–0.59 | 同低空:平坦寬帶地板 |
+
+判讀:真實機械頻譜應隨頻率衰減;「平坦到 Nyquist 的寬帶地板」是混疊的
+簽名——槳/馬達諧波在 100 Hz 以上,被 200 Hz 取樣摺下來,又因轉速變動
+抹成寬帶。飛行中加速度計 std 0.3–0.9 m/s² 是濾波器噪聲模型假設的 ~10 倍,
+而且正好落在 VIO 積分求尺度的頻帶——**這就是尺度塌縮與爬升發散的機制**。
+
+### 14-4. 解法(核心原則:混疊「取樣後不可逆」,只能在取樣前/取樣時消滅)
+
+摺下來的能量與真實運動不可分辨,Jetson 端事後濾波**無效**。可行選項
+(由便宜到貴):
+
+1. **FC 濾波鏈(純參數)**:FC 目前是出廠預設(參數包 2026-07-21 已回退,
+   harmonic notch 是關的)。開 `INS_HNTCH_ENABLE=1`(throttle 模式,或
+   6C 的 ICM-42688 支援的 FFT 模式 4)、考慮 `INS_ACCEL_FILTER` 20→10 Hz。
+   注意:notch 只作用在陀螺儀。
+   ✅ 已從 ArduPilot 原始碼確認(2026-07-23,`GCS_Common.cpp
+   send_raw_imu` → `ins.get_accel/get_gyro` = backend 濾波後的 loop-rate
+   值):**RAW_IMU 串流的是「過完濾波鏈」的樣本**——所以開 notch 一定
+   會反映到我們的串流;殘餘混疊來自 (a) 震動能量漏過 2 階 20 Hz LPF、
+   (b) 400→200 Hz 串流減採樣無抗混疊(→ 選項 3 正中要害)。
+   第 11/13 節寫的「未濾波原始樣本」是**錯的**,以本節為準。
+2. **先看真頻譜:開 IMU batch logging**(`INS_LOG_BAT_MASK=1`)飛/槳測一次。
+   FC 內部以 ~1 kHz 寫入 dataflash,直接看到 >100 Hz 的真實譜線位置
+   ——notch 往哪擺不用猜。順便讀 VIBE 值。
+3. **串流升到 400 Hz**:FC 內部 1 kHz→400 Hz(loop rate)那段有正確的
+   抗混疊;沒有濾波的是 400→200 的串流減採樣。把 RAW_IMU 要到 400 Hz,
+   Nyquist 變 200 Hz,OpenVINS 直接吃或在 Jetson 端做乾淨的軟體低通再減。
+   頻寬:SERIAL1 本地線沒問題,LTE relay 本來就把 RAW_IMU 濾掉了。
+4. **物理減震**:槳平衡、FC 軟墊(6C 無內建 IMU 隔震,6X 才有)。
+   縮小要摺的能量本身,FC 自家 EKF 也受益。
+5. **獨立 IMU(最後手段)**:Jetson 接 SPI/I2C kHz 級 IMU(晶片內建
+   抗混疊濾波)。工程量最大;靜置資料證明現有鏈路乾淨,預期 1–3 就夠。
+
+**建議順序**:桌上槳測(batch logging 開)→ 按真頻譜擺 notch →
+串流改 400 Hz → 重飛一趟 survey → 重跑離線評估,看爬升發散與 0.48x
+尺度是否移動。
+
+### 14-6. 已備妥的工具(2026-07-23,等 FC 上電即可執行)
+
+| 工具 | 用途 |
+|---|---|
+| `tools/imu_logger.py --imu-hz 333`(`record_field.py --imu-hz 333` 直通) | 選項 3:RAW_IMU 提速消除串流減採樣摺疊;OK 門檻自動按請求率的 40% 縮放,meta.json 記錄請求值 |
+| `control/imu_aliasing_fix.parm` | Stage 1 = batch logging(`INS_LOG_BAT_MASK=1` + `INS_LOG_BAT_OPT=5` sensor-rate+前後濾波對照);Stage 2 = notch 參數(註解狀態,FREQ 等槳測頻譜填,REF 已填實測 hover 油門 0.22);`load_fc_params.py --file` 載入 |
+| `vio_eval/imu_vibe_spectrum.py` | 前後對照:任何新錄的 imu.csv 換路徑即可比頻譜 |
+
+**實機量測(2026-07-23,FC 上電後):**
+- **400 Hz 申請被拒**:`cap_message_interval` 要求 `interval_ms*800 ≥
+  loop_period_us`,`SCHED_LOOP_RATE=400` 下最小間隔 3 ms →
+  **333 Hz 是可批准上限,實測達成 ~346 Hz**(≈ 87% 的 loop-rate 樣本;
+  非整數倍抽樣不會產生同調摺疊,OpenVINS 用實際時戳積分,沒問題)。
+  工具說明已改為建議 `--imu-hz 333`。250 Hz 申請實測 ~260 Hz 也可。
+- FC 現況:`INS_ACCEL_FILTER` 已是 10 Hz(非預設 20)、`INS_GYRO_FILTER`
+  26 Hz、gyro backend 2 kHz(`INS_GYRO_RATE=1`)、`MOT_THST_HOVER`
+  已學得 0.218(→ stage 2 的 `INS_HNTCH_REF`)。
+- **Stage 1 已載入 + 重開機 + 讀回驗證**(`INS_LOG_BAT_MASK=1`、
+  `INS_LOG_BAT_OPT=5`)——batch logging 待命,arm 即開始寫。
+- Jetson 端 FC 序列埠是 `/dev/ttyUSB0`(FTDI 轉接),不是 ttyTHS1;
+  `load_fc_params.py` 預設值就對。
+
+**取頻譜的方式(2026-07-23 定案:戶外實飛,不做綁機槳測):**
+- **一定要上槳**:要量的是「槳」造成的震動——blade-pass 諧波 + 槳/馬達
+  不平衡,且要在飛行 RPM + 氣動負載下。空轉馬達(無槳)轉速完全不同、
+  震動小得多、譜線位置全錯 → notch 會擺錯地方。
+- 綁機室內槳測有安全風險,且實飛的頻譜本來就更真(RPM、負載都對)——
+  改為戶外短飛取樣。batch logging 是 arm 觸發,任何飛行都會寫。
+
+### 14-7. 外場飛行計畫(下次出門,一趟收兩份資料)
+
+**Flight 1 — 頻譜短飛(~2 分鐘,獨立一個 arm 週期):**
+arm → 懸停 ~1 分鐘 → 一段明快的 20 m+ 爬升 → 降落 → disarm。
+獨立 arm 週期很重要:每次 arm 開新 .bin,頻譜檔才小而無縫。
+
+**Flight 2(選做但很值)— 正常 survey 航線:**
+桌面 `field_data_collection.sh` 已改為帶 `--imu-hz 333`(2026-07-23)——
+狀態列會顯示 `imu=346Hz` 左右,**這是正常值不是故障**。此錄製已消除
+串流減採樣摺疊,回家即可重跑離線評估,單獨隔離出「333 Hz 串流」
+這一項買到多少改善。
+
+**回家後:** 拉 FC SD 卡的 .bin(flight 1 那個)→ FFT 找真譜線 →
+填 Stage 2 notch(REF 已知 0.22)→ 載入 → **下一趟**飛行驗證完整修正。
+
+**預期管理:** flight 2 的錄製仍含 notch 前的陀螺儀震動,是中間資料點、
+不是最終判決;但它能單獨回答「光提高串流率值多少」。完整判決 =
+notch 上機後的那一趟。
+
+### 14-5. 補充 12-2:氣壓計在等高巡航仍有一條路——「當景深先驗」而非「當高度量測」
+
+12-2 的結論(等高巡航氣壓計綁不了 XY 尺度)是針對「氣壓當**高度量測**融合」
+——該結論不變,且標定後資料再次佐證(巡航高度已貼氣壓 ~9 m rmse,XY 尺度
+照樣塌一半:等高飛行時垂直吻合與水平尺度幾乎解耦)。
+
+但同一顆感測器換個用法就不一樣:**nadir 相機 + 已知 AGL = 每個地面特徵的
+深度已知**(depth ≈ AGL/cos(視角))。已知深度 + 像素位移 = 公制平移,
+**每一幀都直接觀測 XY 尺度,等高巡航也成立**(光流模組配測距儀同原理)。
+數字驗證:實際巡航 ~6.8 m/s,VIO 以為 ~3.3 m/s——特徵三角化深度差 ~2 倍,
+用氣壓 AGL 釘住即可拉回。實作路線:OpenVINS 加深度先驗殘差(客製),或
+簡化版 homography-VO × AGL 當速度輔助。
+
+修正尺度的優先序:(1) AGL 景深先驗、(2) AnyLoc 絕對修正(plan-B 融合,
+兩者都直接觀測 XY 尺度)、(3) 純氣壓高度因子(治爬升發散與高度漂移,
+治不了巡航尺度)。但這些都是**治標**(robust 地擋住症狀);14-3/14-4 的
+IMU 混疊才是**治本**(加速度計守不住尺度的原因)。
   (ROS1 相依 + 記憶體)。

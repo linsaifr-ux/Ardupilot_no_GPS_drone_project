@@ -13,11 +13,22 @@ Writes into --out DIR:
     imu_rates.json {"imu_hz": .., "att_hz": ..} refreshed every 2 s — the
                   recorder reads this for its status line and meta.json.
 
-Requests RAW_IMU @200 Hz + ATTITUDE_QUATERNION @50 Hz via
-SET_MESSAGE_INTERVAL, re-sending every 10 s until the measured rate is
-≥80 Hz (the FC forgets the setting on reboot).
+Requests RAW_IMU @--imu-hz (default 200) + ATTITUDE_QUATERNION @50 Hz via
+SET_MESSAGE_INTERVAL, re-sending every 2 s until the measured rate holds
+≥40 % of the request (the FC forgets the setting on reboot).
 
-Standalone use:  python3 tools/imu_logger.py --out somedir/
+--imu-hz 333 streams near the FC loop rate: the RAW_IMU values are the
+filtered loop-rate samples (post INS_ notch/LPF), but the default 400→200 Hz
+stream decimation has no anti-alias filter — 100-200 Hz vibration folds
+into the band VIO integrates (measured on survey17, see
+instructions/vpe_jump_runaway_diagnosis.md §14-3). 333 is the grantable
+max (bench-measured 2026-07-23: 400 is DENIED by the firmware's
+cap_message_interval — needs interval_ms*800 >= loop_period_us, so 3 ms
+is the floor at SCHED_LOOP_RATE=400; a 333 request actually delivers
+~346 Hz = ~87% of all loop-rate samples, which removes the coherent
+decimation fold).
+
+Standalone use:  python3 tools/imu_logger.py --out somedir/ [--imu-hz 333]
 Exits cleanly (flushing buffers) on SIGINT/SIGTERM.
 """
 
@@ -36,14 +47,20 @@ from mavros_msgs.srv import CommandLong
 MAV_CMD_SET_MESSAGE_INTERVAL = 511
 RAW_IMU_MSG_ID               = 27      # → /mavros/imu/data_raw
 ATT_QUAT_MSG_ID              = 31      # → /mavros/imu/data
-IMU_REQUEST_HZ               = 200
+IMU_REQUEST_HZ               = 200     # default; 333 = grantable max
+                                       # (~346 Hz actual, no coherent
+                                       # stream-decimation aliasing;
+                                       # 400 is DENIED by the FC)
 ATT_REQUEST_HZ               = 50
-IMU_OK_HZ                    = 80      # stop re-requesting once achieved
+IMU_OK_FRACTION              = 0.4     # stop re-requesting at this fraction
+IMU_OK_HZ                    = int(IMU_REQUEST_HZ * IMU_OK_FRACTION)
 
 
 class ImuLogger(Node):
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, imu_hz=IMU_REQUEST_HZ):
         super().__init__('imu_logger')
+        self._imu_hz = imu_hz
+        self._imu_ok_hz = imu_hz * IMU_OK_FRACTION
         self._imu_file = open(os.path.join(out_dir, 'imu.csv'), 'w')
         self._imu_file.write('stamp_ros,recv_unix,wx,wy,wz,ax,ay,az\n')
         self._att_file = open(os.path.join(out_dir, 'attitude.csv'), 'w')
@@ -129,12 +146,12 @@ class ImuLogger(Node):
         # rate; and two concurrent COMMAND_LONGs race in mavros (RAW_IMU
         # ended up at the attitude request's 50 Hz), so the second command
         # is chained on the first's completion, never sent in parallel.
-        if self._imu_rate >= IMU_OK_HZ and self._att_rate >= ATT_REQUEST_HZ / 2:
+        if self._imu_rate >= self._imu_ok_hz and self._att_rate >= ATT_REQUEST_HZ / 2:
             return
         if not self._cmd_cli.service_is_ready():
             return
         self._send_interval(
-            RAW_IMU_MSG_ID, IMU_REQUEST_HZ,
+            RAW_IMU_MSG_ID, self._imu_hz,
             then=lambda: self._send_interval(ATT_QUAT_MSG_ID, ATT_REQUEST_HZ))
 
     def close(self):
@@ -146,10 +163,11 @@ class ImuLogger(Node):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True)
+    ap.add_argument('--imu-hz', type=int, default=IMU_REQUEST_HZ)
     args = ap.parse_args()
 
     rclpy.init()
-    node = ImuLogger(args.out)
+    node = ImuLogger(args.out, imu_hz=args.imu_hz)
     stop = []
     signal.signal(signal.SIGINT,  lambda *_: stop.append(1))
     signal.signal(signal.SIGTERM, lambda *_: stop.append(1))

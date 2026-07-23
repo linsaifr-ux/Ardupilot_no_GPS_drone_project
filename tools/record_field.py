@@ -103,7 +103,7 @@ from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float64
 from mavros_msgs.msg import RCIn
 
-from imu_logger import IMU_OK_HZ, IMU_REQUEST_HZ   # sidecar (same dir)
+from imu_logger import IMU_OK_FRACTION, IMU_REQUEST_HZ   # sidecar (same dir)
 
 Gst.init(None)
 
@@ -339,6 +339,11 @@ def main():
     ap.add_argument('--output',           default='')
     ap.add_argument('--bitrate',          type=int, default=8_000_000)
     ap.add_argument('--duration',         type=int, default=0)
+    ap.add_argument('--imu-hz', type=int, default=IMU_REQUEST_HZ,
+                    help='RAW_IMU stream rate; 333 = grantable max (~346 Hz '
+                         'actual), removes the 400→200 stream-decimation '
+                         'aliasing; 400 is DENIED by the FC (diagnosis doc '
+                         '§14-3/14-4/14-6)')
     ap.add_argument('--calib', action='store_true',
                     help='tag this recording as a camera-IMU calibration '
                          'session (AprilGrid/checkerboard footage for Kalibr; '
@@ -383,14 +388,16 @@ def main():
     # (bench-measured 2026-07-18). A dedicated process sustains 199.8 Hz.
     imu_proc = subprocess.Popen(
         [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      'imu_logger.py'), '--out', out])
+                                      'imu_logger.py'), '--out', out,
+         '--imu-hz', str(args.imu_hz)])
     imu_rates_path = os.path.join(out, 'imu_rates.json')
+    imu_ok_hz = args.imu_hz * IMU_OK_FRACTION
 
     def _imu_status():
         try:
             with open(imu_rates_path) as f:
                 r = json.load(f)
-            mark = '' if r['imu_hz'] >= IMU_OK_HZ else '⚠'
+            mark = '' if r['imu_hz'] >= imu_ok_hz else '⚠'
             return f"  imu={r['imu_hz']:.0f}Hz{mark}", r
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             return '  imu=--', None
@@ -453,7 +460,7 @@ def main():
         # calibration (Kalibr) must be run on the recorded orientation
         'frame_rotation_deg': 180,
         'purpose': 'calibration' if args.calib else 'survey',
-        'imu_requested_hz': IMU_REQUEST_HZ,
+        'imu_requested_hz': args.imu_hz,
     }
     with open(meta_path, 'w') as f:
         json.dump(meta, f, indent=2)
@@ -574,9 +581,9 @@ def main():
     print()
     size_mb = os.path.getsize(video_path) / 1e6 if os.path.exists(video_path) else 0
     print(f'[REC] Done — {size_mb:.1f} MB  ({out}/)')
-    if imu_rate < IMU_OK_HZ:
+    if imu_rate < imu_ok_hz:
         print(f'[REC] WARNING: IMU rate at stop was {imu_rate:.0f} Hz '
-              f'(< {IMU_OK_HZ} Hz) — insufficient for OpenVINS-grade VIO. '
+              f'(< {imu_ok_hz:.0f} Hz) — insufficient for OpenVINS-grade VIO. '
               'Check the FC link / SET_MESSAGE_INTERVAL support.')
 
 

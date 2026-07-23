@@ -66,6 +66,8 @@ mav.tlog.raw
 *.parm
 !control/no_gps.parm
 !control/real_hw.parm
+!control/real_hw_pixhawk6c.parm
+!control/imu_aliasing_fix.parm
 terrain/
 
 # AnyLoc runtime output (written at runtime)
@@ -152,11 +154,20 @@ field_data/**/telemetry.csv
 field_data/**/meta.json
 field_data/**/frame_times.csv
 
-# OpenVINS offline eval (field_data/**/vio_eval/): trajectory CSVs are derived
-# from the raw recording (which is not in git) — keep README/plots/configs/
-# scripts tracked, ignore the bulky trajectory dumps
-field_data/**/vio_eval/vio_full.csv
-field_data/**/vio_eval/vio_cruise.csv
+# OpenVINS offline eval (field_data/**/vio_eval/): trajectory CSVs and run
+# logs are derived from the raw recording (which is not in git) — keep
+# README/plots/configs/scripts tracked, ignore the bulky derived dumps
+field_data/**/vio_eval/vio_full*.csv
+field_data/**/vio_eval/vio_cruise*.csv
+field_data/**/vio_eval/run_*.log
+
+# Kalibr calibration sessions (field_data/calib_*): raw recording files are
+# covered by the field_data patterns above; keep the small precious outputs
+# (kalibr_output yamls + results txts, KALIBR_PC_README.md,
+# prepare_kalibr_input.py) tracked, ignore the bulky report PDFs and the
+# PC-side intermediate input trees / bags
+field_data/**/kalibr_output/*.pdf
+field_data/**/kalibr_input*/
 
 # Streaming directory — ignore only the MediaMTX binary (large, download separately)
 # Source files, docs, and config in streaming/ are tracked normally

@@ -1,0 +1,98 @@
+# ArduPilot parameters for real hardware, no-GPS survey — Pixhawk 6C edition.
+# Adapted 2026-07-21 from real_hw.parm for the replacement FC:
+#   Pixhawk 6C, ArduCopter 4.6.3 official (old file targeted 4.8-dev names).
+# Differences vs real_hw.parm:
+#   - Jetson companion link is on SERIAL1/TELEM1 on this FC (was SERIAL6),
+#     so the no-forwarding option moves to SERIAL1_OPTIONS and the persistent
+#     stream rates to SR1_* (SERIAL1 = 2nd MAVLink port → SR1).
+#   - 4.6.3 param names: BRD_SAFETYENABLE→BRD_SAFETY_DEFLT, GPS_TYPE→GPS1_TYPE,
+#     PSC_NE_POS_P→PSC_POSXY_P, PSC_NE_VEL_{P,I,D}→PSC_VELXY_{P,I,D}.
+#   - FS_GPS_ENABLE / GPS_ARMING_MIN_SAT dropped: neither exists on 4.6.3
+#     (GPS failsafe is governed by FS_EKF_ACTION; the min-sat arming gate is
+#     moot anyway with ARMING_CHECK=0 + physical safety switch).
+# Load: python3 control/load_fc_params.py  (or Mission Planner), then REBOOT
+# the FC — SERIAL1_OPTIONS only applies at boot.
+#
+# EKF source switch via RC:
+#   Switch LOW  → SRC1 (GPS) — use for arming and takeoff
+#   Switch HIGH → SRC2 (ExternalNav/AnyLoc) — flip at cruise altitude once AnyLoc is confident
+# Set in Mission Planner: RCx_OPTION = 90  (EKF Position Source) on a 2/3-pos switch channel
+
+# Frame
+FRAME_CLASS     2       # hexarotor
+FRAME_TYPE      1       # X
+
+# GPS enabled — used for arming and as SRC1
+GPS1_TYPE       1       # enable GPS driver (auto-detect receiver type)
+FENCE_ENABLE    0
+
+# EKF source 1: GPS (switch LOW — used for arming and takeoff)
+EK3_SRC1_POSXY  3       # GPS → XY position
+EK3_SRC1_VELXY  3       # GPS → XY velocity
+EK3_SRC1_POSZ   1       # Baro → altitude
+EK3_SRC1_YAW    1       # Compass → yaw
+
+# EKF source 2: ExternalNav/AnyLoc (switch HIGH — activate at cruise altitude)
+EK3_SRC2_POSXY  6       # ExternalNav → XY position
+EK3_SRC2_VELXY  0       # NO velocity source — vision_speed would be differentiated EKF
+                        # output fed back = circular (see real_hw.parm for full note)
+EK3_SRC2_POSZ   1       # Baro → altitude
+EK3_SRC2_YAW    1       # Compass → yaw
+
+VISO_TYPE       1       # enable MAVLink ExternalNav processing (VPE from Jetson)
+
+# Real hardware safety
+BRD_SAFETY_DEFLT  1     # Physical safety button required before arm (4.6 name of BRD_SAFETYENABLE)
+FS_CRASH_CHECK    1     # Re-enable crash detection
+ARMING_CHECK      0     # Disable software pre-arm — physical switch is the protection
+                        # (ARMING_CHECK=1 blocks arm with "VisoDOM not healthy" if commander not running first)
+DISARM_DELAY      10    # Disarm after 10 s on ground
+
+# Hover thrust — 0.35 is the project baseline for this hexa. NOTE: the FC arrived
+# with a learned 0.179 from its previous airframe; re-learn/autotune on first hover.
+MOT_THST_HOVER  0.35
+
+# Attitude controller — start conservative; tune after first hover test
+ATC_ANG_RLL_P   4.5
+ATC_ANG_PIT_P   4.5
+ATC_RAT_RLL_P   0.135
+ATC_RAT_RLL_I   0.135
+ATC_RAT_RLL_D   0.0036
+ATC_RAT_PIT_P   0.135
+ATC_RAT_PIT_I   0.135
+ATC_RAT_PIT_D   0.0036
+
+# Horizontal position controller (4.6.3 names)
+PSC_POSXY_P     0.2     # below critical P → overdamped
+PSC_VELXY_P     2.0
+PSC_VELXY_I     0.0     # MUST be 0 — default 1.0 causes integral windup
+PSC_VELXY_D     0.5
+
+# Speed limits
+WPNAV_SPEED     1200    # 12 m/s max
+WPNAV_SPEED_UP  300     # 3 m/s climb
+WPNAV_SPEED_DN  150     # 1.5 m/s descent
+
+# EKF innovation gating for ExternalNav
+EK3_GLITCH_RAD    50    # m — accept AnyLoc jumps up to 50 m without glitch reset
+                        # (VPE-jump-runaway tuning may later lower this to 25)
+
+# Timeouts
+GUID_TIMEOUT    30      # 30 s GUIDED setpoint timeout (prevent failsafe on CPU spikes)
+
+# Serial — Jetson companion link on SERIAL1/TELEM1 (921600, MAVLink2)
+SERIAL1_OPTIONS 1024    # Don't forward MAVLink to/from the Jetson port — without this the
+                        # commander's 20 Hz VPE broadcasts saturate the telemetry radio and
+                        # Mission Planner hangs on "Getting Params". FC still consumes VPE
+                        # for EKF3 itself. REBOOT FC after setting.
+
+# Persistent stream rates for the Jetson link (SERIAL1 = 2nd MAVLink port → SR1_*).
+# launch_mavros_real.sh requests 10 Hz at connect, but that request is runtime-only —
+# after an FC reboot mid-session these params keep attitude/position flowing.
+SR1_EXT_STAT    10
+SR1_EXTRA1      10
+SR1_EXTRA2      10
+SR1_EXTRA3      10
+SR1_POSITION    10
+SR1_RAW_SENS    10
+SR1_RC_CHAN     10
