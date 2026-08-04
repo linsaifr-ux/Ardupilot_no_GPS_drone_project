@@ -1,0 +1,40 @@
+{
+  "verification": {
+    "determinism_check_passed": true,
+    "slew_determinism_check_passed": true
+  },
+  "config": {
+    "anchor_win": 20.0,
+    "slew_corr_rate_mps": 2.5
+  },
+  "real_anchor_source": "anyloc_vs_survey33_db_cruise.json (database_survey33_vits14, dinov2_vits14 default features, cruise-only t=116-197s)",
+  "n_real_anchors": 41,
+  "windows": {
+    "116-197": {
+      "rmse": 27.262450181003466,
+      "max": 80.72350170384591,
+      "n": 1215
+    },
+    "65-326": {
+      "rmse": 573.8350222949392,
+      "max": 1573.5968908621792,
+      "n": 3788
+    }
+  },
+  "smoothness": {
+    "unslewed": {
+      "mean": 0.9740682664871199,
+      "max": 65.37881016782121,
+      "n_over_5m": 30,
+      "n_over_20m": 13,
+      "n_over_50m": 2
+    },
+    "slewed_final": {
+      "mean": 0.7118331287974698,
+      "max": 1.1670640299486323,
+      "n_over_5m": 0,
+      "n_over_20m": 0,
+      "n_over_50m": 0
+    }
+  }
+}

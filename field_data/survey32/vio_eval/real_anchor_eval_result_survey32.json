@@ -1,0 +1,19 @@
+{
+  "verification": {
+    "determinism_check_passed": true
+  },
+  "real_anchor_source": "anyloc_vs_survey33_db.json (database_survey33_vits14, dinov2_vits14 default features)",
+  "n_real_anchors": 51,
+  "windows": {
+    "100-220": {
+      "rmse": 58.27125935514058,
+      "max": 184.15068921045125,
+      "n": 1800
+    },
+    "65-326": {
+      "rmse": 761.9954252086604,
+      "max": 2060.9599932030396,
+      "n": 3788
+    }
+  }
+}

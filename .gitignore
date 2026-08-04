@@ -179,3 +179,17 @@ recordings/
 # MAVLink relay mTLS certs/keys (streaming/generate_relay_certs.sh output) — secrets,
 # never commit; each machine (Jetson/Frank's PC/MP machine) gets its own copy by hand
 streaming/relay_certs/
+
+# SITL closed-loop test outputs (control/test_full_pipeline_sitl*.py): postview frame
+# dumps and assembled videos are large and fully reproducible by rerunning the harness —
+# keep the harness scripts and the small summary plot/JSON logs tracked, ignore the bulky
+# per-run artifacts. prefix_bug_archive/ is a scratch archive of superseded buggy runs,
+# never meant to be preserved in git.
+field_data/**/vio_eval/sitl/postview/
+field_data/**/vio_eval/sitl/postview_*.mp4
+field_data/**/vio_eval/sitl/prefix_bug_archive/
+
+# Offline postview video (field_data/**/vio_eval/postview_offline*.mp4, not under sitl/) --
+# same bulky-and-reproducible-by-rerunning-the-postview-script logic as the sitl/ pattern
+# above, just a different render (pure real-data replay, no SITL) living one level up.
+field_data/**/vio_eval/postview_offline*.mp4

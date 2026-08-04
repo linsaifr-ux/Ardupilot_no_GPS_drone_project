@@ -1,0 +1,22 @@
+{
+  "session_dir": "field_data/survey33",
+  "n_frames": 112,
+  "resolution_m_per_px": 0.15,
+  "canvas_w": 3062,
+  "canvas_h": 1942,
+  "bounds": {
+    "nw_lat": 22.77889808540511,
+    "nw_lon": 120.54852162553514,
+    "se_lat": 22.77626802434899,
+    "se_lon": 120.55299390672975
+  },
+  "compositing": "sequential alpha-over (frames.csv/flight order), feather=25px at each frame edge",
+  "feather_px": 25,
+  "nodata_fill_rgb": [
+    60,
+    60,
+    60
+  ],
+  "hfov_deg": 62.2,
+  "vfov_deg": 48.8
+}

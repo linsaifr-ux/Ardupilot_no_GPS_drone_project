@@ -2019,3 +2019,409 @@ PDF**(`pdftotext` 抽出的文字)跑 OpenCC 才抓得到。
 `图`/`参考文献`/`插图`/`附录`/`证明`/`续` 皆為 0 筆。完整記錄:
 memory `ctex-simplified-caption-landmine`。任何未來在本專案底下新增
 的繁體中文 `ctexart` 文件都需要套用同樣的 `\ctexset` 覆寫。
+
+### 14-35. 高度是不是 VIO 誤差的元兇?survey30(5m)/survey31(10m)實測對照(2026-08-02)
+
+Frank 提供兩趟新飛行——survey30(~5m AGL 巡航)、survey31(~10m AGL
+巡航)——同一套機身/相機(自 Kalibr 標定後未拆裝),問「高 AGL 是不是
+造成 VIO 誤差的原因」。用與 survey32/33 完全相同的方法論(同一份
+`run_video_msckf` config`survey17_kalibr`、`err_curve`/`report` 的
+固定 4DOF(僅航向+平移,不含尺度)對齊、在各自巡航窗前 20 秒對齊、
+對整個巡航窗算 RMSE/max)離線跑出兩趟的真實 OpenVINS 軌跡,直接對比
+survey32 既有的 100m AGL 結果(新程式:`field_data/vio_agl_comparison.py`,
+結果:`field_data/vio_agl_comparison_result.json`、
+`field_data/vio_agl_comparison.png`)。
+
+**巡航窗**(從 AGL 曲線量出來,參數與 §14-26 系列一致):survey30
+t=145.6–265.6s(~5m AGL,120s,地速僅 1.30 m/s——非常慢,接近定點)、
+survey31 t=98.8–174.4s(~10m AGL,75.6s,地速 4.45 m/s,與 survey32/33
+實際巡航速度相近)、survey32 t=116.0–197.2s(~100m AGL,81.2s,地速
+5.73 m/s)。
+
+**結果**(raw VIO,同一套固定對齊方法,無 AnyLoc/融合層介入):
+
+| 飛行 | AGL | 地速 | RMSE | max | max 佔航跡長% |
+|---|---|---|---|---|---|
+| survey30 | ~5m | 1.30 m/s | 7.3m | 17.9m | 11.5% |
+| survey31 | ~10m | 4.45 m/s | 3.0m | 5.9m | 1.8% |
+| survey32 | ~100m | 5.73 m/s | 75.8m | 121.8m | 26.2% |
+
+**結論:高 AGL 確實是這個 pipeline VIO 誤差的主要元兇之一**——100m
+AGL 的 RMSE 是 10m AGL 的 25 倍、是 5m AGL 的 10 倍,即使三趟飛行的
+地速、航段長度、轉彎次數(逐 sample 航向變化量測過,survey30 反而是
+三趟裡轉彎次數最多的,排除「survey32 誤差大是因為轉彎多」這個替代
+解釋)都不構成足以解釋這個量級差距的因素。
+
+但更精確的機制不是單純「AGL」本身,而是單目 VIO 深度/尺度可觀測性
+的經典驅動因子——**每影格相機位移(baseline)與場景深度的比值**
+(對接近水平飛行的下視相機而言,深度 ≈ AGL)。用「地速/AGL」當作
+視差率的粗略代理:survey31(0.445/s)最好(RMSE 3.0m)、survey30
+(0.26/s)其次——雖然 AGL 比 survey31 低一半,但因為飛得極慢(近乎
+定點),parallax 反而比 survey31 差,RMSE 比 survey31 差 2.4 倍;
+survey32(0.057/s)最差,因為 100m 深度即使用 5.7 m/s 的地速仍遠遠
+不夠彌補。這與這個專案已經記錄過的「cruise-scale collapse」現象
+(§14-11,原本歸因於轉彎時 rolling shutter)是同一個更大類別問題的
+另一面,也與 memory `vpe-jump-runaway` 裡提過的「FoundLoc 自己的評測
+裡 altitude change 是其最差的類別(ATE 22.7m)」互相印證——這不是這個
+專案獨有的怪異現象,是單目 VIO 的已知通病。
+
+**對真實部署的意義(可執行結論)**:這個專案的巡航速度被動態模糊
+安全上限鎖在 ≤3–7.5 m/s(見 `instructions/field_database_collection.md`
+的速度規範),而比賽任務要求 100m AGL 巡航——用「地速/AGL」的角度看,
+要達到 survey31(10m AGL)那種視差率,100m AGL 需要地速約 40+ m/s,
+遠超安全上限、也遠超這台機身的合理飛行速度。**換句話說,在這個專案
+實際會飛的巡航高度,raw 單目 VIO 的大誤差不是一個可以靠飛行參數調整
+解決的問題——這正是為什麼 AnyLoc 視覺定位修正層是必要的,不是錦上添花
+的選配**,與這份文件從 §14-25 開始建立的「瓶頸是資料庫 domain gap,
+VIO 本身也有它自己獨立的高度相關瓶頸」的整體圖像一致。
+
+**已知限制**:每個高度只有一趟飛行(n=1),不是嚴格控制單一變量的
+實驗;survey30 的極慢地速是一個真實存在、未特別控制的混雜因子(見上
+「地速/AGL」分析,已盡量拆解但無法完全排除);三趟飛行的資料庫/場地
+條件相同,但飛行日期、光照、風況等其他變量沒有特別控制。完整程式碼
+與數字:`field_data/vio_agl_comparison.py`、
+`field_data/vio_agl_comparison_result.json`、
+`field_data/vio_agl_comparison.png`。VIO 軌跡:
+`field_data/survey30/vio_eval/vio_full_survey30.csv`、
+`field_data/survey31/vio_eval/vio_full_survey31.csv`。
+
+### 14-36. 另一種 VPR 方法:ngps_flight(SuperPoint+LightGlue)vs AnyLoc,以及全
+pipeline 查詢頻率掃描(2026-08-02)
+
+Frank 指定要試的方法是 GitHub `snktshrma/ngps_flight`——一個下視相機對georeferenced
+衛星影像的視覺定位系統,核心是 SuperPoint 關鍵點 + LightGlue 匹配(不是像 AnyLoc
+那樣的全域描述子最近鄰檢索),再用內點匹配求 homography、把查詢影格投影進參考影像
+的像素座標,最後用參考影像本身的地理配準(仿射轉換)換算成經緯度。
+
+**環境地雷(嚴重,已修正)**:第一次嘗試 `pip install lightglue`/`kornia` 時裝在
+**系統 Python**(`/usr/bin/python3`,不是 venv),結果靜默把 `numpy` 從 1.26.4 升到
+2.2.6,同時新裝的 `opencv-python` 蓋掉了系統原本有 GStreamer 支援的 cv2(相機
+pipeline 靠這個)——`cv2.getBuildInformation()` 確認新裝的是「GStreamer: NO」。
+在跑任何實際比對之前就先發現並回復:`pip uninstall opencv-python lightglue kornia
+kornia_rs` + `pip install numpy==1.26.4`,確認系統 cv2 版本(4.5.4,來自
+`/usr/lib/python3/dist-packages`,非 pip)與 GStreamer 支援都復原。之後全部改在
+`python3 -m venv --system-site-packages`(繼承系統的 CUDA-linked torch,但新裝的
+套件只落在 venv 自己的 site-packages,不影響系統)裡做,並且把 `kornia`/
+`opencv-python` 都釘在 numpy<2 相容的版本(`kornia==0.7.0`、
+`opencv-python==4.10.0.84`),避免 torch 的 numpy C API ABI 不匹配警告
+(`Failed to initialize NumPy: _ARRAY_API not found`)。**教訓:這台 Jetson 的系統
+Python 就是正式飛控 pipeline 在用的直譯器,任何新方法的實驗性套件一律裝進隔離
+venv,不裝系統環境。**
+
+**ngps_flight 本身這個 repo 在這台 Jetson 上直接跑不起來**(目標是 JetPack 7.2/
+CUDA 13.2/ROS2 Jazzy,這台是 R36.4.7,且它的核心比對腳本需要先把 ONNX 匯出、編譯
+TensorRT engine)——改成直接用官方 `cvg/LightGlue`(PyTorch 原生)重現它說明文件
+裡描述的方法,離線跑在完全相同的 survey32 查詢影格與 survey33 資料上,確保和
+AnyLoc 公平比較。參考影像改用這個專案自己早先建好的 survey33 地理配準拼接圖
+(`field_data/survey33/mosaic.png`+`mosaic.pgw`,單一連續影像,而非 AnyLoc 的 112
+張離散圖磚)——這才是 ngps_flight 設計文件裡講的「單一 reference_image_path」用法。
+
+**第一輪:純檢索精度比較**(t=116–197.2s,2s cadence,與 AnyLoc 完全相同的 41 個
+查詢時刻、相同北向旋轉):
+
+| 方法 | 覆蓋率 | mean | median | RMSE | max |
+|---|---|---|---|---|---|
+| AnyLoc(全域描述子檢索) | 41/41(100%) | 25.1m | 15.2m | 40.6m | 152.5m |
+| ngps 風格(局部特徵+homography) | 21/41(51%) | 22.5m | 25.2m | **24.7m** | **40.9m** |
+
+成功匹配時 ngps 風格明顯更穩(RMSE、max 都遠優於 AnyLoc),但**近半數影格完全匹配
+失敗**(RAW 匹配<4 或 RANSAC 內點<8)——AnyLoc 的最近鄰檢索保證每次都有答案(即使
+是爛答案),ngps 風格則可能整個 tick 交白卷。精度 vs 可靠度的真實取捨,不是單純
+「哪個更好」。
+
+**第二輪:接上完整 pipeline(VIO+修正層+slew),掃描 VPR 查詢頻率**——把每個頻率下
+ngps 風格「成功」的匹配(status=="ok")當成真實錨點,餵進與 AnyLoc 完全相同的
+`foundloc_corrector_survey32.run_corrector`(`anchor_win=20`,本專案離線正式配置)
++ slew limiter,再用相同的固定 4DOF 對齊方法評估巡航窗 RMSE。測試 period ∈
+{0.5, 1.0, 2.0, 3.0, 4.0} 秒(過程中抓到一個真的 bug:第一輪的比對腳本算出
+`est_lat`/`est_lon` 但沒存進輸出 JSON,導致錨點沒法重建——修好後整個掃描重跑):
+
+| period | 嘗試次數 | 成功錨點 | 覆蓋率 | 巡航 RMSE | max |
+|---|---|---|---|---|---|
+| 0.5s | 163 | 85 | 52.1% | **29.11m** | 80.6m |
+| 1.0s | 82 | 43 | 52.4% | 31.85m | 88.9m |
+| 2.0s | 41 | 21 | 51.2% | 35.00m | 88.9m |
+| 3.0s | 28 | 13 | 46.4% | 57.76m | 119.0m |
+| 4.0s | 21 | 12 | 57.1% | 47.89m | 100.1m |
+
+**結論:0.5s(所有測試頻率中最高)最好**——查詢愈頻繁,巡航 RMSE 愈低,幾乎單調。
+機制:成功率(~50%)基本上跟查詢頻率無關(是匹配品質問題,不是時序問題),所以
+唯一能補償這個缺陷的槓桿就是「查更勤」——單位時間內查詢次數愈多,即使成功率不變,
+絕對成功錨點數也愈多,能更緊地限制 anchor_win 尺度估計之間的死算推估漂移。0.5s
+下的 29.11m 已經很接近 AnyLoc 官方 2s 結果(27.3m,同一套 corrector+slew 配置)但
+仍未超越;而在跟 AnyLoc 相同的 2s cadence 下,ngps 風格明顯較差(35.0m vs
+27.3m)——同頻率下 AnyLoc 的保底覆蓋率仍然贏。這台 Jetson 上單次匹配平均 216ms,
+0.5s 週期還沒撞到算力天花板,更高頻率(如 0.25s)沒測過,可能還有進步空間,但
+2.0→1.0→0.5s 之間的改善已經在收斂。
+
+**已知限制**:比對用全域匹配(查詢影格對整張拼接圖,無位置先驗裁切)——這代表
+ngps_flight 實際設計(用 UKF 位置先驗裁切參考影像附近區域)下的成功率可能顯著更
+高,這裡測的比較接近它的冷啟動/最差情境,不是穩態追蹤情境;RANSAC 閾值(8px)、
+最少內點數(8)是我自己選的合理預設,不是原始 repo 的調校值。完整程式碼與數字:
+`field_data/survey32/vio_eval/ngps_style_eval_survey32.py`、
+`ngps_freq_sweep_corrector.py`、`ngps_style_eval_result_p{period}.json`、
+`ngps_freq_sweep_result.json`、`ngps_freq_sweep.png`。
+
+### 14-37. position-prior 裁切版本:全域搜尋的~50%失敗率被根治,還贏過 AnyLoc(2026-08-02)
+
+Frank 要求試 §14-36 開放問題裡提到的 position-prior 裁切版本——不再對整張拼接圖做
+全域搜尋,而是模仿 ngps_flight 真正的設計(UKF 位置估計 + 裁切參考影像附近區域再
+匹配)。實作為因果(causal,依時間順序、真實運作狀態)版本
+(`ngps_style_eval_survey32_cropped.py`):沒有先驗位置時(第一次查詢、或目前為止
+每次都失敗)退回全域搜尋;一旦有過一次成功匹配,之後每次查詢改成以「上次成功匹配
+的位置」為中心裁切拼接圖,裁切半徑用等速度上界估計(`MAX_SPEED_MPS=15 m/s
+×距上次成功匹配經過的秒數 + 30m 安全餘量`)而非讓 VIO 自己的尺度漂移污染裁切中心;
+匹配失敗時先驗維持不變(裁切半徑隨經過時間自然變大,行為正確)。
+
+**單一頻率(2.0s,與 AnyLoc 官方相同 cadence)的效果**:一旦進入裁切模式,匹配
+密度暴增(全域搜尋時每次 10–30 個原始匹配,裁切後 300–560 個),**成功率從全域
+搜尋的 51.2% 跳到 90.2%**(41 次查詢中僅 4 次失敗,且全部集中在最初 bootstrap
+的前 4 次查詢,t=116–122s,裁切模式啟動之後 36/36 全部成功)。純檢索精度也大幅
+提升:mean 16.9m、median 15.8m、RMSE 18.9m、max 38.8m(對比全域搜尋的 mean
+22.5m/RMSE 24.7m/max 40.9m,以及 AnyLoc 的 mean 25.1m/RMSE 40.6m/max 152.5m)。
+
+接上完整 pipeline(同一套 `run_corrector`/anchor_win=20/slew)後,2.0s 頻率下巡航
+RMSE=29.08m——比全域搜尋的 35.00m 好上不少,但仍略遜於 AnyLoc 官方的 27.3m。查過
+原因:唯一的 4 次失敗全部發生在 bootstrap 窗口(t=116–122s,裁切模式尚未啟動
+之前),正好卡進 anchor_win=20 尺度估計閘門最敏感的那段時間——與 §14-31 診斷出的
+「閘門在窗口早期特別脆弱」是同一個機制,不是裁切法本身的缺陷。
+
+**全頻率掃描**(period ∈ {0.5, 1.0, 2.0, 3.0, 4.0}s,裁切法 vs 全域搜尋 vs
+AnyLoc):
+
+| period | 全域搜尋 RMSE | 全域覆蓋率 | 裁切法 RMSE | 裁切法覆蓋率 |
+|---|---|---|---|---|
+| 0.5s | 29.11m | 52.1% | **19.13m** | 95.7% |
+| 1.0s | 31.85m | 52.4% | 26.66m | 90.2% |
+| 2.0s | 35.00m | 51.2% | 29.08m | 90.2% |
+| 3.0s | 57.76m | 46.4% | 53.07m | 85.7% |
+| 4.0s | 47.89m | 57.1% | 34.92m | 90.5% |
+
+AnyLoc 官方(2.0s):RMSE=27.3m,覆蓋率 100%。
+
+**結論:裁切法在每一個測試頻率下都贏過全域搜尋**(RMSE 更低、覆蓋率更高),而且
+**在最高測試頻率(0.5s)下,裁切法巡航 RMSE=19.13m,實際贏過 AnyLoc 官方的
+27.3m**——這是這整個 ngps-style 調查(§14-36/37)裡第一次有任何配置真的超越
+AnyLoc。機制與 §14-36 一致(高頻率補償 bootstrap 前的空窗期),但裁切法因為穩態
+成功率已經高達 85–96%(不像全域搜尋卡在~50%),所以同樣的頻率提升能兌現成更大的
+實際效益。
+
+**已知限制**:裁切半徑用固定等速度上界模型,不是真正的 UKF 協方差傳遞,也沒有
+把 VIO 自身的尺度漂移誤差回饋進裁切中心的不確定度;bootstrap 階段(拿到第一個
+成功匹配之前)仍然是全域搜尋,尚未想辦法縮短這段真空期;RANSAC 閾值、最少內點數
+與 §14-36 相同,一樣是我自己的合理預設,不是原始 repo 的調校值;3.0s 那個
+RMSE=53.07m 的異常值(比 4.0s 還差)可能只是小樣本雜訊,兩種方法在 3.0s 都出現
+類似的異常凸起,值得留意但不影響整體「裁切法系統性優於全域搜尋」的結論。完整
+程式碼與數字:`field_data/survey32/vio_eval/ngps_style_eval_survey32_cropped.py`、
+`ngps_cropped_eval_result_p{period}.json`、`ngps_cropped_freq_sweep_result.json`、
+`ngps_crop_vs_global_sweep.png`。
+
+### 14-38. 三方法 × 五頻率總表:全 pipeline 下誰是最終贏家(2026-08-02)
+
+Frank 要求把「接上 VIO 的完整 pipeline」測試擴大到所有方法——之前 AnyLoc 只在官方
+2.0s cadence 測過(§14-26 起沿用的數字),沒有跟兩種 ngps 風格方法一樣做過完整的
+頻率掃描,不是真正公平的比較。用 `anyloc/test_accuracy_survey25_time.py --rotate`
+在 period ∈ {0.5, 1.0, 3.0, 4.0}s 補測(2.0s 沿用既有的
+`anyloc_vs_survey33_db_cruise.json`),同樣接上 `run_corrector`
+anchor_win=20 + slew 評估巡航窗 RMSE,與 §14-36/37 完全相同的方法論。
+
+**完整 15 組結果(3 方法 × 5 頻率,巡航窗 RMSE,公尺)**:
+
+| period | AnyLoc | 覆蓋率 | ngps 全域搜尋 | 覆蓋率 | ngps 裁切法 | 覆蓋率 |
+|---|---|---|---|---|---|---|
+| 0.5s | 22.15 | 100% | 29.11 | 52.1% | **19.13** | 95.7% |
+| 1.0s | 21.69 | 100% | 31.85 | 52.4% | 26.66 | 90.2% |
+| 2.0s | 27.26 | 100% | 35.00 | 51.2% | 29.08 | 90.2% |
+| 3.0s | 32.79 | 100% | 57.76 | 46.4% | 53.07 | 85.7% |
+| 4.0s | 35.92 | 100% | 47.89 | 57.1% | 34.92 | 90.5% |
+
+**總冠軍:ngps 裁切法 @ 0.5s,巡航 RMSE=19.13m**——15 組配置裡的最佳結果,贏過
+AnyLoc 在任何頻率下的表現(AnyLoc 自己的最佳點是 1.0s=21.69m,不是先前一直被
+當作「官方」基準的 2.0s=27.26m)。
+
+**附帶發現:AnyLoc 自己的「官方」2.0s 配置也不是它的最佳頻率**——1.0s(21.69m)
+比 2.0s(27.26m)好 20%。這代表這整個專案先前用來當作基準、寫進三份論文的 AnyLoc
+2.0s 數字,其實不是 AnyLoc 本身的最佳表現,只是先前選定的固定測試 cadence——每種
+方法都吃「查更勤」這個紅利,只是吃到的量不同(覆蓋率已經 100% 的 AnyLoc 吃得比較
+少,卡在~50% 覆蓋率的 ngps 全域搜尋幾乎沒吃到,已經被裁切法修到 85-96% 覆蓋率的
+ngps 裁切法吃最多)。
+
+**三方法排名總結**(以各自最佳頻率比較):ngps 裁切法(19.13m @ 0.5s)> AnyLoc
+(21.69m @ 1.0s)> ngps 全域搜尋(29.11m @ 0.5s)。ngps 裁切法勝出的關鍵不是
+SuperPoint+LightGlue 本身比 DINOv2+VLAD 更強,而是它結合了(a)局部特徵匹配在
+成功時更精準(§14-36 已量到 RMSE 24.7m vs AnyLoc 的 40.6m)與(b)position-prior
+裁切把原本~50% 的失敗率修到 85-96%——兩者疊加後在高頻查詢下反超。
+
+**尚未回答的問題**(留給未來若要繼續深入):ngps 裁切法在其他窗口(全程飛行、
+不同場地)是否一樣贏,還是 survey32/33 特有的巧合;bootstrap 前的空窗期(§14-37
+提到的全域搜尋 fallback)如果也想辦法縮短,ngps 裁切法可能還有進步空間;三種方法
+的運算成本(每次查詢的 GPU 時間)沒有統一比較過,只各自記錄了平均推論時間。完整
+程式碼與數字:`field_data/survey32/vio_eval/anyloc_vs_survey33_db_cruise_p{period}.json`、
+`anyloc_freq_sweep_result.json`、`full_pipeline_method_freq_comparison.png`。
+
+### 14-39. Frank 直接看路徑圖發現「overshoot 還是 VIO 的問題」——查程式碼證實(2026-08-02)
+
+Frank 看 §14-38 的 `best_config_path_vs_gps.png` 直接提出:融合後的路徑還是有明顯
+overshoot/loop 痕跡,看起來還是 VIO 的問題。查 `run_corrector` 逐 tick 迴圈證實
+完全正確:`inc = s_est * (p[k] - p[k-1])`——每個 tick 的死算方向**完全來自 VIO
+自己原始的 frame-to-frame 位移方向,未經任何旋轉修正**,只有大小被 s_est(緩慢
+EMA 更新的純量)縮放;anchor 的拉力只修正**位置**(週期性把位置拉回錨點)和
+scale(緩慢更新),從來沒有修正過 VIO 自己的**航向**。實測:融合輸出的 tick-to-
+tick 航向變化與原始 VIO 航向變化相關係數 0.69,而且融合輸出的航向變化標準差
+(44.6°/tick)還比原始 VIO 自己(31.3°/tick)**更大**——因為每次 anchor pull 是
+瞬間位置跳動,疊加在 VIO 自己的雜訊之上,不是抵銷。結論:overshoot 的形狀確實
+是 VIO 自己方向誤差的直接反映,corrector 架構上從未修正過這件事。
+
+**Frank 提議:用羅盤(compass)修正方向,因為羅盤應該比較準。** 查
+`telemetry.csv` 的 `heading_deg`:5Hz、無缺漏、全程都有。實作
+`field_data/survey32/vio_eval/foundloc_corrector_compass.py`
+(`run_corrector_compass`):鎖定(`anchor_R`)建立之後,用羅盤讀數換算回 VIO 自己
+的座標系(透過同一個鎖定旋轉的反變換),與 VIO 自己的 `quat_yaw` 比較差值
+`dyaw`,把每個 tick 的原始位移向量旋轉 `dyaw` 後再用(**只修正方向,不動 VIO 自己
+的位移量**)。
+
+**在 0.5s(ngps 裁切法目前的最佳頻率)測試,幾乎沒有效果**:RMSE 19.13m→19.19m,
+路徑圖疊在一起幾乎完全重合(平均差異僅 0.22m,最大 0.81m)。診斷:0.5s cadence 下
+anchor_pull=0.6 的位置拉力太強太頻繁,兩次錨點之間根本沒有足夠時間讓方向誤差累積
+出看得見的位置差異——位置拉力主導了一切,方向修正的效果被蓋掉了。**這預測了在
+較低頻率(anchor 之間死算更久)compass 修正應該更有感**——在 3.0s、4.0s 重測
+(anchors 來自 §14-37 已經算好的 ngps 裁切法結果):
+
+| period | 原版 RMSE | compass 修正後 RMSE | 差 |
+|---|---|---|---|
+| 3.0s | 53.07m | 50.27m | -2.80m(約 5.3%) |
+| 4.0s | 34.92m | 33.93m | -0.98m(約 2.8%) |
+
+確認預測方向正確,路徑圖也證實在較平滑的擺動段(非糾結段)compass 版本確實走得
+更直——但兩者共有的一段真正糾結的路徑(不是方向問題,可能是某次錨點本身品質差
+或轉彎追蹤失敗)compass 修正完全沒碰到,維持原樣。**結論:compass 方向修正是真的
+有效的機制,但效果溫和(2.8-5.3% RMSE),且只在錨點頻率較低、死算時間較長時才有
+明顯空間發揮**;在已經很密集的查詢頻率下(如 0.5s),位置拉力本身就把方向誤差的
+影響壓縮到可忽略。程式碼:`foundloc_corrector_compass.py`;圖:
+`compass_correction_path_compare.png`(0.5s)、
+`compass_correction_path_compare_3_4s.png`(3.0s/4.0s)。
+
+### 14-40. VIO 自己的 yaw 為什麼在低、高 AGL 都一樣「凍結」?——不是 AGL 造成的(2026-08-02)
+
+原本假設「高 AGL 視差差 → 視覺對 yaw 的修正也弱 → VIO yaw 凍結」,直接用資料
+反駁自己:比較 survey30(~5m)/survey31(~10m)/survey32(~100m)三趟飛行 VIO 自己
+的 yaw tick-to-tick 變化標準差——0.66°/0.86°/0.78°,三個 AGL 幾乎一樣,與
+compass 的 tick-to-tick 變化相關係數也全部接近零(-0.07 至 -0.08)。**這個假設
+不成立**——如果是 AGL/視差造成的,5m AGL(scale 精度極佳,RMSE 只有 7.3m)應該
+明顯不同於 100m AGL,但兩者的 yaw 行為看起來一樣。
+
+進一步檢查 compass 本身是不是只是雜訊(如果 compass 的 tick-to-tick 變化只是
+感測器雜訊,那 VIO 平滑、compass 吵鬧,不代表 VIO 有問題):找 survey30 真正靜止
+的地面段(t=0-56s,人員還沒搬動載具,航向穩定在 335.2-335.4°)算 tick-to-tick
+標準差,只有 **0.018°/tick**——遠低於飛行時的 5-7°/tick,證實 compass 本身雜訊
+極低、是可信的感測器,飛行時的高變化是真實訊號,不是雜訊。
+
+**結論**:VIO 自己的 yaw 估計,不論 AGL 高低,都比真實航向動態「凍結」/過度平滑
+——這更像是濾波器本身的調校特性(process/measurement noise 參數讓每次視覺修正
+只能小幅移動 yaw 狀態),而不是視差不足造成的資料飢餓問題。與 §14-35 的「AGL 造成
+scale 誤差」是不同機制,不能用同一套解釋。完整寫在後續 §14-41 的 scale vs
+direction 對照裡進一步釐清。
+
+### 14-41. Scale 還是 Direction,哪個才是低高 AGL 準確度差異的關鍵?——資料證實主要是 Scale(2026-08-02)
+
+用兩種獨立方法拆解 survey30/31/32 三趟飛行原始 VIO 誤差:
+
+1. **全域單一 4DOF(僅航向+平移)vs 5DOF(多允許一個全域尺度)對齊比較**——發現
+   這個方法在低速/低位移窗口(survey30)會因為擬合窗口位移太小而病態(擬合出
+   k=0.183 這種明顯錯誤的尺度,「修正」後反而更差),方法本身有缺陷,棄用。
+2. **改用滑動窗口(10s 窗、5s step)分別追蹤「尺度比例」(VIO 弧長/GPS 弧長)與
+   「方向一致性」(每個子窗口起訖弦的角度,VIO vs GPS)隨時間的穩定度**——更穩健:
+
+| 飛行 | 尺度比例平均值 | 尺度穩定度(變異係數) | 方向一致性(標準差) |
+|---|---|---|---|
+| survey30(~5m) | 1.033(≈正確) | 0.05(很穩) | 2.4°(很緊) |
+| survey31(~10m) | 1.035(≈正確) | 0.08(穩) | 5.5°(緊) |
+| survey32(~100m) | **1.851(明顯偏差)** | **1.05(混亂,0.83x-8.37x 間擺盪)** | **57.2°(鬆)** |
+
+(方向一致性看的是「標準差」不是「平均值」——平均角度差本身很大(69-156°)只是
+反映 VIO 自己任意起始座標系跟真北沒對齊,這正是一次性 lock 要修的東西,不代表
+方向追蹤本身不準。)
+
+**結論**:兩者隨 AGL 都變差,但 scale 崩壞得遠遠更徹底——低 AGL 時 scale 平均值
+接近正確**且**穩定(5-8% 變異);100m AGL 時 scale 平均值明顯偏差(偏大 85%)
+**且**同一趟飛行內就能擺盪超過 10 倍(0.83x 到 8.37x)。方向的一致性標準差雖然
+也隨 AGL 惡化(2.4°→5.5°→57.2°,約 10-20 倍),但沒有像 scale 那樣「平均值錯
+且變異失控」雙重崩壞。這與單目 VIO 的理論預期一致:尺度天生比旋轉更難單靠視覺
+觀測(需要真正的視差/深度基線比,旋轉即使基線很小也常能從特徵方位角變化推得)。
+**簡答:主要是 scale,方向也受影響但程度輕得多。**
+
+### 14-42. 純 IMU(無視覺)在同一窗口漂移多遠?——證明準確度來自融合,不是 IMU 本身(2026-08-02)
+
+Frank 問「低 AGL VIO 準確,是因為原始 IMU 準,還是整個 VIO 融合的功勞?」——IMU
+硬體本身的雜訊/偏置特性物理上跟飛行高度無關(同一顆感測器),所以如果低 AGL
+比較準,理論上一定是視覺修正的功勞,不會是「IMU 在低空突然變準」。直接用資料
+驗證而非空口假設:對 survey30 原始 `imu.csv`(陀螺+加速度計,無視覺)做純
+strapdown 積分(Rodrigues 旋轉更新 + 重力扣除後雙重積分),**用 GPS 真值完美
+初始化位置與速度**(對純 IMU 死算最有利的起始條件),積分同一個 120 秒巡航窗:
+
+| 累積時間 | 純 IMU 漂移(GPS 完美初始化) |
+|---|---|
+| +5s | 5.3m |
+| +10s | 39m |
+| +20s | 296m |
+| +40s | 2.2km |
+| +80s | 15.3km |
+| +120s(整個窗口) | **41.2km** |
+
+對比同一窗口的完整 VIO(視覺+IMU 融合):RMSE=7.3m。純 IMU 即使給了完美的起始
+條件,120 秒內還是飄了四萬多公尺,而融合後的系統同一時間只飄了 7 公尺左右。
+**結論:低 AGL 的準確度 100% 是視覺修正的功勞,不是 IMU 本身變準**——這是基礎
+慣性導航物理(加速度計偏置經雙重積分會以時間平方成長,再疊加陀螺積分誤差污染
+重力扣除),跟飛行高度完全無關;真正隨 AGL 改變的只有相機能提供多好的視覺約束
+去反覆拉回這個必然發散的 IMU 死算,這與 §14-35/41 的視差/scale 觀測性故事完全
+一致。
+
+### 14-43. 「先衝高頻率」這條路能做到多好?——找到真正的頻率上限,大約 0.5s(2026-08-02)
+
+延續 §14-38 的建議,把 ngps 裁切法的查詢頻率往 0.5s 以下推:額外測 period ∈
+{0.2, 0.3, 0.4}s(0.5s 已有),同樣接上 `run_corrector`(anchor_win=20)+ slew
+評估巡航窗 RMSE:
+
+| period | 巡航 RMSE | 覆蓋率 |
+|---|---|---|
+| 0.2s | 19.70m | 96.6% |
+| 0.3s | **18.23m**(數字上最佳) | 95.9% |
+| 0.4s | 20.01m | 96.6% |
+| 0.5s | 19.13m | 95.7% |
+| （對照)1.0s | 26.66m | 90.2% |
+| （對照)2.0s | 29.08m | 90.2% |
+
+**結論:0.5s 以下報酬完全打平**——0.2-0.4s 全部落在 18-20m 區間,不再是像
+4.0s→0.5s 那樣清楚的單調改善曲線,只是雜訊等級的上下擺動,0.3s 數字上最好但
+沒有超出誤差範圍的意義。而且 0.2s(200ms 週期)已經低於這台 Jetson 裁切匹配的
+平均推論時間(299ms/次)、不可能真的即時跑;0.3s(300ms)也在臨界邊緣。0.4s、
+0.5s 才是真正舒服落在算力預算內、可以實際部署的選項。**「拉高查詢頻率」這條路
+的真實上限大約在 0.5s、19m RMSE 附近,不是通往零誤差的路徑**——找到了明確的
+報酬遞減拐點,之後要繼續進步需要換別的機制(如 §14-41 指出的、針對 scale
+不穩定度重新設計自適應速度更快的 scale 估計,而非繼續加快查詢頻率)。完整數字:
+`field_data/survey32/vio_eval/ngps_cropped_finer_sweep_result.json`、
+`ngps_cropped_full_freq_curve.png`。
+
+### 14-44. attitude.csv 補文件 + 順手查了一下:巡航時鏡頭其實不是純 nadir(2026-08-04)
+
+Frank 問 `attitude.csv` 的欄位(`stamp_ros,recv_unix,qw,qx,qy,qz`)是什麼意思——
+寫成完整說明文件 `field_data/attitude_format.md`:兩個時間戳的差別
+(`stamp_ros`=FC/MAVROS 訊息自己的時間戳,做跨感測器時間對齊要用這個;
+`recv_unix`=Jetson 收到當下的 `time.time()`,只用來查 pipeline 延遲)、四元數
+四個分量的幾何意義(`qw=cos(θ/2)` 是角度,`qx,qy,qz=axis×sin(θ/2)` 是軸)、
+roll/pitch/yaw 換算公式,以及這個 attitude.csv 用的 Hamilton 慣例跟 VIO 軌跡
+CSV 用的 JPL `q_GtoI` 慣例不同,兩者不能直接混用。
+
+順手用這份資料查了 survey32 巡航窗(t=116-197s)的 roll/pitch 實際分佈:roll
+mean=-1.40° std=4.68°(範圍 -19.9°至 6.4°,大致貼平但轉彎時有真實傾角);
+**pitch mean=+5.63° std=8.87°(範圍 -14.8°至 23.3°)**——巡航時鏡頭並非單純垂直
+朝下,而是系統性地前傾約 5-6 度(前飛所需的正常機身姿態),波動可達 23 度。
+
+**這件事目前還沒被本專案任何一處數學處理過**:AnyLoc/VPR 的地面涵蓋範圍計算
+(`half_w_m = agl_m * tan(HFOV/2)`,`anyloc/localizer.py` 的 `_sat_crop`)、
+§14-35/41 建立的「深度≈AGL」視差率分析、ngps 裁切法用世界檔案做的單純仿射
+像素→經緯度換算——這些全部假設純垂直下視相機幾何,實際上鏡頭有實測 5-23 度不等的
+真實傾角,理論上會讓真實地面涵蓋範圍(尤其前後方向)systematically 偏離計算值。
+**尚未量化這個誤差實際影響多大**,只是在補文件的過程中順便發現、記錄下來——
+留給未來一次專門的分析(例如檢查 pitch 大小是否與已知的 retrieval/VIO 誤差
+相關)。完整程式碼與數字寫在 `field_data/attitude_format.md` 文末。

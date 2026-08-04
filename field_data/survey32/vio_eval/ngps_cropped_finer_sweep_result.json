@@ -1,0 +1,47 @@
+{
+  "config": {
+    "anchor_win": 20.0,
+    "cruise_window": [
+      116,
+      197
+    ]
+  },
+  "rows": [
+    {
+      "period": 0.2,
+      "n_attempted": 406,
+      "n_ok": 392,
+      "coverage_pct": 96.55172413793103,
+      "cruise_rmse_m": 19.701987759600843,
+      "cruise_max_m": 50.4451516409853,
+      "n_eval": 1215
+    },
+    {
+      "period": 0.3,
+      "n_attempted": 271,
+      "n_ok": 260,
+      "coverage_pct": 95.9409594095941,
+      "cruise_rmse_m": 18.234511883085045,
+      "cruise_max_m": 37.42941695599053,
+      "n_eval": 1215
+    },
+    {
+      "period": 0.4,
+      "n_attempted": 203,
+      "n_ok": 196,
+      "coverage_pct": 96.55172413793103,
+      "cruise_rmse_m": 20.01116033533681,
+      "cruise_max_m": 51.23787642750661,
+      "n_eval": 1215
+    },
+    {
+      "period": 0.5,
+      "n_attempted": 163,
+      "n_ok": 156,
+      "coverage_pct": 95.70552147239263,
+      "cruise_rmse_m": 19.128552126500228,
+      "cruise_max_m": 39.28794208867536,
+      "n_eval": 1215
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "config": {
+    "anchor_win": 20.0,
+    "cruise_window": [
+      116,
+      197
+    ]
+  },
+  "rows": [
+    {
+      "period": 0.5,
+      "n_attempted": 163,
+      "n_ok": 163,
+      "coverage_pct": 100.0,
+      "cruise_rmse_m": 22.15411454867763,
+      "cruise_max_m": 66.70508182251082,
+      "n_eval": 1215
+    },
+    {
+      "period": 1.0,
+      "n_attempted": 82,
+      "n_ok": 82,
+      "coverage_pct": 100.0,
+      "cruise_rmse_m": 21.689552629105883,
+      "cruise_max_m": 59.0035670780716,
+      "n_eval": 1215
+    },
+    {
+      "period": 2.0,
+      "n_attempted": 41,
+      "n_ok": 41,
+      "coverage_pct": 100.0,
+      "cruise_rmse_m": 27.262450181003466,
+      "cruise_max_m": 80.72350170384591,
+      "n_eval": 1215
+    },
+    {
+      "period": 3.0,
+      "n_attempted": 28,
+      "n_ok": 28,
+      "coverage_pct": 100.0,
+      "cruise_rmse_m": 32.788942902545216,
+      "cruise_max_m": 96.68120180158975,
+      "n_eval": 1215
+    },
+    {
+      "period": 4.0,
+      "n_attempted": 21,
+      "n_ok": 21,
+      "coverage_pct": 100.0,
+      "cruise_rmse_m": 35.924156492090745,
+      "cruise_max_m": 75.26514948722908,
+      "n_eval": 1215
+    }
+  ]
+}
