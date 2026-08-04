@@ -1,0 +1,34 @@
+{
+  "verification": {
+    "trusted_rmse": 78.57020375864622,
+    "trusted_max": 164.39048920446118,
+    "reproduced_rmse": 78.57020375864622,
+    "reproduced_max": 164.39048920446118,
+    "bit_exact_match": true,
+    "determinism_check_passed": true
+  },
+  "real_anchor_source": "anyloc_real_fix1plus2_full.json (database_survey25_z20_vf_L10_vits14, dinov2_vits14 layer 10 value facet)",
+  "n_real_anchors": 182,
+  "windows": {
+    "200-230": {
+      "rmse": 258.79290251712064,
+      "max": 403.33372397427115,
+      "n": 450
+    },
+    "200-260": {
+      "rmse": 277.2991784990863,
+      "max": 403.33372397427115,
+      "n": 900
+    },
+    "200-320": {
+      "rmse": 279.77026715518974,
+      "max": 482.38249194206435,
+      "n": 1800
+    },
+    "170-472": {
+      "rmse": 231.41072734628975,
+      "max": 482.38249194206435,
+      "n": 4531
+    }
+  }
+}

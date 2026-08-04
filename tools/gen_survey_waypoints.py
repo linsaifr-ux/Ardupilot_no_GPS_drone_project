@@ -68,18 +68,55 @@ def stats(rows, m_lat, m_lon, speed):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--split',   type=int, default=1,       help='split into N N-S sub-missions')
-    ap.add_argument('--spacing', type=float, default=DEFAULT_SPACING_M,
-                     help=f'strip spacing in metres (default {DEFAULT_SPACING_M:.1f} = 50%% sidelap '
-                          f'of the {FOOTPRINT_W_M:.1f} m footprint at {ALTITUDE_M:.0f} m AGL)')
+    ap.add_argument('--spacing', type=float, default=None,
+                     help=f'strip spacing in metres (default: 50%% sidelap of the camera footprint '
+                          f'at the effective AGL — {DEFAULT_SPACING_M:.1f} m at the default '
+                          f'{ALTITUDE_M:.0f} m AGL)')
     ap.add_argument('--outdir',  default='field_data',   help='output directory')
+    # Pure additions below -- all default to None/unset, so omitting them reproduces the
+    # original contest-zone CORNERS/ALTITUDE_M behavior exactly. Lets this script target a
+    # different site (e.g. a database-collection flight at a test site instead of the
+    # contest zone) without touching the contest-zone defaults.
+    ap.add_argument('--center-lat', type=float, default=None,
+                     help='override: box center latitude (requires --center-lon/--width-m/--height-m)')
+    ap.add_argument('--center-lon', type=float, default=None,
+                     help='override: box center longitude')
+    ap.add_argument('--width-m', type=float, default=None,
+                     help='override: box E-W width in metres (before the 20%% margin expansion)')
+    ap.add_argument('--height-m', type=float, default=None,
+                     help='override: box N-S height in metres (before the 20%% margin expansion)')
+    ap.add_argument('--altitude', type=float, default=None,
+                     help=f'override: AGL in metres for waypoint altitude + footprint/spacing calc '
+                          f'(default {ALTITUDE_M:.0f} m)')
+    ap.add_argument('--name', default=None,
+                     help="override: output filename prefix (default 'survey_mission')")
+    ap.add_argument('--speed', type=float, default=None,
+                     help=f'override: mission speed in m/s, also used for the min/max time '
+                          f'estimate printed to stderr (default {SPEED_MS:.1f} m/s — the default '
+                          f'is chosen to reduce motion blur; faster speeds increase blur risk)')
     args = ap.parse_args()
+    speed = args.speed if args.speed is not None else SPEED_MS
 
-    lat_ref = sum(c[0] for c in CORNERS) / len(CORNERS)
-    m_lat = 111320.0
-    m_lon = 111320.0 * math.cos(math.radians(lat_ref))
+    altitude = args.altitude if args.altitude is not None else ALTITUDE_M
+    footprint_w_m = 2.0 * altitude * math.tan(math.radians(62.2 / 2.0))
+    spacing = args.spacing if args.spacing is not None else footprint_w_m * 0.5
+    name_prefix = args.name if args.name is not None else 'survey_mission'
 
-    lat_min = min(c[0] for c in CORNERS);  lat_max = max(c[0] for c in CORNERS)
-    lon_min = min(c[1] for c in CORNERS);  lon_max = max(c[1] for c in CORNERS)
+    use_override = None not in (args.center_lat, args.center_lon, args.width_m, args.height_m)
+    if use_override:
+        lat_ref = args.center_lat
+        m_lat = 111320.0
+        m_lon = 111320.0 * math.cos(math.radians(lat_ref))
+        lat_min = args.center_lat - (args.height_m / 2) / m_lat
+        lat_max = args.center_lat + (args.height_m / 2) / m_lat
+        lon_min = args.center_lon - (args.width_m / 2) / m_lon
+        lon_max = args.center_lon + (args.width_m / 2) / m_lon
+    else:
+        lat_ref = sum(c[0] for c in CORNERS) / len(CORNERS)
+        m_lat = 111320.0
+        m_lon = 111320.0 * math.cos(math.radians(lat_ref))
+        lat_min = min(c[0] for c in CORNERS);  lat_max = max(c[0] for c in CORNERS)
+        lon_min = min(c[1] for c in CORNERS);  lon_max = max(c[1] for c in CORNERS)
 
     lat_mg = (lat_max - lat_min) * MARGIN_PCT
     lon_mg = (lon_max - lon_min) * MARGIN_PCT
@@ -90,11 +127,12 @@ def main():
     ns_m = (slat_max - slat_min) * m_lat
     ew_m = (slon_max - slon_min) * m_lon
 
-    sidelap = (1 - args.spacing / FOOTPRINT_W_M) * 100
+    sidelap = (1 - spacing / footprint_w_m) * 100
     print(f"Survey area  : {ew_m:.0f} m (E-W) × {ns_m:.0f} m (N-S)  = {ew_m*ns_m/1e6:.2f} km²", file=sys.stderr)
     print(f"Expanded box : lat [{slat_min:.6f}, {slat_max:.6f}]", file=sys.stderr)
     print(f"               lon [{slon_min:.6f}, {slon_max:.6f}]", file=sys.stderr)
-    print(f"Strip spacing: {args.spacing:.0f} m  →  {sidelap:.0f} % sidelap", file=sys.stderr)
+    print(f"Altitude     : {altitude:.0f} m AGL  (footprint {footprint_w_m:.1f} m)", file=sys.stderr)
+    print(f"Strip spacing: {spacing:.0f} m  →  {sidelap:.0f} % sidelap", file=sys.stderr)
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -107,20 +145,20 @@ def main():
         seg_lat_max = slat_min + (seg + 1) * lat_width
         rows, n_strips = build_waypoints(
             seg_lat_min, seg_lat_max, slon_min, slon_max,
-            args.spacing, m_lat, ALTITUDE_M, SPEED_MS)
-        dist_m, t_min = stats(rows, m_lat, m_lon, SPEED_MS)
+            spacing, m_lat, altitude, speed)
+        dist_m, t_min = stats(rows, m_lat, m_lon, speed)
         total_dist += dist_m
 
         suffix = f"_part{seg+1}of{args.split}" if args.split > 1 else "_full"
-        fname = outdir / f"survey_mission{suffix}.waypoints"
+        fname = outdir / f"{name_prefix}{suffix}.waypoints"
         fname.write_text('\n'.join(rows) + '\n')
 
         print(f"  Part {seg+1}/{args.split}: {n_strips} strips, {dist_m/1000:.1f} km, "
               f"~{t_min:.0f} min (~{math.ceil(t_min/20)} batteries)  → {fname}", file=sys.stderr)
 
     print(f"Total distance: {total_dist/1000:.1f} km  "
-          f"~{total_dist/SPEED_MS/60:.0f} min  "
-          f"(~{math.ceil(total_dist/SPEED_MS/60/20)} batteries @ 20 min each)", file=sys.stderr)
+          f"~{total_dist/speed/60:.0f} min  "
+          f"(~{math.ceil(total_dist/speed/60/20)} batteries @ 20 min each)", file=sys.stderr)
 
 if __name__ == '__main__':
     main()

@@ -1,0 +1,34 @@
+{
+  "verification": {
+    "trusted_rmse": 78.57020375864622,
+    "trusted_max": 164.39048920446118,
+    "reproduced_rmse": 78.57020375864622,
+    "reproduced_max": 164.39048920446118,
+    "bit_exact_match": true,
+    "determinism_check_passed": true
+  },
+  "real_anchor_source": "anyloc_real_fix1_rotated_full.json (database_survey25_z20_vits14, default feature mode, query frames rotated to North-up via corrected -heading sign, replicating AnyLoc paper's Nardo-Air-R)",
+  "n_real_anchors": 182,
+  "windows": {
+    "200-230": {
+      "rmse": 184.89473933920195,
+      "max": 376.87726394967666,
+      "n": 450
+    },
+    "200-260": {
+      "rmse": 208.18895017962208,
+      "max": 376.87726394967666,
+      "n": 900
+    },
+    "200-320": {
+      "rmse": 176.76759672185554,
+      "max": 376.87726394967666,
+      "n": 1800
+    },
+    "170-472": {
+      "rmse": 249.80635275340856,
+      "max": 518.7017380086119,
+      "n": 4531
+    }
+  }
+}

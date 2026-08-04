@@ -101,7 +101,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import Float64
-from mavros_msgs.msg import RCIn
+from mavros_msgs.msg import RCIn, HomePosition
 
 from imu_logger import IMU_OK_FRACTION, IMU_REQUEST_HZ   # sidecar (same dir)
 
@@ -126,6 +126,8 @@ class TelemetryLogger(Node):
         self._agl        = None
         self._heading    = None
         self._rc_channels = None   # raw RCIn.channels — includes the EKF-source switch
+        self._home_lat   = None    # from /mavros/home_position/home (set at arm)
+        self._home_lon   = None
 
         self._file   = open(csv_path, 'w', newline='')
         self._writer = csv.writer(self._file)
@@ -135,6 +137,7 @@ class TelemetryLogger(Node):
         self.create_subscription(Float64,   '/mavros/global_position/rel_alt',  self._cb_agl, qos_profile_sensor_data)
         self.create_subscription(Float64,   '/mavros/global_position/compass_hdg', self._cb_hdg, qos_profile_sensor_data)
         self.create_subscription(RCIn,      '/mavros/rc/in',                    self._cb_rc,  qos_profile_sensor_data)
+        self.create_subscription(HomePosition, '/mavros/home_position/home',    self._cb_home, qos_profile_sensor_data)
 
         self.create_timer(0.2, self._log_row)
 
@@ -156,6 +159,11 @@ class TelemetryLogger(Node):
         with self._lock:
             self._rc_channels = list(msg.channels)
 
+    def _cb_home(self, msg: HomePosition):
+        with self._lock:
+            self._home_lat = msg.geo.latitude
+            self._home_lon = msg.geo.longitude
+
     def _log_row(self):
         with self._lock:
             if self._lat is None:
@@ -175,10 +183,11 @@ class TelemetryLogger(Node):
     def snapshot(self):
         """Return current telemetry values (thread-safe)."""
         with self._lock:
-            return (self._lat, self._lon, self._alt_msl, self._agl, self._heading)
+            return (self._lat, self._lon, self._alt_msl, self._agl, self._heading,
+                    self._home_lat, self._home_lon)
 
     def status(self):
-        lat, lon, _, agl, hdg = self.snapshot()
+        lat, lon, _, agl, hdg, _, _ = self.snapshot()
         if lat is None:
             return 'waiting for GPS …'
         agl_s = f'{agl:.1f} m' if agl is not None else '---'
@@ -200,9 +209,18 @@ def _crop_resize_stream(bgr_full):
     return cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
 
 
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
 def _make_stream_frame(frame, telem, imu_hz=None):
     """Draw the telemetry bar onto a _crop_resize_stream() frame (in place)."""
-    lat, lon, _, agl, hdg = telem
+    lat, lon, _, agl, hdg, home_lat, home_lon = telem
 
     # Black bar
     y0 = STREAM_H - OVERLAY_H
@@ -212,10 +230,14 @@ def _make_stream_frame(frame, telem, imu_hz=None):
     line1 = (f'LAT {lat:.6f}   LON {lon:.6f}   {clock}'
              if lat is not None else f'GPS: waiting ...   {clock}')
     imu_s = f'{imu_hz:.0f} Hz' if imu_hz is not None else '---'
+    if lat is not None and home_lat is not None:
+        dist_s = f'{_haversine_m(lat, lon, home_lat, home_lon):.0f} m'
+    else:
+        dist_s = '---'
     line2 = (f'AGL {agl:.1f} m   HDG {hdg:.0f} deg' if agl is not None and hdg is not None
              else f'AGL {agl:.1f} m' if agl is not None
              else 'AGL ---   HDG ---')
-    line2 += f'   IMU {imu_s}'
+    line2 += f'   HOME {dist_s}   IMU {imu_s}'
 
     cv2.putText(frame, line1, (10, y0 + 16),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)

@@ -130,6 +130,10 @@ Publishes `/drone/state` (ENU PoseStamped, 100 Hz). Used for fast control-loop i
 
 **`px4_bridge_test.py`** — standalone HIL link test (no ROS2, no MAVROS). Connects to TCP 4560, streams HIL_SENSOR for 30 s, prints frame count and EKF attitude. Use to verify the bridge/PX4 link before involving MAVROS.
 
+**`vpe_slew.py`** — `VpeSlewLimiter`: rate-limits published VPE toward the target estimate (own-recent-speed-based allowance + 2.5 m/s) instead of snapping, killing the EKF teleport/phantom-velocity jump-runaway (memory `vpe-jump-runaway`). `test_vpe_slew_sitl.py` is its closed-loop ArduPilot SITL harness (survey13 route replay).
+
+**`test_full_pipeline_sitl.py` / `test_full_pipeline_sitl_live.py`** (survey25) — closed-loop SITL tests: build a real AUTO mission from a real flight's own GPS track, upload it over MAVLink, and fly it in ArduCopter SITL with the real AnyLoc+VIO+fusion pipeline's output driving `VISION_POSITION_ESTIMATE`, to see whether the real pipeline's position estimate makes the EKF (and the actually-flown path) jump around or drift, instead of evaluating offline against GPS alone. The `_live` version is position-aware (looks up the real nearest-by-GPS-distance query frame and runs live AnyLoc at each anchor tick, rather than replaying a fixed pre-recorded error curve). `test_full_pipeline_sitl_survey32.py` / `_live_survey32.py` are retargeted copies for survey32/survey33 (same logic, different flight's data) — see `field_data/survey32/vio_eval/README.md` for results. **Mission ends in `LOITER_UNLIM`, not `LAND`**, on the survey32 variants (2026-07-27) — this project's real deployment does takeoff/landing manually under pilot control (confirmed by Frank, see memory `project-overview`), so the pipeline only needs to be evaluated for cruise; an autonomous LAND item caused a real (since-fixed) disarm-hang bug that has no analog in real flights anyway. All of these need `~/openvins_ws` (see `instructions/vio_data_collection.md`) and the relevant field recording under `field_data/`.
+
 ---
 
 ## PX4 Launch Sequence

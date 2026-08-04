@@ -12,6 +12,15 @@ Build a real-imagery AnyLoc database by flying a grid survey, recording video + 
 The default `build_database.py` generates synthetic crops from NLSC satellite tiles.  
 A real-imagery database uses the actual camera, actual lighting, and actual terrain texture — closer to what the drone sees at inference time.
 
+**This is not a theoretical nicety — it's the dominant real-world accuracy bottleneck.** A controlled comparison on survey25 (identical VIO, identical AnyLoc/VLAD/DINOv2 code, only the reference database source changed) found ~286m mean retrieval error against the satellite-tile database vs. ~8.6m against a same-domain (real-footage) database — a 33x difference from swapping only the reference imagery. Resolution/clarity was separately ruled out as the cause (a systematic sharpness-vs-error test found essentially no correlation) — it's specifically the season/lighting/content mismatch between satellite tiles and a live drone photo. Details: `instructions/vpe_jump_runaway_diagnosis.md` §14-20/§14-23/§14-25.
+
+That test split one flight's own frames into database vs. query (same day, same lighting) — it does not directly tell you how much accuracy holds up when the database comes from a separate mapping flight flown before the actual mission (season/lighting drift between sessions). Two things matter when planning a real collection flight, not just "fly some frames somewhere":
+
+1. **Cover the whole mission/contest area with real margin, not just a line along the planned route.** A closed-loop SITL test found this pipeline does not self-correct once it drifts outside the database's covered area — a narrow-corridor database leaves zero safety margin if the vehicle strays off-track (`instructions/vpe_jump_runaway_diagnosis.md` §14-24).
+2. **Fly a second, separate validation flight afterward** and query the resulting database with it, to measure the real cross-session accuracy directly instead of assuming it matches the same-day 8.6m number.
+
+> **Both now done (2026-07-27), full writeup `field_data/survey32/vio_eval/README.md`:** a mapping flight (survey33, diagonal multi-leg lawnmower grid, ~206×342m coverage) followed ~15 min later by a separate test flight (survey32, nested inside that coverage). Cross-session retrieval accuracy: **~24-25 m mean** — worse than the same-flight 8.6m (real cross-session degradation, as expected) but still ~12x better than the satellite-tile database. Fed through a real closed-loop AUTO-mode SITL test with the route kept inside coverage: **zero EKF glitch(>50m) events** — the first clean result of that kind this project has produced, directly attributable to point 1 above (staying inside database coverage). This validates the two-point plan above; it does not mean either point can be skipped on a future collection — the SITL result specifically depended on point 1 being followed.
+
 ---
 
 ## How recording works
@@ -63,9 +72,19 @@ python3 tools/gen_survey_waypoints.py --split 4      # 4 N-S sub-missions
 python3 tools/gen_survey_waypoints.py --spacing 22   # 22 m spacing (72 % sidelap, denser)
 ```
 
+The defaults above target the contest zone's hardcoded `CORNERS` at 65 m AGL. For a collection flight at a **different site** (e.g. validating against a specific test flight instead of the contest zone), override the box/altitude/speed directly rather than editing the constants — all pure additions, contest-zone defaults unchanged if omitted:
+```bash
+python3 tools/gen_survey_waypoints.py \
+    --center-lat 22.777521 --center-lon 120.550655 \
+    --width-m 850 --height-m 850 \
+    --altitude 100 --speed 10 \
+    --name survey25_dbcollect --outdir field_data/survey25
+```
+`--width-m`/`--height-m` are the box size *before* the standard 20% margin expansion. `--speed` also feeds the printed time/battery estimate — note the 3 m/s default exists specifically to limit motion blur; faster speeds trade that off, so spot-check frame sharpness after the flight before trusting the resulting database. `--spacing`/`--altitude` interact (spacing auto-recomputes for 50% sidelap at the given altitude unless `--spacing` is also given explicitly).
+
 ### Overlap guide
 
-Spacing values are for the IMX219's ~78.4 m footprint width at 65 m AGL — recompute with `gen_survey_waypoints.py`'s `FOOTPRINT_W_M` if altitude or camera changes.
+Spacing values are for the IMX219's ~78.4 m footprint width at 65 m AGL — recompute with `gen_survey_waypoints.py`'s `FOOTPRINT_W_M` if altitude or camera changes (or just pass `--altitude`, which does this automatically).
 
 | Strip spacing | Side overlap | |
 |---|---|---|
@@ -202,6 +221,8 @@ imu.csv           stamp_ros, recv_unix, wx, wy, wz, ax, ay, az — FC IMU at the
                   requested rate (200 default / ~346 actual with --imu-hz 333;
                   written by the imu_logger.py sidecar; VIO input)
 attitude.csv      stamp_ros, recv_unix, qw, qx, qy, qz — fused FC attitude, 50 Hz
+                  (column meanings, quaternion math, roll/pitch/yaw conversion:
+                  field_data/attitude_format.md)
 imu_rates.json    live 2 s rate report from the sidecar
 ```
 
@@ -219,7 +240,9 @@ Options:
 |---|---|---|
 | `--min-dist` | 30 m | Minimum ground distance between saved frames (25 m recommended) |
 | `--min-agl` | 50 m | Skip frames below this AGL |
-| `--rotate` | off | Rotate each frame to North-up using heading |
+| `--max-agl` | 1000 m | Skip frames above this AGL |
+| `--max-time-gap` | off | Also save a frame after this many seconds even if `--min-dist` wasn't reached — needed if the flight includes a stationary loiter/hold, which produces zero ground-distance travel and would otherwise leave a coverage gap in the database |
+| `--rotate` | off | Rotate each frame to North-up using heading (sign fixed 2026-07-25 — was rotating the wrong way; verified via a live matching-accuracy A/B on survey25, see `instructions/vpe_jump_runaway_diagnosis.md` §14-23) |
 
 Output in `field_data/survey1/`:
 ```
@@ -250,6 +273,20 @@ database_meta.pt    lats, lons, alts (AGL), codebook, model_name
 database_vlads.pt   (N × D) VLAD matrix
 db_images/          640×480 thumbnails for localizer visualisation fallback
 ```
+
+---
+
+## Step 3.5 — Visually check coverage (optional, recommended, added 2026-07-27)
+
+```bash
+/home/jetson/venv/anyloc/bin/python3 tools/build_frame_mosaic.py field_data/survey1/
+```
+
+Stitches the extracted frames into a georeferenced visual mosaic (`mosaic.png` + `.tif` +
+world file, feathered blending at frame edges) so you can see what area actually got mapped
+before trusting the database — no GDAL needed (`tools/png_to_geotiff.py` writes the `.tif` via
+`tifffile`). Not real photogrammetric orthorectification — GPS/heading-placed frames only, so
+treat pixel positions as approximate.
 
 ---
 

@@ -1,0 +1,59 @@
+{
+  "verification": {
+    "trusted_rmse": 78.57020375864622,
+    "trusted_max": 164.39048920446118,
+    "reproduced_rmse": 78.57020375864622,
+    "reproduced_max": 164.39048920446118,
+    "px_allclose": true,
+    "py_allclose": true,
+    "bit_exact_match": true,
+    "determinism_check_passed": true
+  },
+  "real_anchor_source": "anyloc_samedomain_100m_result.json (database_survey25_samedomain_100m_vits14, same-domain AGL-restricted to 95-105m AGL)",
+  "n_real_anchors": 78,
+  "anchor_t_range_video_rel_s": [
+    176.6862335205078,
+    306.08623337745667
+  ],
+  "args": {
+    "anchor_win": 40,
+    "anchor_min_disp": 20,
+    "baro_win": 20,
+    "baro_min_dz": 3,
+    "ema": 0.5,
+    "clamp": [
+      0.2,
+      5.0
+    ],
+    "anchor_pull": 0.9,
+    "vmax": 20,
+    "dbscan_eps": 200,
+    "dbscan_min_samples": 2,
+    "dbscan_window": 8,
+    "lock_min_arc": 150,
+    "lock_collinearity_ratio": 4.0,
+    "no_filter": false
+  },
+  "windows": {
+    "200-230": {
+      "rmse": 64.93655534989611,
+      "max": 94.23824068931384,
+      "n": 450
+    },
+    "200-260": {
+      "rmse": 47.86113946405176,
+      "max": 94.23824068931384,
+      "n": 900
+    },
+    "200-320": {
+      "rmse": 81.61488233229376,
+      "max": 292.87373223676775,
+      "n": 1800
+    },
+    "170-472": {
+      "rmse": 1003.2207796745815,
+      "max": 1915.3340932330993,
+      "n": 4531
+    }
+  }
+}

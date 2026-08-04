@@ -177,6 +177,11 @@ class AnyLocLocalizer:
             out = self.model.forward_features(x)
         return out['x_norm_patchtokens'].squeeze(0).cpu().float()
 
+    # ── AnyLoc-paper "value facet" feature extraction (opt-in variant) ─────────
+    # See AnyLocLocalizerValueFacet below and _value_facet() for details.
+    # NOT used by _patch_features()/AnyLocLocalizer above — must not change the
+    # default class's behavior (ros2_node.py / ros2_node_vo_primary.py depend on it).
+
     # ── VLAD (pure torch) ──────────────────────────────────────────────────────
 
     def _vlad(self, feats: torch.Tensor) -> torch.Tensor:
@@ -262,3 +267,86 @@ class AnyLocLocalizer:
 
         est_alt = agl_m if agl_m is not None else float(self.alts[idx])
         return est_lat, est_lon, est_alt, match_img, score, idx
+
+
+# ── AnyLoc-paper "value facet" feature extraction (NEW, opt-in, 2026-07-25) ────
+#
+# The AnyLoc paper (arXiv:2308.00688, Sec III-B / Fig. 3) ablated which internal
+# DINOv2 representation makes the best VPR descriptor -- token vs. query/key/value
+# facet, at various layers -- and found the "value" facet (the `v` projection
+# inside self-attention, captured BEFORE it's combined with attention weights,
+# NOT the block's final output) from an intermediate (not final) layer gives the
+# sharpest, most distractor-robust descriptor. This is NOT what AnyLocLocalizer
+# above does (it uses DINOv2's default final-layer x_norm_patchtokens). Their
+# published config for ViT-G/14 is "layer 31 value facet, 32 VLAD clusters".
+#
+# Implemented as a separate class/function so AnyLocLocalizer's behavior (used
+# live by ros2_node.py / ros2_node_vo_primary.py) is completely unchanged.
+
+def _value_facet(model, x: torch.Tensor, layer_idx: int) -> torch.Tensor:
+    """
+    Forward-hook `model.blocks[layer_idx].attn.qkv` and extract the `v` slice,
+    recombined across attention heads back into (B, N_tokens, C) -- i.e. the
+    same shape/layout as a block's regular token output, just the value facet
+    instead of the post-attention/post-MLP result, and from an intermediate
+    layer instead of the final one.
+
+    Verified against the actual DINOv2 module structure before writing this
+    (dict(model.named_modules())): `attn.qkv` is a single fused nn.Linear
+    (dim -> 3*dim), reshaped internally as (B, N, 3, num_heads, head_dim) with
+    q,k,v = unbind(dim=2) -- see dinov2/layers/attention.py Attention.forward /
+    MemEffAttention.forward (this environment has xFormers unavailable, so the
+    fallback `Attention.forward` path runs, but both reshape identically).
+    Token 0 is the CLS token, tokens 1: are patch tokens (no register tokens on
+    the plain, non-'_reg' dinov2_vit{s,b,l,g}14 variants used here -- verified
+    N_total == 1 + N_patches empirically).
+
+    Returns: (B, N_patches, C) float32 tensor (CLS token dropped), same layout
+    as x_norm_patchtokens from forward_features().
+    """
+    captured = {}
+
+    def _hook(_module, _inp, out):
+        captured['qkv'] = out
+
+    block = model.blocks[layer_idx]
+    handle = block.attn.qkv.register_forward_hook(_hook)
+    try:
+        with torch.no_grad():
+            model.forward_features(x)   # runs the full stack; hook fires at layer_idx regardless
+    finally:
+        handle.remove()
+
+    qkv = captured['qkv']                              # (B, N_total, 3*C)
+    B, N, _ = qkv.shape
+    num_heads = block.attn.num_heads
+    C = block.attn.dim
+    head_dim = C // num_heads
+    qkv = qkv.reshape(B, N, 3, num_heads, head_dim)
+    v = qkv[:, :, 2]                                    # (B, N_total, num_heads, head_dim)
+    v = v.reshape(B, N, C)                               # recombine heads -> (B, N_total, C)
+    return v[:, 1:, :]                                   # drop CLS token -> (B, N_patches, C)
+
+
+class AnyLocLocalizerValueFacet(AnyLocLocalizer):
+    """
+    Opt-in variant of AnyLocLocalizer using the AnyLoc-paper "value facet"
+    feature extraction (see _value_facet() above) instead of the default
+    final-layer patch tokens. Requires a database built with matching
+    extraction (anyloc/build_database_value_facet.py) -- the VLAD codebook and
+    stored descriptors must live in the same feature space as the query.
+
+    NOT used anywhere in the live-flight pipeline (ros2_node.py,
+    ros2_node_vo_primary.py still construct plain AnyLocLocalizer) -- this
+    class exists purely for the offline value-facet-vs-default-token ablation
+    (field_data/survey25/vio_eval).
+    """
+
+    def __init__(self, db_dir: str, device: str = 'auto',
+                 model_name: str = 'dinov2_vits14', layer: int = 9):
+        self.layer = layer
+        super().__init__(db_dir, device=device, model_name=model_name)
+
+    def _patch_features(self, pil_img: Image.Image) -> torch.Tensor:
+        x = _pil_to_tensor(pil_img.convert('RGB')).unsqueeze(0).to(self.device)
+        return _value_facet(self.model, x, self.layer).squeeze(0).cpu().float()

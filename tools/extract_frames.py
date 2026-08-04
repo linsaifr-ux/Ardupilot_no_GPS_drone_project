@@ -74,6 +74,14 @@ def main():
                     help='Minimum ground distance between frames in metres (default 30)')
     ap.add_argument('--min-agl',  type=float, default=50.0,
                     help='Minimum AGL to save a frame (default 50)')
+    ap.add_argument('--max-agl',  type=float, default=1000.0,
+                    help='Maximum AGL to save a frame (default 1000, i.e. no effective ceiling)')
+    ap.add_argument('--max-time-gap', type=float, default=1e9,
+                    help='Also save a frame if this many seconds have elapsed since the last '
+                         'saved frame, even if --min-dist has not been satisfied yet (default '
+                         'disabled / effectively infinite). Use this to keep periodic coverage '
+                         'during a stationary hold/loiter, where ground-track distance alone '
+                         'never triggers a save.')
     ap.add_argument('--rotate', action='store_true',
                     help='Rotate frames to North-up using heading')
     args = ap.parse_args()
@@ -114,12 +122,14 @@ def main():
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f'[EXT] Video: {total_frames} frames @ {fps} fps')
     print(f'[EXT] Telemetry: {len(telem)} rows')
-    print(f'[EXT] Min dist: {args.min_dist} m  |  Min AGL: {args.min_agl} m')
+    print(f'[EXT] Min dist: {args.min_dist} m  |  Min AGL: {args.min_agl} m  |  Max AGL: {args.max_agl} m'
+          f'  |  Max time gap: {args.max_time_gap} s')
     print(f'[EXT] Rotate to North-up: {args.rotate}')
 
     saved        = 0
     last_lat     = None
     last_lon     = None
+    last_saved_t = None
     frame_idx    = 0
 
     with open(out_csv, 'w', newline='') as csv_file:
@@ -140,21 +150,33 @@ def main():
             if abs(tel['t'] - t) > 2.0:
                 continue
 
-            # Skip below min AGL
-            if tel['agl'] is None or tel['agl'] < args.min_agl:
+            # Skip below min AGL / above max AGL
+            if tel['agl'] is None or tel['agl'] < args.min_agl or tel['agl'] > args.max_agl:
                 continue
 
-            # Skip if too close to last saved frame
+            # Skip if too close to last saved frame -- UNLESS more than --max-time-gap seconds
+            # have elapsed since the last saved frame (keeps periodic coverage during a
+            # stationary hold/loiter, where ground-track distance alone never triggers a save)
             if last_lat is not None:
                 dist = _haversine(last_lat, last_lon, tel['lat'], tel['lon'])
-                if dist < args.min_dist:
+                time_gap = tel['t'] - last_saved_t
+                if dist < args.min_dist and time_gap < args.max_time_gap:
                     continue
 
-            # Optionally rotate to North-up
+            # Optionally rotate to North-up.
+            # NOTE (2026-07-25): angle is -heading, not +heading. Compass heading is
+            # CW-from-North; cv2.getRotationMatrix2D's positive angle rotates the image
+            # CCW. To bring image-up (pointing `heading` CW from North) to true north-up,
+            # the content must be rotated `heading` degrees CW, i.e. -heading in cv2's CCW
+            # convention. This was backwards until now -- verified via a live matching-
+            # accuracy A/B on survey25 real queries against database_survey25_z20_vits14
+            # (t=110-472s): +heading made retrieval WORSE (286.5->298.6m mean error),
+            # -heading is the actual fix (286.5->228.6m). See
+            # instructions/vpe_jump_runaway_diagnosis.md for the full writeup.
             if args.rotate and tel['heading'] is not None:
                 h, w = frame.shape[:2]
                 cx, cy = w // 2, h // 2
-                M = cv2.getRotationMatrix2D((cx, cy), tel['heading'], 1.0)
+                M = cv2.getRotationMatrix2D((cx, cy), -tel['heading'], 1.0)
                 frame = cv2.warpAffine(frame, M, (w, h))
 
             fname = os.path.join(frames_dir, f'{saved:06d}.jpg')
@@ -170,6 +192,7 @@ def main():
             csv_file.flush()
 
             last_lat, last_lon = tel['lat'], tel['lon']
+            last_saved_t = tel['t']
             saved += 1
 
             if saved % 50 == 0:

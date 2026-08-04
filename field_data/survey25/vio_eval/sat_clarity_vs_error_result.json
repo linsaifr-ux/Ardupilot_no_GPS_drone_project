@@ -1,0 +1,47 @@
+{
+  "n_db_tiles": 117,
+  "db_sharpness_stats": {
+    "min": 2.5263704032791985,
+    "median": 36.39998524966769,
+    "mean": 38.657532400293434,
+    "max": 115.18661727310818,
+    "std": 29.640099168280663
+  },
+  "n_queries": 182,
+  "pearson_matched_tile_sharpness_vs_error": -0.13851937674886694,
+  "pearson_true_location_sharpness_vs_error": -0.22639572853503337,
+  "pearson_log_matched": -0.33478260255249404,
+  "pearson_log_true": -0.2265444190672506,
+  "terciles": [
+    {
+      "name": "blurriest",
+      "sharp_range": [
+        15.78944947508706,
+        33.94191023202471
+      ],
+      "mean_err": 252.00124284566914,
+      "median_err": 253.9323520805581,
+      "n": 61
+    },
+    {
+      "name": "middle",
+      "sharp_range": [
+        33.94191023202471,
+        42.02500412966412
+      ],
+      "mean_err": 205.93178412659262,
+      "median_err": 241.76064333156498,
+      "n": 61
+    },
+    {
+      "name": "sharpest",
+      "sharp_range": [
+        42.02500412966412,
+        96.44026366881266
+      ],
+      "mean_err": 227.72527297028526,
+      "median_err": 276.12513756149093,
+      "n": 60
+    }
+  ]
+}

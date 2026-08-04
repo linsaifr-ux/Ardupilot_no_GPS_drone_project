@@ -82,15 +82,30 @@ python3 tools/gen_survey_waypoints.py --spacing 22    # 22 m spacing (72 % sidel
 
 | Flag | Default | Description |
 |---|---|---|
-| `--spacing M` | 39.2 m | Strip spacing in metres (39.2 m = 50 % sidelap of the IMX219's 78.4 m footprint @ 65 m AGL) |
+| `--spacing M` | auto | Strip spacing in metres (default: 50 % sidelap of the camera footprint at the effective AGL — 39.2 m at the default 65 m AGL) |
 | `--split N` | 1 | Split into N equal-width N-S sub-missions |
 | `--outdir DIR` | `field_data` | Output directory |
+| `--center-lat/--center-lon` | unset | Override: box center, instead of the hardcoded contest-zone `CORNERS` (all four of `--center-lat/--center-lon/--width-m/--height-m` required together) |
+| `--width-m/--height-m` | unset | Override: box size in metres, E-W/N-S, *before* the standard 20% margin expansion |
+| `--altitude M` | 65 m | Override: AGL for waypoint altitude + footprint/spacing calc |
+| `--speed M/S` | 3.0 | Override: mission speed (also feeds the printed time/battery estimate) — the 3 m/s default exists to limit motion blur; faster speeds trade that off |
+| `--name PREFIX` | `survey_mission` | Override: output filename prefix |
+
+All the override flags are pure additions — omit them and the contest-zone `CORNERS`/65 m AGL/3 m/s defaults are unchanged (verified byte-identical output with and without the code that added these flags).
 
 Default output (27 strips, 39.2 m spacing, 50 % sidelap):
 ```
 Survey area  : 2091 m (E-W) × 1025 m (N-S)  = 2.14 km²
 Strip spacing: 39 m  →  50 % sidelap
 Total distance: 57.5 km  ~319 min  (~16 batteries @ 20 min each)
+```
+
+Example targeting a different site (e.g. a database-collection flight to validate against a specific test flight, not the contest zone):
+```bash
+python3 tools/gen_survey_waypoints.py \
+    --center-lat 22.777521 --center-lon 120.550655 \
+    --width-m 850 --height-m 850 --altitude 100 --speed 10 \
+    --name survey25_dbcollect --outdir field_data/survey25
 ```
 
 Load the output `.waypoints` file in Mission Planner or pass it directly to `ardupilot_commander.py --waypoint-file`.
@@ -109,10 +124,61 @@ python3 tools/extract_frames.py field_data/survey1/ --rotate --min-dist 25
 |---|---|---|
 | `--min-dist M` | 30 m | Minimum ground distance between saved frames |
 | `--min-agl M` | 50 m | Skip frames below this AGL |
-| `--rotate` | off | Rotate each frame to North-up using heading |
+| `--max-agl M` | 1000 m | Skip frames above this AGL |
+| `--max-time-gap S` | off | Also save a frame if this many seconds elapsed since the last save, even if `--min-dist` wasn't reached — needed to keep sampling during a stationary loiter/hold, which produces zero ground-distance travel and would otherwise leave a coverage gap |
+| `--rotate` | off | Rotate each frame to North-up using heading (sign fixed 2026-07-25 — was rotating the wrong way; verified via a live matching-accuracy A/B on survey25, see `instructions/vpe_jump_runaway_diagnosis.md` §14-23) |
 
 **Output:** `frames/000000.jpg …` and `frames.csv` (path, lat, lon, alt_agl, heading_deg).  
 Feed directly to `anyloc/build_database_real.py`.
+
+---
+
+## build_frame_mosaic.py — Georeferenced visual mosaic (2026-07-27)
+
+Stitches `extract_frames.py` output into a single georeferenced raster, so you can see at a
+glance what area a mapping flight actually covered before trusting the resulting AnyLoc
+database. Each frame's ground footprint is sized from AGL + the IMX219's known FOV
+(62.2°×48.8°, same constants as `anyloc/build_database.py`/`anyloc/localizer.py`) and placed
+on a local-ENU canvas by GPS position. Compositing is sequential alpha-over in flight order
+with feathered edges (soft-blended over `--feather-px`, default 25px, full opacity in the
+interior) — an earlier hard-cutoff version showed a harsh terraced/duplicated look between
+overlapping flight legs (this camera has no gimbal, so roll/pitch skews the true footprint away
+from the flat-plate rectangle assumed here, and GPS/heading noise causes real frame-to-frame
+misalignment); feathering hides the seams but does **not** correct the underlying misalignment
+— this is not real photogrammetric orthorectification, treat pixel positions as approximate.
+
+```bash
+/home/jetson/venv/anyloc/bin/python3 tools/build_frame_mosaic.py field_data/survey1/ [--res 0.15] [--feather-px 25] [--out field_data/survey1/mosaic.png]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--res M` | 0.15 | Mosaic resolution, metres/pixel |
+| `--feather-px N` | 25 | Feather width in canvas pixels at each frame edge |
+| `--out PATH` | `<session_dir>/mosaic.png` | Output raster path |
+
+**Output:** `mosaic.png` + `mosaic.pgw` (world file, standard 6-line affine transform) +
+`mosaic.prj` (WGS84 CRS) + `mosaic_meta.json` (bounds/resolution). No GDAL/rasterio in this
+environment, so georeferencing is the dependency-free way — a plain raster + sidecar world
+file/`.prj`, which QGIS and most GIS tools load as a georeferenced layer automatically. A flight
+flown as a diagonal (non-north-aligned) lawnmower grid will legitimately show empty (gray)
+canvas corners outside the true rotated coverage band — that's expected, not a bug.
+
+---
+
+## png_to_geotiff.py — PNG/world-file → real GeoTIFF (2026-07-27)
+
+Converts a raster + world file (as written by `build_frame_mosaic.py`, or any other tool using
+the same convention) into a real embedded-metadata GeoTIFF — `ModelPixelScaleTag`,
+`ModelTiepointTag`, `GeoKeyDirectoryTag` (EPSG:4326/WGS84) — readable by QGIS/`gdalinfo`/etc.
+without needing the world file alongside it. Uses `tifffile` (pure Python + numpy, `pip install
+tifffile` into the `anyloc` venv) to write the tags directly, since there's no GDAL/rasterio in
+this environment. Assumes the raster's CRS is WGS84 (true for every world file this project
+currently produces) and that the world file has no rotation terms (plain north-up raster).
+
+```bash
+/home/jetson/venv/anyloc/bin/python3 tools/png_to_geotiff.py field_data/survey1/mosaic.png [--out field_data/survey1/mosaic.tif]
+```
 
 ---
 

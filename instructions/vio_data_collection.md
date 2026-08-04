@@ -2,7 +2,10 @@
 
 > 日期:2026-07-18 / 更新 2026-07-23(Kalibr 標定完成;IMU 串流建議改
 > `--imu-hz 333`,桌面 launcher 已帶;離線評估流程已實跑兩輪,
-> 結果與下一步見 vpe_jump_runaway_diagnosis.md §14)
+> 結果與下一步見 vpe_jump_runaway_diagnosis.md §14)/ 更新 2026-07-27
+> (①`run_video_msckf` 執行檔過期地雷:與 library 沒同步重連結會導致
+> heap corruption crash,修法見下方§5;②`--stride 1`(全 30fps)實測
+> 反而讓 raw VIO 更差,不是免費的改善,見§5)
 > 目的:讓每次 survey 飛行錄到的資料,足以離線跑完整 OpenVINS 流程
 > (標定 → VIO → 與 GPS 真值比對),再決定是否實機整合。
 > 背景:SITL 誤差模型實驗顯示 VIO 等級里程計可把定位誤差從 ~15-40 m
@@ -157,24 +160,73 @@ OpenVINS 需要:相機內參、相機-IMU 外參(旋轉+平移)、時間偏移�
    frame_times.csv imu.csv out.csv [start_off] [end_off] [stride]`
    (ROS-free 餵料器;設定檔在 `~/openvins_ws/config/`,
    標定後版本 = `survey17_kalibr`(靜態初始化)/`survey17_kalibr_dyn`
-   (空中動態初始化);餵入必須從乾淨靜止窗開始)。
+   (空中動態初始化);餵入必須從乾淨靜止窗開始;**config 參數要給到
+   `estimator_config.yaml` 這個檔案本身,不是資料夾**——給資料夾會被
+   `cv::FileStorage::open` 當成無效輸入,丟出乾淨的 exception,不是
+   下面那種 heap corruption)。同目錄下另有
+   `run_video_msckf_aglprior`(AGL 深度先驗,多一個
+   `[gyro_predict_track 0|1]` 參數——用陀螺積分預測 KLT 搜尋種子,
+   修正轉彎時追蹤失敗的根因,見 §14-17)、`run_video_msckf_gyrogate`
+   /`_gyrogate_soft`(轉彎時硬/軟門控相機更新)。**⚠ 這幾個從不是真的
+   CMake target**(裸 .o、無 flags.make/link.txt)——`make` 可能靜默
+   no-op,任何新結果先確認 binary timestamp/checksum 再信,見
+   §14-13 landmine。
+
+   **⚠ 姊妹地雷(2026-07-27 發現並修正):執行檔與 library 沒同步重連結
+   會導致確定性的 heap corruption crash**——`run_video_msckf`(連最基本、
+   一直在用的那個,不是新加的變體)在 2026-07-24 23:54 `libov_msckf_lib.so`
+   因 gyro-predicted-tracking 改了 class layout 而重建之後,自己卻沒有
+   跟著重連結(執行檔仍是 2026-07-22 版本)。症狀是**每次執行都 100% crash**
+   (`malloc.c:2617 sysmalloc`、`malloc(): invalid size` 等,依輸入不同
+   訊息不同,是 ABI 不匹配的典型特徵)。根因:`run_video_msckf.cpp` 的
+   `make_shared<VioManager>(...)` 在編譯時就把 `sizeof(VioManager)` 烤進
+   shared_ptr 控制區塊的配置大小,但實際執行的建構子來自後來變大的新
+   library——配置空間不夠,第一次深層記憶體配置(這次是 `cv::setNumThreads`
+   內部)就把 heap 弄壞(**crash 位置不等於問題根源位置**,查這類 crash
+   要往回找)。**光是重連結不夠**(試過,同樣 crash)——`.o` 檔本身要用
+   當前 header 重新編譯。修法(避開這個 shell 對 ROS2/`ament_cmake` 過敏、
+   `cmake`/`make` 一碰就想重新 configure 失敗的問題):直接從
+   `CMakeFiles/<target>.dir/flags.make`(編譯指令)與 `link.txt`(連結
+   指令)複製指令手動執行,完全不觸碰 `CMakeCache.txt`、不觸發
+   `cmake_check_build_system`。**任何在 2026-07-24 23:54(`libov_msckf_lib.so`
+   的 mtime)之前連結、之後沒動過的執行檔都要懷疑同樣的病**——目前查過:
+   `run_video_msckf`(已修)、`run_video_msckf_aglprior`(比 library 晚
+   1 秒連結,安全)沒問題;`run_video_msckf_gyrogate`/`_gyrogate_soft`
+   **仍是舊的,未修**,用之前先照上面的方法重編譯+重連結。
+
+   **`--stride` 不是免費的加速旋鈕(2026-07-27 實測,反直覺結果)**:survey32
+   全程資料上把 `stride` 從 2(~15Hz 餵料,這專案一直以來的標準)改成 1
+   (全 30fps)實測 raw VIO **明顯變差**(cruise 窗 rmse 75.8→258.4m,
+   3.4x),推測是相鄰影格 baseline(視差)減半傷到三角量測品質,抵銷了
+   影格間位移變小的好處——這是單目 VIO 常見的取捨,不是 bug。融合修正後
+   的最終結果反而 stride=1 略好(69.2→55.6m)但這只是一次飛行的單一
+   資料點,不構成「應該全面換成全 30fps」的結論——**維持 stride=2 為
+   預設**,除非之後有更多資料支持換。
 2. `python3 ~/openvins_ws/compare_vio_gps.py out.csv telemetry.csv`
    (4-DOF 對齊 vs GPS 真值);分段統計/畫圖範本在
    `field_data/survey17/vio_eval/`(`vio_kalibr_stats.py`、
    `vio_path_compare_kalibr.py`、`imu_vibe_spectrum.py`)。
-3. 兩輪結果(未標定 2026-07-22 / 標定後 2026-07-23,詳表
-   vpe_jump_runaway_diagnosis.md §11/§14-2):標定不是瓶頸——前段 <1%
-   漂移達標,但爬升段發散與巡航尺度塌縮(0.48x)都在,病因 = IMU
-   震動混疊(§14-3 已實證)。**目前門檻 = IMU 修正**(§14-4~14-7),
-   之後重飛重評。
+3. 現況(截至 2026-07-25,詳表 vpe_jump_runaway_diagnosis.md
+   §11~§14-21):標定不是瓶頸(§14-2)。真正病因鏈:IMU 震動混疊
+   (§14-3,notch 修正見 imu_vibration_aliasing_fix 記憶)+
+   **OpenVINS KLT 追蹤器在轉彎時無運動預測**(§14-17,搜尋窗 15px vs
+   尖峰轉速下位移 ~38px/frame)——後者才是巡航尺度塌縮/轉彎失敗的
+   主因,不是單純震動;已修(gyro-predicted KLT,見上)。輸出端尺度
+   誤差另有 output-space 修正層(`foundloc_corrector.py`,§14-14~19)
+   ,目前最佳驗證過結果 rmse≈78m/max≈164m(模擬 anchor 雜訊)——真實
+   AnyLoc 對接後被域差距(satellite vs 空拍實景,§14-20)拖累,不是
+   VIO 或融合本身的問題。
 4. 達標後才評估 Jetson 即時整合
    (取代 `anyloc/vo_refiner.py`,plan-B 融合邏輯與 slew limiter 不變,
    jump gate 可收緊到 ~10 m + 0.2 m/s,見 SITL §10)。
 
 ## 6. 已知限制(誠實清單)
 
-- **IMX219 是 rolling shutter**——OpenVINS 假設 global shutter;
-  低速平飛影響有限,劇烈機動段誤差會變大。
+- **IMX219 是 rolling shutter**——OpenVINS 假設 global shutter,理論上
+  劇烈機動段有風險;但 2026-07-25 直接驗證(§14-16)發現轉彎失敗的
+  實際訊號特徵(與轉彎「持續時間」相關,而非「尖峰角速度」)**不符合**
+  rolling shutter 的機制特徵——真正主因是 KLT 追蹤器搜尋窗無運動
+  預測(§14-17,已修),rolling shutter 本身未證實是主要瓶頸。
 - **無硬體同步**:相機時間戳來自 Jetson appsink 讀取時刻
   (含 ISP 管線固定延遲 ~數十 ms),IMU 時間戳經 mavros timesync
   (毫秒級抖動)。固定偏移 Kalibr 能吸收,抖動吸收不了——
@@ -183,6 +235,9 @@ OpenVINS 需要:相機內參、相機-IMU 外參(旋轉+平移)、時間偏移�
   OpenVINS 會在缺口處重置——分析時以缺口切段。
 - `--calib` 手持錄影時 FC 必須上電(IMU 來自 FC),整機一起動。
 - **震動混疊(2026-07-23 實證,修正中)**:飛行中槳/馬達諧波混疊進
-  IMU 串流,是目前 VIO 尺度/爬升問題的主因——不是「路徑」問題
+  IMU 串流,是 VIO 尺度/爬升問題的成因之一——不是「路徑」問題
   (靜置頻譜乾淨),是取樣鏈問題;`--imu-hz 333` + FC notch 修正中,
-  見 vpe_jump_runaway_diagnosis.md §14。
+  見 vpe_jump_runaway_diagnosis.md §14。**另一個獨立成因**(2026-07-25
+  §14-17 找到並已修正):OpenVINS KLT 追蹤器轉彎時無運動預測,搜尋窗
+  15px vs 尖峰轉速位移 ~38px/frame——gyro-predicted KLT 修正後全程
+  rmse 7703→2722m(仍未完全收斂,爬升/下降段殘留發散待查)。

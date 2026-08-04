@@ -23,16 +23,23 @@ INS_LOG_BAT_MASK 1
 # or 0 (post-filter only).
 INS_LOG_BAT_OPT 5
 
-# ── STAGE 2: harmonic notch — FILL FREQ FROM THE STAGE-1 SPECTRUM ─────────
+# ── STAGE 2: harmonic notch — FILLED from survey24 flight-1 batch log ────
 # Gyro-only (ArduPilot applies no notch to accel; accel relies on
 # INS_ACCEL_FILTER + the 400 Hz streaming + physical mounting).
-# Uncomment + set after reading the batch log:
-#INS_HNTCH_ENABLE 1
-#INS_HNTCH_MODE 1          # 1 = throttle-based tracking
-#INS_HNTCH_REF 0.22         # = learned MOT_THST_HOVER (read it off the FC first)
-#INS_HNTCH_FREQ 0          # blade-pass fundamental from the spectrum (Hz)
-#INS_HNTCH_BW 0            # start at FREQ/2
-#INS_HNTCH_HMNCS 3         # 1st + 2nd harmonics
+# 2026-07-23: field_data/survey24/vibe_analysis/batch_fft.py decoded the
+# ISBH/ISBD batch log (~2022.5 Hz sensor rate, no stream aliasing) for the
+# hover segment (t=15-95s, Alt~0.9-1.0m steady, ThO~0.218-0.222, matches
+# REF below). Clean single narrowband gyro line, power-weighted centroid
+# 134.3 Hz (individual bins 126-142 Hz, peak bin 136.3 Hz); confirmed by a
+# 2nd-harmonic accel line at ~260-266 Hz (~2x). Climb segment (100-150s,
+# throttle up to ~0.24) shifted the same line to ~138-142 Hz, consistent
+# with throttle-tracked blade-pass — supports MODE 1 (throttle-based).
+INS_HNTCH_ENABLE 1
+INS_HNTCH_MODE 1          # 1 = throttle-based tracking
+INS_HNTCH_REF 0.22         # = learned MOT_THST_HOVER (confirmed via CTUN ThO at hover)
+INS_HNTCH_FREQ 134        # blade-pass fundamental, power-weighted centroid @ hover
+INS_HNTCH_BW 67            # FREQ/2
+INS_HNTCH_HMNCS 3         # 1st + 2nd harmonics (2nd harmonic visible on accel ~2x)
 # Alternative if ESCs give no reliable throttle reference: in-flight FFT mode
 #FFT_ENABLE 1
 #INS_HNTCH_MODE 4

@@ -1,0 +1,104 @@
+{
+  "windows": {
+    "200-230s": {
+      "ungated": {
+        "rmse_m": 65.95963914967747,
+        "max_m": 200.40163034760667,
+        "scale": 0.6160000222440516
+      },
+      "gyrogate": {
+        "rmse_m": 13.945742603878678,
+        "max_m": 37.34699035610093,
+        "scale": 0.8114682802756977
+      },
+      "aglprior": {
+        "rmse_m": 39.342629283283024,
+        "max_m": 98.4128397816628,
+        "scale": 0.5106077918872916
+      },
+      "combined": {
+        "rmse_m": 31.305768387903374,
+        "max_m": 67.5353225004649,
+        "scale": 0.5020281667381734
+      },
+      "scalefix": {
+        "rmse_m": 34.395787781037576,
+        "max_m": 60.08492041927705,
+        "scale": null
+      },
+      "foundloc": {
+        "rmse_m": 125.89661209937687,
+        "max_m": 193.26386521230992,
+        "scale": null
+      }
+    },
+    "200-260s": {
+      "ungated": {
+        "rmse_m": 1184.6201421805251,
+        "max_m": 3437.263909632845,
+        "scale": 0.6160000222440516
+      },
+      "gyrogate": {
+        "rmse_m": 108.38578896976902,
+        "max_m": 226.74113031236374,
+        "scale": 0.8114682802756977
+      },
+      "aglprior": {
+        "rmse_m": 152.0043735594696,
+        "max_m": 298.40780927213626,
+        "scale": 0.5106077918872916
+      },
+      "combined": {
+        "rmse_m": 380.7637729176398,
+        "max_m": 1018.8335599672259,
+        "scale": 0.5020281667381734
+      },
+      "scalefix": {
+        "rmse_m": 31.025010254393973,
+        "max_m": 60.08492041927705,
+        "scale": null
+      },
+      "foundloc": {
+        "rmse_m": 114.73291107574073,
+        "max_m": 238.0175626613458,
+        "scale": null
+      }
+    },
+    "200-320s": {
+      "ungated": {
+        "rmse_m": 11135.640776810105,
+        "max_m": 27070.565615644577,
+        "scale": 0.6160000222440516
+      },
+      "gyrogate": {
+        "rmse_m": 2670.376590131444,
+        "max_m": 7607.086423719241,
+        "scale": 0.8114682802756977
+      },
+      "aglprior": {
+        "rmse_m": 538.5725870596885,
+        "max_m": 1585.2147339983885,
+        "scale": 0.5106077918872916
+      },
+      "combined": {
+        "rmse_m": 1346.672427396077,
+        "max_m": 2168.4891747119063,
+        "scale": 0.5020281667381734
+      },
+      "scalefix": {
+        "rmse_m": 40.53326171130851,
+        "max_m": 90.77399727743143,
+        "scale": null
+      },
+      "foundloc": {
+        "rmse_m": 111.55038675017612,
+        "max_m": 272.8830621431548,
+        "scale": null
+      }
+    }
+  },
+  "bug_description": "All 4 pre-fix AGL depth-prior attempts (vio_cruise_aglprior.csv..aglprior4.csv) diverged to 20-150km 'dist traveled' within the first ~15-20s of processing (frame ~200-800 of 4084), far worse than the ungated baseline (~400m error). Root cause was NOT the depth-prior geometry (verified empirically: instrumented cos_view calc, both the optical-axis version and a world-nadir-corrected version track almost identically through the 207-216s turn -- this flight's turns are yaw-dominated with the nadir camera staying close to vertical throughout, so optical-axis-vs-true-nadir was never actually the failure mode here). Root cause was a build/tooling problem: run_video_msckf_aglprior, run_video_msckf_gyrogate, and run_video_msckf_gyrogate_soft were never registered as real CMake targets (no flags.make/link.txt were ever generated for them by the previous session -- only bare .o files existed under CMakeFiles/<name>.dir/, placed there by hand). `make run_video_msckf_aglprior` therefore silently did nothing on every invocation (GNU Make treats an existing file with no build rule and no newer prerequisite as already up to date) -- so all 4 prior 'attempts' most likely re-ran the SAME stale Jul-24 00:37 binary regardless of source edits made between attempts, meaning whatever fixes were tried on disk were never actually tested.",
+  "fix_description": "Rebuilt for real: recompiled UpdaterMSCKF.cpp.o and relinked libov_msckf_lib.so and run_video_msckf_aglprior directly from the recorded CMakeFiles/ov_msckf_lib.dir/{flags.make,link.txt} (a `cmake .` reconfigure was not usable in this shell -- ROS2/ament_cmake is sourced here and the project's ROS2.cmake path requires an installed ov_core ament package that was never built, so it fails find_package(ov_core); the original working build must have come from a shell with neither catkin nor ament_cmake sourced, landing in the ROS-agnostic branch instead -- this is a pre-existing environment gap, not something touched here). Also added proper CMake add_executable/target_link_libraries entries for all 3 project binaries in ov_msckf/cmake/ROS1.cmake so a from-scratch build in a clean (non-ROS2) shell will produce them automatically going forward. No algorithmic change was made to the depth-prior math itself -- the on-disk UpdaterMSCKF.cpp logic (blend=0.5 toward AGL/cos_view depth, 12x sigma inflation on chi2-gated corrected features) was already reasonable; it had simply never been compiled into the binary that was actually being run. A harmless env-gated debug instrumentation (AGL_DEBUG_COSVIEW) was added to UpdaterMSCKF.cpp to verify the cos_view hypothesis and left in place (no-op unless that env var is set).",
+  "best_method": "scalefix (2026-07-24 evening): full-flight static-init run of run_video_msckf_aglprior (AGL depth-prior; notably does NOT break at cruise onset unlike all previous full runs) + causal output-space correction (scale_corrector.py): baro-anchored scale during vertical motion, AnyLoc-SIMULATED (50m-quantized GPS @2s, AnyLoc was not running this flight) arc-length scale during cruise + 0.30/sample absolute position pull + 20 m/s vehicle-envelope clamp. Full flight 170-472s: rmse 76.0m, max 130m (raw VIO: 7703m/20km). Honest caveats: the idealized anchor proxy ALONE scores 14.3m rmse -- the fusion's value is smoothness and outage robustness, not beating the anchor; and a 70s anchor outage spanning turns degrades fusion to ~254m rmse, no better than hold-last-anchor (259m), because turns are exactly where VIO heading breaks (SS14-11).",
+  "foundloc_integration": "2026-07-24 late evening: integrated 2 pieces from FoundLoc (He et al., CMU AirLab, arXiv:2310.16299 -- same VPR backbone, AnyLoc-DINO, as this project) into the output-space corrector: (1) DBSCAN false-positive filtering of anchor fixes over a trailing residual window (their III-E-3, adapted from spatial multi-candidate clustering to temporal single-candidate clustering since we simulate one match per query, not top-N); (2) degeneracy-aware frame lock using gyro-integrated heading as a cross-check when the lock window is near-collinear (their III-B gravity-constraint term's role, adapted from 3D gravity-consistency to our SE(2)-only alignment via gyro heading, the analogous IMU-derived redundant signal). Tested honestly: unlike scale_corrector.py's clean 50m-quantized anchor proxy (unrealistically generous), this run injects a realistic false-positive rate (20% of queries, error 200-900m, grounded in this project's own real-footage AnyLoc measurements, see memory real_video_constrained_search_failure) and shows DBSCAN filtering earns its keep: parameter sweep (eps 60-800) found eps=300/min_samples=2/window=8 rejects ~40% of true false positives with ZERO good anchors wrongly rejected, improving rmse over unfiltered noisy anchors in 4/5 random seeds (up to 30% reduction), roughly a wash in the 5th. Full-flight (170-472s) result with this realistic noise + filtering: see 'windows' above is on the 200-320s scale; full-flight rmse reported separately as it doesn't fit the 3-window table (clean-anchor scalefix's 76m was against a best-case anchor with zero false positives -- the honest, noisy-anchor FoundLoc-style number is higher, reflecting a more realistic AnyLoc)."
+}

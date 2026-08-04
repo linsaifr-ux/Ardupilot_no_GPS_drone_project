@@ -5,6 +5,10 @@ Uses **DINOv2** patch features + **VLAD** aggregation + **FAISS** nearest-neighb
 
 Active backbone: **ViT-S/14** (`dinov2_vits14`) — database lives in `anyloc/database_zone_z20_vits14/` (right-sized to the mission zone, 882 entries, NLSC **zoom-20** imagery ≈ 0.19 m/px effective) with a symlink `anyloc/database → anyloc/database_zone_z20_vits14`. The localizer reads `model_name` from the database metadata automatically. Fallbacks kept on disk: `anyloc/database_zone_vits14/` (same 882-entry grid, coarser zoom-18 ≈ 0.53 m/px — superseded 2026-07-06: provider-matched benchmark median 210 m → 80 m, GPS-seeded anchor-chain mean 46 m → 31 m) and the old full-radius `anyloc/database_vits14/` (2821 entries, 1502 m circle around home).
 
+> **Honest accuracy expectation for satellite-tile databases:** on real survey25 footage, matching against the zoom-20 satellite database gives ~286 m mean retrieval error, even after confirming zoom-20 is this provider's true resolution ceiling and after ruling out the feature-facet choice as a cause. Rotating query frames to North-up before matching (AnyLoc's own paper does this for its aerial benchmark — see `tools/extract_frames.py --rotate`, sign bug fixed 2026-07-25) helps — ~229 m mean, ~20% better — but is not close to a fix. A systematic test (Laplacian-sharpness of all database tiles vs. real per-query error) found satellite-tile *clarity* is NOT the driver (r=-0.14 to -0.23, weak and non-monotonic) — so don't expect a higher-resolution source to close this either. A same-domain control (database built from the drone's own footage instead of satellite tiles, same DINOv2/VLAD/FAISS code path) gets ~8.6 m mean error on the identical flight — ~33x better. The gap is the domain mismatch between satellite and real drone imagery (season/lighting/content/perspective), not a bug in this pipeline and not a resolution problem. Don't expect satellite-tile-database accuracy anywhere close to Option B (real-footage database) results without a materially better (same-domain-like) imagery source. Full investigation: `instructions/vpe_jump_runaway_diagnosis.md` §14-19/§14-20/§14-23.
+>
+> **Cross-session validation (2026-07-27):** the 8.6 m same-domain number above came from splitting one flight's own frames into database/query (same day/lighting) — a real cross-session test (separate mapping flight, then a separate flight ~15 min later querying the resulting database) has now been run: `anyloc/database_survey33_vits14` (Option B, built from survey33's own footage) queried with survey32's frames gives **~24-25 m mean retrieval error** — worse than same-flight (real cross-session degradation, as expected) but still ~12x better than satellite. This also fed a full closed-loop AUTO-mode SITL test (`control/test_full_pipeline_sitl_live_survey32.py`) with the vehicle's route kept inside the database's coverage area: **zero EKF glitch(>50m) events**, the first clean result of that kind this project has produced — versus repeated glitch events on earlier tests that strayed outside a narrow-corridor database. Full writeup: `field_data/survey32/vio_eval/README.md`.
+
 **Platform:** Jetson Orin NX, JetPack 36.x, ROS2 Humble, Python 3.10  
 **Python env:** `/home/jetson/venv/anyloc` (torch + faiss + pillow)
 
@@ -94,6 +98,8 @@ ln -sfn database_real anyloc/database
 
 See `instructions/field_database_collection.md` for the full guide including flight plan, FOV/overlap analysis, and terminal setup.
 
+**Visually checking coverage (optional but recommended, added 2026-07-27):** `tools/build_frame_mosaic.py <session_dir>` stitches the extracted frames into a georeferenced visual mosaic (feathered alpha-over blending, world file + `.prj` for GIS tools) so you can see at a glance what area the database actually covers before trusting it — no GDAL/rasterio needed. `tools/png_to_geotiff.py <mosaic.png>` converts that into a real embedded-metadata GeoTIFF (via `tifffile`) if you need one. Neither tool does real photogrammetric orthorectification (no feature-based registration, just GPS/heading-placed frames) — treat pixel positions as approximate, not survey-grade.
+
 ### Option C — Satellite tiles for a different area (testing)
 
 `build_database.py` defaults to the mission-zone `CENTER_LAT`/`CENTER_LON` baked into the script, but `--center-lat`/`--center-lon`/`--grid-radius-m` override it for a one-off test database anywhere in Taiwan (NLSC PHOTO2 coverage). `--sat-path` defaults to `<db-dir>/satellite.jpg` in this mode so it never clobbers `simulator/satellite_ground.jpg` (the mission-zone mosaic):
@@ -115,6 +121,7 @@ ln -sfn database_zone_vits14 anyloc/database   # satellite zoom-18, zone-sized (
 ln -sfn database_vits14      anyloc/database   # satellite, old full-radius fallback
 ln -sfn database_real        anyloc/database   # real-field
 ln -sfn database_test_<name>_vits14 anyloc/database   # ad-hoc test area (Option C)
+ln -sfn database_survey33_vits14 anyloc/database   # example Option B db (2026-07-27 cross-session validation, survey25 site — not the contest zone)
 ```
 
 > `anyloc/database` is just a symlink — check `readlink anyloc/database` before a real flight to make sure it's not still pointed at a test database from a previous session.
