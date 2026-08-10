@@ -25,8 +25,8 @@ ALTITUDE_M     = 65.0   # AGL – must match operational mission altitude
 SPEED_MS       = 3.0    # m/s, ≤ 3 reduces motion blur
 MARGIN_PCT     = 0.10   # 10 % each side = 20 % total expansion
 
-# Camera ground footprint at ALTITUDE_M — IMX219 CSI, HFOV=62.2°
-FOOTPRINT_W_M  = 2.0 * ALTITUDE_M * math.tan(math.radians(62.2 / 2.0))
+# Camera ground footprint at ALTITUDE_M — AP-IMX900 4mm CS-mount, HFOV=59.9° (computed)
+FOOTPRINT_W_M  = 2.0 * ALTITUDE_M * math.tan(math.radians(59.9 / 2.0))
 DEFAULT_SPACING_M = FOOTPRINT_W_M * 0.5   # 50 % sidelap
 
 def build_waypoints(slat_min, slat_max, slon_min, slon_max,
@@ -98,7 +98,7 @@ def main():
     speed = args.speed if args.speed is not None else SPEED_MS
 
     altitude = args.altitude if args.altitude is not None else ALTITUDE_M
-    footprint_w_m = 2.0 * altitude * math.tan(math.radians(62.2 / 2.0))
+    footprint_w_m = 2.0 * altitude * math.tan(math.radians(59.9 / 2.0))
     spacing = args.spacing if args.spacing is not None else footprint_w_m * 0.5
     name_prefix = args.name if args.name is not None else 'survey_mission'
 

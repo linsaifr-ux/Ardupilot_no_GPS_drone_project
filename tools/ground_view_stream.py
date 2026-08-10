@@ -14,7 +14,7 @@ Layout (1280×720):
     └─ Slot 2 (640×240): 3rd most recent                 ─┘
 
 Subscribes to /drone/camera/image_raw (published by control/launch_camera.sh,
-i.e. csi_camera_node.py). Does NOT open the camera directly — run
+i.e. usb_camera_node.py). Does NOT open the camera directly — run
 launch_camera.sh separately (handled automatically by launch_real_hw.sh).
 
 Stream mode A — direct UDP to ground station (ZeroTier / same LAN):
@@ -92,7 +92,7 @@ MAX_CROPS = 3
 # Recent camera frames kept for stamp-matching against /yolo/detections
 # (whose header is copied from the source image). YOLO inference is ~60 ms,
 # so detections arrive ~2-4 frames after their source at 30 fps; 12 frames
-# (~0.4 s) of slack covers scheduling hiccups. ~6 MB per 1640×1232 frame.
+# (~0.4 s) of slack covers scheduling hiccups. ~3.7 MB per 1280×960 frame.
 FRAME_BUF_LEN = 12
 # If no detections message (even an empty one arrives per processed frame)
 # for this long, YOLO is considered down → show the live feed, no boxes.
@@ -255,7 +255,7 @@ class GroundViewNode(rclpy.node.Node):
 
     def _cb_img(self, msg: Image):
         arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, 3)
-        # csi_camera_node.py publishes rgb8; convert to BGR for OpenCV
+        # usb_camera_node.py publishes rgb8; convert to BGR for OpenCV
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
         key = (msg.header.stamp.sec, msg.header.stamp.nanosec)
         with self._lock:

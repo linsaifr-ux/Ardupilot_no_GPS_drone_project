@@ -28,8 +28,8 @@ _CENTER_LON = 120.286135
 _RADIUS_M   = 2000.0
 _COS_LAT    = math.cos(math.radians(_CENTER_LAT))
 _SAT_ZOOM   = 18
-_HFOV_DEG   = 62.2    # IMX219 CSI spec: 62.2°(H)
-_VFOV_DEG   = 48.8    # IMX219 CSI spec: 48.8°(V)
+_HFOV_DEG   = 59.9    # AP-IMX900 USB3, 4mm CS-mount lens: computed from sensor
+_VFOV_DEG   = 46.7    # geometry (2048x1536, 2.25um px), no datasheet FOV available yet
 
 
 # ── PIL → tensor (avoids numpy dual-install conflict) ─────────────────────────

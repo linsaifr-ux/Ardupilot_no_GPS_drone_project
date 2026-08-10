@@ -16,9 +16,9 @@ changes, and paste the printed SURVEY_WPS block into:
     _CORNER_IDX to {even indices 2..len-2})
 
 Usage:
-  python3 tools/gen_contest_survey.py                    # default: 50% sidelap of IMX219 footprint
+  python3 tools/gen_contest_survey.py                    # default: 50% sidelap of AP-IMX900 footprint
   python3 tools/gen_contest_survey.py --spacing 53.9      # explicit spacing in metres
-  python3 tools/gen_contest_survey.py --hfov 62.2 --altitude 65 --sidelap-ratio 0.687
+  python3 tools/gen_contest_survey.py --hfov 59.9 --altitude 65 --sidelap-ratio 0.687
 
   # Also write a Mission Planner-importable QGC WPL 110 file (and loadable by
   # ardupilot_commander.py's --waypoint-file, which only reads NAV_WAYPOINT rows):
@@ -43,7 +43,7 @@ RAW_NW = (677.0, -1240.0)
 RAW_NE = (531.0,  -454.0)
 
 ALTITUDE_M = 65.0   # AGL — must match operational mission altitude
-HFOV_DEG   = 62.2   # IMX219 CSI camera
+HFOV_DEG   = 59.9   # AP-IMX900 4mm CS-mount, computed
 SURVEY_SPEED = 12.0  # m/s — matches SURVEY_SPEED in control/ardupilot_commander.py
 
 # Mirrors HOME_LAT/HOME_LON in control/ardupilot_commander.py / home_elevation.json

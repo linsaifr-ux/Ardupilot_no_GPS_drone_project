@@ -50,7 +50,7 @@ ROS2 Jazzy + `ros-jazzy-vision-msgs` for the ROS2 node. TensorRT + ONNX come fro
 
 `YOLODetector.__init__` (in `detector.py`) exports `<model>.engine` next to any `.pt` weights the first time they're loaded, then loads the engine on every subsequent run (skips re-export if the `.engine` file already exists). Delete the `.engine` file to force a re-export, e.g. after retraining the weights. Rectangular sizes get a size-tagged name (`<model>_<h>x<w>.engine`) so they can't be confused with the square engine, and the export runs in a tempdir so it can't clobber an existing engine of a different size.
 
-**Rectangular engine (2026-07-09):** the production node now runs `imgsz=(960, 1280)` instead of the 1280×1280 square. A 1640×1232 frame letterboxed into a square wastes ~25% of the input (and thus compute) on gray padding; the rect engine runs the same pixels at the same scale with none — ~25% faster preprocess *and* inference at identical accuracy (validated on survey13 footage: every square-engine detection matched at IoU>0.5, mean 0.89).
+**Rectangular engine (2026-07-09):** the production node now runs `imgsz=(960, 1280)` instead of the 1280×1280 square. A 1280×960 frame letterboxed into a square wastes ~25% of the input (and thus compute) on gray padding; the rect engine runs the same pixels at the same scale with none — ~25% faster preprocess *and* inference at identical accuracy (validated on survey13 footage: every square-engine detection matched at IoU>0.5, mean 0.89).
 
 **Pipelined node (2026-07-09):** `ros2_node.py` splits the work into a CPU preprocess thread (letterbox + tensor upload, ~16 ms) and a GPU inference thread (~30-47 ms) with depth-1 hand-off slots, so throughput is bounded by the slower stage instead of their sum. Detection latency gains one stage (~1 frame); `ground_view_stream.py`'s stamp-matching absorbs that.
 
@@ -145,7 +145,7 @@ conda run -n isaac_sim_test --no-capture-output python3 detection/ros2_node.py
 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
-| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1640×1232 (IMX219 native) |
+| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1280×960 (AP-IMX900, v4l2 publish resolution) |
 | Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | WGS84, `frame_id="wgs84"` — `position.x/y` = lat/lon (for geo-tagging) |
 | Publish | `/yolo/detections` | `vision_msgs/Detection2DArray` | bounding boxes + class + confidence |
 

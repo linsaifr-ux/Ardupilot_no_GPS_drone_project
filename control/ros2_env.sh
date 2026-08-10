@@ -1,7 +1,7 @@
 # Shared ROS2 environment — source this in every launcher, after ROS setup.
 #
 # FastDDS's default shared-memory segment (512 KB) is smaller than one
-# 1640x1232 rgb8 camera frame (6 MB), so /drone/camera/image_raw silently
+# 1280x960 rgb8 camera frame (~3.7 MB), so /drone/camera/image_raw silently
 # falls back to BEST_EFFORT UDP fragmented across ~4400 datagrams, and the
 # kernel's default 208 KB socket buffers drop ~30% of frames *per subscriber*
 # (measured 2026-07-09: two parallel subscribers each lost a different ~27%).

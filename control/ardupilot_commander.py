@@ -98,35 +98,37 @@ COS_LAT   = math.cos(math.radians(HOME_LAT))
 M_PER_DEG = 111_320.0
 
 # ── Survey waypoints (north_m, east_m, agl_m relative to home) ────────────────
-# 10-strip boundary-parallel boustrophedon; −10.5° from east; 53.9 m strip spacing.
-# Spacing recomputed 2026-07-02 for the IMX219 camera swap (HFOV 62.2° vs the old
-# AP-IMX900's 88.0° → 78.4 m swath at 65 m AGL, not 125.5 m). Regenerated with
-# tools/gen_contest_survey.py — proper convex-polygon strip clipping against
-# ZONE_VERTS below, preserving the original's ~31% sidelap ratio (was 7 strips
-# / 86.3 m spacing against the old wider swath).
+# 11-strip boundary-parallel boustrophedon; 51.5 m strip spacing.
+# Spacing recomputed 2026-08-09 for the AP-IMX900 4mm CS-mount lens revert
+# (HFOV 59.9° computed, vs IMX219's 62.2° → 74.9 m swath at 65 m AGL, not
+# 78.4 m). Regenerated with tools/gen_contest_survey.py — proper convex-polygon
+# strip clipping against ZONE_VERTS below, preserving the ~31% sidelap ratio
+# (was 10 strips / 53.9 m spacing against the IMX219's wider swath).
 # Mirrors SURVEY_WPS in tools/live_trace.py exactly.
 # Corner WPs (odd → even transitions) are boundary-touch turns between strips.
 SURVEY_WPS = [
     (   -7.1,   -585.9,  TAKEOFF_ALT),  # 0  ENTRY : E end strip 1  → fly W
     (  124.2,  -1292.5,  TAKEOFF_ALT),  # 1  WP01  : W end strip 1
-    (  177.5,  -1284.5,  TAKEOFF_ALT),  # 2  WP02  : W boundary corner → fly NE
-    (   45.9,   -575.9,  TAKEOFF_ALT),  # 3  WP03  : E end strip 2
-    (   98.8,   -565.9,  TAKEOFF_ALT),  # 4  WP04  : E boundary corner → fly NW
-    (  230.8,  -1276.6,  TAKEOFF_ALT),  # 5  WP05  : W end strip 3  → fly W
-    (  284.2,  -1268.6,  TAKEOFF_ALT),  # 6  WP06  : W boundary corner → fly NE
-    (  151.8,   -555.9,  TAKEOFF_ALT),  # 7  WP07  : E end strip 4
-    (  204.8,   -546.0,  TAKEOFF_ALT),  # 8  WP08  : E boundary corner → fly NW
-    (  337.5,  -1260.6,  TAKEOFF_ALT),  # 9  WP09  : W end strip 5  → fly W
-    (  390.8,  -1252.6,  TAKEOFF_ALT),  # 10 WP10  : W boundary corner → fly NE
-    (  257.7,   -536.0,  TAKEOFF_ALT),  # 11 WP11  : E end strip 6
-    (  310.7,   -526.0,  TAKEOFF_ALT),  # 12 WP12  : E boundary corner → fly NW
-    (  444.2,  -1244.6,  TAKEOFF_ALT),  # 13 WP13  : W end strip 7  → fly W
-    (  497.5,  -1236.6,  TAKEOFF_ALT),  # 14 WP14  : W boundary corner → fly NE
-    (  363.7,   -516.0,  TAKEOFF_ALT),  # 15 WP15  : E end strip 8
-    (  416.6,   -506.0,  TAKEOFF_ALT),  # 16 WP16  : E boundary corner → fly NW
-    (  550.9,  -1228.6,  TAKEOFF_ALT),  # 17 WP17  : W end strip 9  → fly W
-    (  604.2,  -1220.7,  TAKEOFF_ALT),  # 18 WP18  : W boundary corner → fly NE
-    (  469.6,   -496.0,  TAKEOFF_ALT),  # 19 WP19  : E end strip 10  (final)
+    (  175.1,  -1284.9,  TAKEOFF_ALT),  # 2  WP02  : W boundary corner → fly NE
+    (   43.5,   -576.4,  TAKEOFF_ALT),  # 3  WP03  : E end strip 2  → fly E
+    (   94.0,   -566.8,  TAKEOFF_ALT),  # 4  WP04  : E boundary corner → fly NW
+    (  226.0,  -1277.3,  TAKEOFF_ALT),  # 5  WP05  : W end strip 3  → fly W
+    (  276.9,  -1269.7,  TAKEOFF_ALT),  # 6  WP06  : W boundary corner → fly NE
+    (  144.6,   -557.3,  TAKEOFF_ALT),  # 7  WP07  : E end strip 4  → fly E
+    (  195.2,   -547.8,  TAKEOFF_ALT),  # 8  WP08  : E boundary corner → fly NW
+    (  327.8,  -1262.0,  TAKEOFF_ALT),  # 9  WP09  : W end strip 5  → fly W
+    (  378.8,  -1254.4,  TAKEOFF_ALT),  # 10 WP10  : W boundary corner → fly NE
+    (  245.7,   -538.2,  TAKEOFF_ALT),  # 11 WP11  : E end strip 6  → fly E
+    (  296.3,   -528.7,  TAKEOFF_ALT),  # 12 WP12  : E boundary corner → fly NW
+    (  429.7,  -1246.8,  TAKEOFF_ALT),  # 13 WP13  : W end strip 7  → fly W
+    (  480.6,  -1239.2,  TAKEOFF_ALT),  # 14 WP14  : W boundary corner → fly NE
+    (  346.9,   -519.2,  TAKEOFF_ALT),  # 15 WP15  : E end strip 8  → fly E
+    (  397.5,   -509.6,  TAKEOFF_ALT),  # 16 WP16  : E boundary corner → fly NW
+    (  531.5,  -1231.5,  TAKEOFF_ALT),  # 17 WP17  : W end strip 9  → fly W
+    (  582.5,  -1223.9,  TAKEOFF_ALT),  # 18 WP18  : W boundary corner → fly NE
+    (  448.0,   -500.1,  TAKEOFF_ALT),  # 19 WP19  : E end strip 10  → fly E
+    (  498.6,   -490.6,  TAKEOFF_ALT),  # 20 WP20  : E boundary corner → fly NW
+    (  633.4,  -1216.3,  TAKEOFF_ALT),  # 21 WP21  : W end strip 11  (final)
 ]
 
 # ── Detection zone — buffered boundary (30 m inward from raw corners) ──────────
@@ -137,11 +139,12 @@ ZONE_VERTS = [
     (121.0, -1293.0),   # SW'
 ]
 
-# Camera parameters (IMX219 CSI, publish resolution matches csi_camera_node.py)
-CAM_W    = 1640
-CAM_H    = 1232
-HFOV_DEG = 62.2
-VFOV_DEG = 48.8
+# Camera parameters (AP-IMX900 USB3, v4l2 image_size publish resolution;
+# 4mm CS-mount lens FOV computed from sensor geometry, no datasheet spec yet)
+CAM_W    = 1280
+CAM_H    = 960
+HFOV_DEG = 59.9
+VFOV_DEG = 46.7
 
 VEHICLE_CLASSES = {"car", "van", "truck", "bus"}
 

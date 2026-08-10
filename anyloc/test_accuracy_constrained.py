@@ -48,8 +48,8 @@ CENTER_LON = 120.286135
 RADIUS_M   = 2000.0
 COS_LAT    = math.cos(math.radians(CENTER_LAT))
 
-HFOV_DEG = 62.2    # IMX219 CSI spec (matches localizer.py/build_database.py)
-VFOV_DEG = 48.8
+HFOV_DEG = 59.9    # AP-IMX900 4mm CS-mount, computed (matches localizer.py/build_database.py)
+VFOV_DEG = 46.7
 
 # Default search radius used in ros2_node.py
 SEARCH_RADIUS_M = 200.0

@@ -222,11 +222,13 @@ OpenVINS 需要:相機內參、相機-IMU 外參(旋轉+平移)、時間偏移�
 
 ## 6. 已知限制(誠實清單)
 
-- **IMX219 是 rolling shutter**——OpenVINS 假設 global shutter,理論上
-  劇烈機動段有風險;但 2026-07-25 直接驗證(§14-16)發現轉彎失敗的
+- ~~IMX219 是 rolling shutter~~——2026-08-09 相機改回 AP-IMX900(USB3,
+  4mm CS-mount 鏡頭),Sony/Appropho 規格確認為 **global shutter**
+  (Pregius S 系列),與 OpenVINS 的假設一致,此風險已不適用。
+  (歷史記錄:IMX219 使用期間,2026-07-25 直接驗證(§14-16)發現轉彎失敗的
   實際訊號特徵(與轉彎「持續時間」相關,而非「尖峰角速度」)**不符合**
   rolling shutter 的機制特徵——真正主因是 KLT 追蹤器搜尋窗無運動
-  預測(§14-17,已修),rolling shutter 本身未證實是主要瓶頸。
+  預測(§14-17,已修),rolling shutter 本身當時也未證實是主要瓶頸。)
 - **無硬體同步**:相機時間戳來自 Jetson appsink 讀取時刻
   (含 ISP 管線固定延遲 ~數十 ms),IMU 時間戳經 mavros timesync
   (毫秒級抖動)。固定偏移 Kalibr 能吸收,抖動吸收不了——

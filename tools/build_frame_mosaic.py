@@ -5,7 +5,7 @@ Build a georeferenced visual mosaic from extract_frames.py output.
 Reads <session_dir>/frames.csv (path,lat,lon,alt_amsl,alt_agl,heading_deg) — frames must
 already be North-up (i.e. extracted with `extract_frames.py --rotate`), since this script does
 no further rotation, only placement and scaling. Each frame's ground footprint is computed from
-its AGL and the IMX219's known FOV (same HFOV_DEG/VFOV_DEG constants as build_database.py /
+its AGL and the AP-IMX900's known FOV (same HFOV_DEG/VFOV_DEG constants as build_database.py /
 anyloc/localizer.py), then pasted onto a local-ENU canvas at its GPS position. Compositing is
 sequential alpha-over in flight/time order, with each frame's edges feathered (soft-blended
 over --feather-px pixels, full opacity in the interior) — this is NOT true photogrammetric
@@ -34,9 +34,9 @@ import os
 import cv2
 import numpy as np
 
-# Drone camera: IMX219 CSI — same constants as anyloc/build_database.py and anyloc/localizer.py
-HFOV_DEG = 62.2
-VFOV_DEG = 48.8
+# Drone camera: AP-IMX900 4mm CS-mount, computed — same constants as anyloc/build_database.py and anyloc/localizer.py
+HFOV_DEG = 59.9
+VFOV_DEG = 46.7
 
 NODATA_FILL = (60, 60, 60)  # dark gray, visually distinct from real (usually darker/brighter) image content
 

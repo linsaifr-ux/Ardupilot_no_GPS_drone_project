@@ -1,6 +1,6 @@
 # How to Run — Jetson Real Hardware
 
-**Target:** Jetson Orin NX + ArduPilot FC (USB-to-TTL on **Serial6**, `/dev/ttyUSB0:921600`) + IMX219 CSI camera (nvarguscamerasrc, sensor-id 0; raw node `/dev/video0`)
+**Target:** Jetson Orin NX + ArduPilot FC (USB-to-TTL on **Serial6**, `/dev/ttyUSB0:921600`) + AP-IMX900-Mini-USB3-I5 camera (USB3, custom `usb_camera_node.py`, MJPG; device auto-detected by USB name, usually `/dev/video0`), 4mm CS-mount lens
 **ROS2:** Humble (`/opt/ros/humble`)
 **Python envs:** `/home/jetson/venv/anyloc` (torch + faiss) · `/home/jetson/venv/yolo` (torch + ultralytics)
 **Goal:** GPS-denied autonomous survey: takeoff 65 m → boustrophedon pattern → YOLO detection → land
@@ -14,7 +14,7 @@ Mission Planner (PC)
   └─ survey.waypoints ──scp──▶  Jetson Orin NX
                                   launch_real_hw.sh
                                   ├─ [1] launch_mavros_real.sh       → serial:///dev/ttyUSB0:921600
-                                  ├─ [2a] launch_camera.sh           → CSI (nvarguscamerasrc) → /drone/camera/image_raw   (no ground stream)
+                                  ├─ [2a] launch_camera.sh           → USB3 (usb_camera_node.py, MJPG) → /drone/camera/image_raw   (no ground stream)
                                   │  OR
                                   │  [2b] ground_view_stream.py      → subscribes /drone/camera/image_raw (needs 2a running) (+ H.265 stream)
                                   │         --stream-host GS_IP      →   RTP/UDP → ground station
@@ -52,7 +52,7 @@ EKF source switching (real_hw_pixhawk6c.parm):
 
 ```bash
 sudo usermod -aG dialout $USER   # serial access — logout + login after
-sudo usermod -aG video $USER     # CSI/nvargus camera access — logout + login after
+sudo usermod -aG video $USER     # USB3/v4l2 camera access — logout + login after
 # Or per-session:
 sudo chmod 666 /dev/ttyUSB0
 ```
@@ -275,17 +275,14 @@ print(f'{len(wps)} waypoints loaded')
 # FC adapter
 ls /dev/ttyUSB*       # expect /dev/ttyUSB0
 
-# Camera (CSI — check the sensor is detected by the Argus/tegra-camera stack)
-v4l2-ctl --list-devices 2>&1 | grep -i imx219   # expect "vi-output, imx219 ..." → /dev/video0
+# Camera (USB3 — check the AP-IMX900 is enumerated as a UVC device)
+v4l2-ctl --list-devices 2>&1 | grep -iA1 "imx900\|AP-IMX900"   # expect /dev/video0
 
 # AnyLoc database
 ls anyloc/database/database_vlads.pt && echo "DB OK" || echo "DB MISSING — rebuild"
 
 # Kill any stale camera processes before starting
-pkill -f csi_camera_node.py 2>/dev/null; echo "camera clear"
-# If capture still fails with "Device 0 (of 1) is in use" / "Failed to create
-# CaptureSession", a stale Argus session is held by nvargus-daemon — clear it:
-#   sudo systemctl restart nvargus-daemon
+fuser -k /dev/video0 2>/dev/null; echo "camera clear"
 ```
 
 ---
@@ -633,12 +630,12 @@ T-30 min
 T-15 min
   [ ] Power on Jetson, connect USB-to-TTL adapter and camera
   [ ] Verify jetson_clocks applied: `systemctl is-active jetson_clocks.service` → `active` (automated since 2026-07-08 — no manual command needed, but confirm the service actually ran; if not `active`, `sudo jetson_clocks` by hand)
-  [ ] Verify /dev/ttyUSB0 present and `v4l2-ctl --list-devices` shows imx219
+  [ ] Verify /dev/ttyUSB0 present and `v4l2-ctl --list-devices` shows the AP-IMX900 (imx900)
   [ ] ls Car_visdrone1280.engine (pre-built — if missing, first YOLO launch will stall ~15 min exporting it)
-  [ ] pkill -f csi_camera_node.py (clear stale camera processes)
+  [ ] fuser -k /dev/video0 (clear stale camera processes)
   [ ] Start: bash control/launch_real_hw.sh --manual-takeoff (or tmux layout)
   [ ] MAVROS pane: "detected remote address 1.1" ✓
-  [ ] Camera pane: running (Argus sensor-mode enumeration on startup is OK)
+  [ ] Camera pane: running (usb_camera_node.py startup is OK)
   [ ] ros2 topic hz /drone/camera/image_raw → ~30 Hz ✓
   [ ] HW Bridge pane: "HW bridge ready" ✓
   [ ] AnyLoc pane: "AnyLoc node ready" ✓
@@ -683,7 +680,7 @@ Emergency
 | `/dev/ttyUSB0` not found | Adapter unplugged or driver missing | `dmesg \| tail -20` → look for cp210x/ch341 |
 | `launch_mavros_real.sh` exits with no output | `set -e` + stale pkill returning 1 | Fixed; if recurs: check script has `pkill ... \|\| true` |
 | MAVROS not connecting | Wrong baud or device | Try `FCU_DEV=/dev/ttyUSB1 bash control/launch_mavros_real.sh`; verify FC serial baud = 921600 |
-| Camera "Failed to create CaptureSession" / "Device 0 (of 1) is in use" | Stale Argus session (nvargus-daemon) | `pkill -f csi_camera_node.py; sudo systemctl restart nvargus-daemon; bash control/launch_camera.sh` |
+| Camera "Cannot open /dev/video0" / "Device or resource busy" | Stale process holding the USB3 camera | `fuser -k /dev/video0; bash control/launch_camera.sh` |
 | Camera calibration file not found | No intrinsics YAML | Harmless — AnyLoc doesn't use camera intrinsics |
 | Arm rejected: Safety Switch | Safety button not pressed | Press physical button; LED must go green |
 | Arm rejected: Need Position | VPE not publishing or EKF not converged | Check `ros2 topic hz /mavros/vision_pose/pose_cov` (expect 20 Hz); wait 30 s |
@@ -702,9 +699,10 @@ Emergency
 | GStreamer stream no video on receiver | Firewall or wrong IP | Check `--host` matches ground PC IP; open port 5000/udp |
 | GStreamer "Camera not running" | Camera pane not started | Start `launch_camera.sh` before `launch_gstreamer.sh` |
 | GStreamer "appsrc push returned GST_FLOW_ERROR" | Ground IP unreachable | Ping ground station first; udpsink drops silently |
-| `gstreamer_stream.py` "Cannot open CSI camera" | `launch_camera.sh` already running | Kill it first — both open an Argus CaptureSession on the same sensor and only one is allowed |
+| `gstreamer_stream.py` "Cannot open camera" | `launch_camera.sh` already running | Kill it first — both open the same device and only one process is allowed at a time |
+| Camera pane opens the wrong camera (e.g. picks up the old IMX219 CSI camera instead of the AP-IMX900) | Auto-detect (`v4l2-ctl --list-devices` grep for "APPROPHO"/"IMX900") found no match and fell back to `/dev/video0`, which happens to be the other camera | Check `v4l2-ctl --list-devices` output — if the AP-IMX900 line format changed, fix the grep in `launch_camera.sh`/`record_field.py`/`gstreamer_stream.py`, or set `CAMERA_DEV=/dev/videoN` (`--camera N` for `gstreamer_stream.py`) explicitly |
 | `ground_view_stream.py` stuck at "Waiting for /drone/camera/image_raw" | `launch_camera.sh` not running | Start it first — `ground_view_stream.py` only subscribes, it doesn't open the camera (fixed automatically by `launch_real_hw.sh`) |
-| `/drone/camera/image_raw` arrives well below 30 fps (choppy YOLO/AnyLoc/stream) with the camera node healthy | Each subscriber independently drops ~30% of the 6 MB frames: FastDDS's default 512 KB SHM segment can't hold one frame, so it silently falls back to fragmented BEST_EFFORT UDP through 208 KB kernel buffers | Fixed 2026-07-09 — all launchers now source `control/ros2_env.sh` (64 MB SHM segment via `control/fastdds_shm_profile.xml`). If running a node by hand, `source control/ros2_env.sh` first; verify delivery with `ros2 topic hz /drone/camera/image_raw` |
+| `/drone/camera/image_raw` arrives well below 30 fps (choppy YOLO/AnyLoc/stream) with the camera node healthy | Each subscriber independently drops frames: FastDDS's default 512 KB SHM segment can't hold one ~3.7 MB frame, so it silently falls back to fragmented BEST_EFFORT UDP through 208 KB kernel buffers | Fixed 2026-07-09 — all launchers now source `control/ros2_env.sh` (64 MB SHM segment via `control/fastdds_shm_profile.xml`). If running a node by hand, `source control/ros2_env.sh` first; verify delivery with `ros2 topic hz /drone/camera/image_raw` |
 | `ground_view_stream.py` YOLO panel shows no boxes | YOLO node not started yet | Wait for YOLO node to load model (~30 s); boxes appear once AGL > 50 m |
 | `ground_view_stream.py` YOLO panel header shows red `YOLO STALE (live view)` | No `/yolo/detections` message for >2 s — YOLO node died or hasn't started (it publishes every processed frame, even with zero detections, so silence means down) | Start/restart the detector; panel meanwhile shows the live camera feed without boxes (behavior added 2026-07-09) |
 | `ground_view_stream.py` YOLO boxes trail behind moving objects | Boxes drawn on newest frame instead of the frame they were computed on | Fixed 2026-07-09 (stamp-matched detection-synced panel) — pull latest code |
@@ -728,4 +726,4 @@ Emergency
 8. **hw_bridge before commander**: commander waits for `/drone/state`; hw_bridge must be running first.
 9. **AnyLoc fuses at ≥ 50 m only**: `MIN_LOCALISATION_AGL=50.0` in commander and `MIN_AGL=50.0` in anyloc node must match. (YOLO has no altitude gate — it runs at any AGL.)
 10. **venv/anyloc for AnyLoc, venv/yolo for YOLO**: system Python3 lacks torch/faiss/ultralytics. Do not use `conda run`.
-11. **Kill stale camera processes**: running `launch_camera.sh` twice causes an Argus "CaptureSession" conflict — always `pkill -f csi_camera_node.py` first (and `sudo systemctl restart nvargus-daemon` if the session is stuck).
+11. **Kill stale camera processes**: running `launch_camera.sh` twice causes a "Device busy" conflict on `/dev/video0` — always `fuser -k /dev/video0` first.

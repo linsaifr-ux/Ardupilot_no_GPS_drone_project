@@ -122,11 +122,12 @@ ZONE_VERTS = [
     (121.0, -1293.0),   # SW'
 ]
 
-# Camera parameters (IMX219 CSI, publish resolution matches csi_camera_node.py)
-CAM_W     = 1640
-CAM_H     = 1232
-HFOV_DEG  = 62.2
-VFOV_DEG  = 48.8
+# Camera parameters (AP-IMX900 USB3, v4l2 image_size publish resolution;
+# 4mm CS-mount lens FOV computed from sensor geometry, no datasheet spec yet)
+CAM_W     = 1280
+CAM_H     = 960
+HFOV_DEG  = 59.9
+VFOV_DEG  = 46.7
 
 VEHICLE_CLASSES = {"car", "van", "truck", "bus"}
 

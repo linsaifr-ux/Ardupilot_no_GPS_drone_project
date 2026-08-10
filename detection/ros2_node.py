@@ -3,7 +3,7 @@
 YOLOv8 vehicle detector as a ROS2 node with live postview.
 
 Subscribes:
-  /drone/camera/image_raw  (sensor_msgs/Image, rgb8, 1640×1232)
+  /drone/camera/image_raw  (sensor_msgs/Image, rgb8, 1280×960)
   /drone/pose              (geometry_msgs/PoseStamped, frame_id="wgs84")
 
 Publishes:
@@ -66,7 +66,7 @@ class YOLONode(rclpy.node.Node):
         super().__init__("yolo_detector")
 
         self._headless = headless
-        # (960, 1280) rect engine matches the 1640×1232 camera's aspect ratio —
+        # (960, 1280) rect engine matches the 1280×960 camera's aspect ratio —
         # same scale as the old 1280×1280 square letterbox but no padding, so
         # preprocess + inference both do ~25% less work at identical accuracy.
         self._det = YOLODetector(MODEL_PT, conf=0.50, imgsz=(960, 1280))

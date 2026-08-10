@@ -2,12 +2,12 @@
 """
 Field database collection recorder.
 
-Records 1640×1232 30fps H.265 video alongside a telemetry CSV, and
+Records 2048×1536 30fps H.265 video alongside a telemetry CSV, and
 optionally streams a 1280×720 H.265 preview with a telemetry overlay
 to a ground station or a MediaMTX relay server.
 
-Video and stream share a single OpenCV capture of the IMX219 CSI camera
-(nvarguscamerasrc, sensor-id=0).
+Video and stream share a single OpenCV capture of /dev/video0
+(AP-IMX900-Mini-USB3-I5, USB3/v4l2, YUYV).
 Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
 
 Requires MAVROS only — reads GPS/AGL/heading directly from /mavros/global_position/*,
@@ -41,7 +41,7 @@ Usage:
     --openhd-bitrate BPS   H.264 bitrate (default: 4000000)
 
 Output files in DIR/:
-    video.mkv          H.265, 1640×1232 30fps (MKV — crash-safe)
+    video.mkv          H.265, 2048×1536 30fps (MKV — crash-safe)
     telemetry.csv      unix_time, lat, lon, alt_amsl, alt_agl, heading_deg, rc_channels  (5 Hz)
                        rc_channels is the raw /mavros/rc/in PWM list (space-separated) —
                        check the EKF-source switch channel (RCx_OPTION=90) stayed LOW
@@ -108,7 +108,7 @@ from imu_logger import IMU_OK_FRACTION, IMU_REQUEST_HZ   # sidecar (same dir)
 Gst.init(None)
 
 # ── Camera / pipeline constants ────────────────────────────────────────────────
-REC_W,    REC_H,    FPS  = 1640, 1232, 30
+REC_W,    REC_H,    FPS  = 2048, 1536, 30
 STREAM_W, STREAM_H       = 1280,  720
 OVERLAY_H                = 44     # height of black telemetry bar at bottom of stream
 
@@ -204,7 +204,7 @@ def _crop_resize_stream(bgr_full):
     """Center-crop 4:3 → 16:9 and resize to stream resolution."""
     # Crop vertically to 16:9 before resizing (avoids horizontal stretch)
     src_h, src_w = bgr_full.shape[:2]
-    crop_h = src_w * 9 // 16          # e.g. 1640 → 922
+    crop_h = src_w * 9 // 16          # e.g. 2048 → 1152
     y0c = (src_h - crop_h) // 2
     return cv2.resize(bgr_full[y0c:y0c + crop_h, :], (STREAM_W, STREAM_H))
 
@@ -249,23 +249,49 @@ def _make_stream_frame(frame, telem, imu_hz=None):
 
 # ── Camera helpers ────────────────────────────────────────────────────────────
 
-def _open_camera(retries=10, delay=2.0):
-    """Open the IMX219 CSI camera (nvarguscamerasrc/ISP) at REC_W×REC_H.
-
-    Returns cap or None after all retries. Raw V4L2 open of /dev/video0 won't
-    work here — the IMX219 exposes raw Bayer (RG10), not YUYV; nvarguscamerasrc
-    goes through the ISP for debayering/AWB/AE.
+def _find_camera_device():
+    """Find the AP-IMX900 by USB descriptor name instead of assuming
+    /dev/video0 — the Jetson's other camera (IMX219, CSI) can be connected
+    at the same time and /dev/videoN enumeration order isn't guaranteed
+    stable across reboots/replugs. Falls back to /dev/video0 (the prior
+    hardcoded default) if v4l2-ctl isn't available or finds no match.
     """
-    pipeline = (
-        f'nvarguscamerasrc sensor-id=0 ! '
-        f'video/x-raw(memory:NVMM),width={REC_W},height={REC_H},framerate={FPS}/1,format=NV12 ! '
-        f'nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! '
-        f'appsink drop=true max-buffers=1 sync=false'
-    )
+    try:
+        out = subprocess.run(['v4l2-ctl', '--list-devices'],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return '/dev/video0'
+    found = False
+    for line in out.splitlines():
+        if 'APPROPHO' in line or 'IMX900' in line:
+            found = True
+            continue
+        if found and '/dev/video' in line:
+            return line.strip()
+        if found and line and not line[0].isspace():
+            found = False
+    return '/dev/video0'
+
+
+def _open_camera(retries=10, delay=2.0):
+    """Open the AP-IMX900 at REC_W×REC_H. Returns cap or None after all retries.
+
+    MJPG, not YUYV — this camera only exposes raw YUYV at 640x480/360; at
+    REC_W×REC_H it's MJPG/H264-only. OpenCV's V4L2 backend decodes MJPG
+    transparently, so this just works like any other fourcc here.
+    """
+    device = _find_camera_device()
     for attempt in range(retries):
-        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        cap.set(cv2.CAP_PROP_FOURCC,      cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  REC_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, REC_H)
+        cap.set(cv2.CAP_PROP_FPS,          FPS)
         if cap.isOpened():
-            return cap
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if w == REC_W and h == REC_H:
+                return cap
         cap.release()
         if attempt < retries - 1:
             time.sleep(delay)
@@ -428,12 +454,12 @@ def main():
     cap = _open_camera()
     if cap is None:
         rclpy.shutdown()
-        holders = subprocess.run(['fuser', '/dev/video0'],
+        device = _find_camera_device()
+        holders = subprocess.run(['fuser', device],
                                  capture_output=True, text=True).stdout.strip()
-        hint = (f' — PIDs holding /dev/video0: {holders} (kill them first)' if holders else
-                ' — no local fd holders; a stale Argus CaptureSession is the likely cause '
-                '(sudo systemctl restart nvargus-daemon), or the ribbon cable is unseated')
-        sys.exit(f'[REC] Cannot open camera at {REC_W}×{REC_H}{hint}')
+        hint = (f' — PIDs holding {device}: {holders} (kill them first)' if holders else
+                ' — no other process holds it; try replugging')
+        sys.exit(f'[REC] Cannot open camera ({device}) at {REC_W}×{REC_H}{hint}')
 
     # ── GStreamer pipelines ────────────────────────────────────────────────────
     rec_pipe = _build_rec_pipeline(video_path, args.bitrate)

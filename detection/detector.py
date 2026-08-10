@@ -52,7 +52,7 @@ class YOLODetector:
                  imgsz: int | tuple[int, int] = 1280, use_tensorrt: bool = True):
         self.conf  = conf
         # (h, w) — a rectangular size matching the camera's aspect ratio avoids
-        # burning compute on letterbox padding: 1640×1232 into a 1280×1280
+        # burning compute on letterbox padding: 1280×960 into a 1280×1280
         # square wastes ~25% of the input on gray bars; (960, 1280) runs the
         # same pixels at the same scale with none.
         self.imgsz: tuple[int, int] = \

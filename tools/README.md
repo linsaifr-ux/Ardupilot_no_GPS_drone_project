@@ -6,9 +6,9 @@ Standalone tools for monitoring, streaming, and analysing drone flights.
 
 ## record_field.py — Field database collection recorder
 
-Records 1640×1232 30fps H.265 video (H.264→H.265 2026-07-07) from the IMX219 CSI camera directly (via OpenCV + GStreamer `nvarguscamerasrc`/ISP + `appsrc`) alongside a telemetry CSV (lat/lon/AGL/heading/RC-channels at 5 Hz via ROS2) and a per-frame capture-timestamp CSV. Frames are rotated 180° after capture. Auto-spawns the `imu_logger.py` sidecar (FC IMU + attitude at 50 Hz for VIO — its own process, never in-process; see `instructions/vio_data_collection.md`). IMU rate is `--imu-hz` (default 200; field standard since 2026-07-23 is `--imu-hz 333` → ~346 Hz actual, the firmware's grantable max — removes the RAW_IMU stream-decimation vibration aliasing, `instructions/vpe_jump_runaway_diagnosis.md` §14-6; the Desktop launcher passes it). Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server, and/or H.264 RTP to an OpenHD ground station.
+Records 2048×1536 30fps H.265 video (H.264→H.265 2026-07-07) from the AP-IMX900 USB3 camera directly (via OpenCV V4L2/MJPG capture, then GStreamer `appsrc` for H.265 encode) alongside a telemetry CSV (lat/lon/AGL/heading/RC-channels at 5 Hz via ROS2) and a per-frame capture-timestamp CSV. Frames are rotated 180° after capture. Auto-spawns the `imu_logger.py` sidecar (FC IMU + attitude at 50 Hz for VIO — its own process, never in-process; see `instructions/vio_data_collection.md`). IMU rate is `--imu-hz` (default 200; field standard since 2026-07-23 is `--imu-hz 333` → ~346 Hz actual, the firmware's grantable max — removes the RAW_IMU stream-decimation vibration aliasing, `instructions/vpe_jump_runaway_diagnosis.md` §14-6; the Desktop launcher passes it). Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server, and/or H.264 RTP to an OpenHD ground station.
 
-**Do NOT run `launch_camera.sh` at the same time** — both open an Argus CaptureSession on the same sensor.  
+**Do NOT run `launch_camera.sh` at the same time** — both open the camera device and only one process can hold it at a time.  
 Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*` and RC input from `/mavros/rc/in`. `hw_bridge.py` is not needed.
 
 > **Known issue:** prints `waiting for GPS …` until `/mavros/global_position/global` receives a fix. On a no-GPS flight (GPS jammed), the status line stays stuck but **recording continues normally** — video and AGL/heading still write to CSV. Fix pending: replace lat/lon source with AnyLoc pose.
@@ -77,12 +77,12 @@ Generates Mission Planner QGC WPL 110 `.waypoints` files for the AnyLoc database
 ```bash
 python3 tools/gen_survey_waypoints.py                 # full mission → field_data/survey_mission_full.waypoints
 python3 tools/gen_survey_waypoints.py --split 4       # 4 equal N-S sub-missions
-python3 tools/gen_survey_waypoints.py --spacing 22    # 22 m spacing (72 % sidelap, denser)
+python3 tools/gen_survey_waypoints.py --spacing 21    # 21 m spacing (72 % sidelap, denser)
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--spacing M` | auto | Strip spacing in metres (default: 50 % sidelap of the camera footprint at the effective AGL — 39.2 m at the default 65 m AGL) |
+| `--spacing M` | auto | Strip spacing in metres (default: 50 % sidelap of the camera footprint at the effective AGL — 37 m at the default 65 m AGL) |
 | `--split N` | 1 | Split into N equal-width N-S sub-missions |
 | `--outdir DIR` | `field_data` | Output directory |
 | `--center-lat/--center-lon` | unset | Override: box center, instead of the hardcoded contest-zone `CORNERS` (all four of `--center-lat/--center-lon/--width-m/--height-m` required together) |
@@ -93,11 +93,11 @@ python3 tools/gen_survey_waypoints.py --spacing 22    # 22 m spacing (72 % sidel
 
 All the override flags are pure additions — omit them and the contest-zone `CORNERS`/65 m AGL/3 m/s defaults are unchanged (verified byte-identical output with and without the code that added these flags).
 
-Default output (27 strips, 39.2 m spacing, 50 % sidelap):
+Default output (28 strips, 37 m spacing, 50 % sidelap):
 ```
 Survey area  : 2091 m (E-W) × 1025 m (N-S)  = 2.14 km²
-Strip spacing: 39 m  →  50 % sidelap
-Total distance: 57.5 km  ~319 min  (~16 batteries @ 20 min each)
+Strip spacing: 37 m  →  50 % sidelap
+Total distance: 59.6 km  ~331 min  (~17 batteries @ 20 min each)
 ```
 
 Example targeting a different site (e.g. a database-collection flight to validate against a specific test flight, not the contest zone):
@@ -137,8 +137,8 @@ Feed directly to `anyloc/build_database_real.py`.
 
 Stitches `extract_frames.py` output into a single georeferenced raster, so you can see at a
 glance what area a mapping flight actually covered before trusting the resulting AnyLoc
-database. Each frame's ground footprint is sized from AGL + the IMX219's known FOV
-(62.2°×48.8°, same constants as `anyloc/build_database.py`/`anyloc/localizer.py`) and placed
+database. Each frame's ground footprint is sized from AGL + the AP-IMX900's known FOV
+(59.9°×46.7°, computed — same constants as `anyloc/build_database.py`/`anyloc/localizer.py`) and placed
 on a local-ENU canvas by GPS position. Compositing is sequential alpha-over in flight order
 with feathered edges (soft-blended over `--feather-px`, default 25px, full opacity in the
 interior) — an earlier hard-cutoff version showed a harsh terraced/duplicated look between
@@ -281,7 +281,7 @@ bash control/launch_real_hw.sh --stream-server 118.232.160.227    # mode B
 
 ## gstreamer_stream.py — Simple H.265 camera stream (camera + AnyLoc only)
 
-Opens the IMX219 CSI camera directly with OpenCV/GStreamer (`nvarguscamerasrc`) and streams a 1280×480 two-panel view via H.265/RTP/UDP. Simpler than `ground_view_stream.py` — no YOLO boxes, no detection crops, no ROS2 node.
+Opens the AP-IMX900 USB3 camera directly with OpenCV (V4L2/MJPG) and streams a 1280×480 two-panel view via GStreamer H.265/RTP/UDP. Simpler than `ground_view_stream.py` — no YOLO boxes, no detection crops, no ROS2 node.
 
 ```
 Left panel  (640×480): live camera + AnyLoc telemetry overlay
@@ -303,13 +303,13 @@ gst-launch-1.0 udpsrc port=5000 ! \
 # Or VLC: Media → Open Network Stream → rtp://@:5000
 ```
 
-**Important:** opens an Argus CaptureSession directly — do NOT also run `launch_camera.sh` (only one CaptureSession is allowed on the sensor at a time). `ground_view_stream.py` doesn't open the camera itself, so it's fine to run alongside this one.
+**Important:** opens the camera device directly — do NOT also run `launch_camera.sh` (only one process can hold the device at a time). `ground_view_stream.py` doesn't open the camera itself, so it's fine to run alongside this one.
 
 | Flag | Default | Description |
 |---|---|---|
 | `--host IP` | `GROUND_IP` env or `10.181.156.237` | Ground station IP |
 | `--port N` | 5000 | UDP port |
-| `--camera N` | 0 | Argus sensor-id |
+| `--camera N` | auto-detect | Camera index — auto-detected by USB descriptor name (AP-IMX900), override to force a specific `/dev/videoN` index |
 | `--bitrate N` | 1000000 | H.265 bitrate (bits/s) |
 
 **Requires:** nvidia-l4t-gstreamer, python3-gi (both on JetPack 36.x)

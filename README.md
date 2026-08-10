@@ -61,7 +61,7 @@ no_GPS_drone_project/
 │   ├── px4_sim_bridge.py         # PX4 HIL bridge (TCP 4560, pymavlink)
 │   ├── sitl_bridge.py            # ArduPilot SIM_JSON bridge (UDP 9002)
 │   ├── px4_commander.py          # PX4 survey: OFFBOARD→65m→7-strip E-W 12m/s lawnmower (91.7m spacing, 33m overlap, ~10.2 min); YOLO logs via yaw-corrected pixel projection→fly home→AUTO.LAND
-│   ├── ardupilot_commander.py    # ArduPilot survey: GUIDED→NAV_TAKEOFF→65m→10-strip E-W 12m/s lawnmower (53.9m spacing, IMX219 camera)→LAND (ported from px4_commander.py; ENU setpoint fix)
+│   ├── ardupilot_commander.py    # ArduPilot survey: GUIDED→NAV_TAKEOFF→65m→11-strip E-W 12m/s lawnmower (51.5m spacing, AP-IMX900 4mm-lens camera)→LAND (ported from px4_commander.py; ENU setpoint fix)
 │   ├── flight_commander.py       # ArduPilot mission (reference archive; superseded by ardupilot_commander.py)
 │   ├── px4_no_gps.params         # PX4: EKF2_EV_CTRL=15, GPS off, no RC
 │   ├── no_gps.parm               # ArduPilot: EK3 ExternalNav, GPS off, WPNAV_SPEED=1200 cm/s

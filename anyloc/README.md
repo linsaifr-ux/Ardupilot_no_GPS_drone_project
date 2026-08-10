@@ -196,7 +196,7 @@ Then flip RC aux switch to HIGH (SRC2 = ExternalNav) and watch for `✓ POS_ABS 
 
 | Direction | Topic | Type | Notes |
 |---|---|---|---|
-| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1640×1232, 30 fps |
+| Subscribe | `/drone/camera/image_raw` | `sensor_msgs/Image` | rgb8, 1280×960, 30 fps |
 | Subscribe | `/drone/pose` | `geometry_msgs/PoseStamped` | WGS84 (lat, lon, alt_amsl) — hw_bridge relays ArduPilot's own EKF output (`/mavros/global_position/global`), whichever source (GPS or ExternalNav/VPE) is active |
 | Subscribe | `/drone/agl` | `std_msgs/Float64` | AGL — hw_bridge relays `/mavros/global_position/rel_alt` (ArduPilot's own relative altitude) |
 | Publish | `/anyloc/pose_estimate` | `geometry_msgs/PoseWithCovarianceStamped` | WGS84 estimate (monitoring) |
