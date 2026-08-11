@@ -112,6 +112,12 @@ REC_W,    REC_H,    FPS  = 2048, 1536, 30
 STREAM_W, STREAM_H       = 1280,  720
 OVERLAY_H                = 44     # height of black telemetry bar at bottom of stream
 
+# Reconnect backoff for the network stream sinks (RTSP relay / OpenHD) when
+# their pipeline errors out (e.g. an LTE drop) — doubles per consecutive
+# failure, capped. Mirrors ground_view_stream.py's _reconnect().
+RECONNECT_BACKOFF_S     = 2.0
+RECONNECT_BACKOFF_MAX_S = 30.0
+
 
 # ── Telemetry ──────────────────────────────────────────────────────────────────
 
@@ -320,10 +326,21 @@ def _build_rec_pipeline(video_path, bitrate):
     )
 
 
+# Bound end-to-end latency AND decouple appsrc from downstream stalls: if the
+# network sink (UDP/TCP over LTE) can't keep up or hangs entirely (e.g. a
+# dropped RTSP TCP connection), drop stale frames here instead of blocking the
+# appsrc push — which would otherwise freeze the whole capture loop (including
+# local recording) since everything runs on one thread. Without this, a lost
+# relay connection hung push-buffer indefinitely (survey43, 2026-08-11).
+_NET_QUEUE = ('queue leaky=downstream max-size-buffers=2 max-size-bytes=0 '
+              'max-size-time=0 ! ')
+
+
 def _build_stream_pipeline(host, port, bitrate):
     return Gst.parse_launch(
         f'appsrc name=stream format=time is-live=true block=true '
         f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        + _NET_QUEUE +
         f'videoconvert ! '
         f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
         f'nvv4l2h265enc bitrate={bitrate} preset-level=UltraFastPreset '
@@ -342,6 +359,7 @@ def _build_server_pipeline(server, rtsp_path, bitrate):
     return Gst.parse_launch(
         f'appsrc name=stream format=time is-live=true block=true '
         f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        + _NET_QUEUE +
         f'videoconvert ! '
         f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
         f'nvv4l2h265enc bitrate={bitrate} preset-level=UltraFastPreset '
@@ -363,6 +381,7 @@ def _build_openhd_pipeline(host, port, bitrate):
     return Gst.parse_launch(
         f'appsrc name=openhd format=time is-live=true block=true '
         f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        + _NET_QUEUE +
         f'videoconvert ! '
         f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
         f'nvv4l2h264enc bitrate={bitrate} control-rate=1 insert-sps-pps=true '
@@ -468,24 +487,72 @@ def main():
 
     stream_pipe = None
     stream_src  = None
+    stream_bus  = None
     if args.stream_host:
         stream_pipe = _build_stream_pipeline(
             args.stream_host, args.stream_port, args.stream_bitrate)
         stream_src = stream_pipe.get_by_name('stream')
         stream_pipe.set_state(Gst.State.PLAYING)
+        stream_bus = stream_pipe.get_bus()
     elif args.stream_server:
         stream_pipe = _build_server_pipeline(
             args.stream_server, args.stream_rtsp_path, args.stream_bitrate)
         stream_src = stream_pipe.get_by_name('stream')
         stream_pipe.set_state(Gst.State.PLAYING)
+        stream_bus = stream_pipe.get_bus()
 
     openhd_pipe = None
     openhd_src  = None
+    openhd_bus  = None
     if args.stream_openhd:
         openhd_pipe = _build_openhd_pipeline(
             args.stream_openhd, args.openhd_port, args.openhd_bitrate)
         openhd_src = openhd_pipe.get_by_name('openhd')
         openhd_pipe.set_state(Gst.State.PLAYING)
+        openhd_bus = openhd_pipe.get_bus()
+
+    stream_consec_fail = 0
+    stream_ok_count    = 0
+    openhd_consec_fail = 0
+    openhd_ok_count     = 0
+
+    def _reconnect_stream(reason: str):
+        """Rebuild the stream pipeline after its TCP/UDP sink errors out.
+
+        Mirrors ground_view_stream.py's _reconnect(): rtspclientsink doesn't
+        recover from a lost TCP connection on its own, leaving the pipeline
+        stuck with nothing consuming appsrc's buffers (the leaky queue above
+        keeps the frame loop itself unblocked, but the stream stays dead
+        until the pipeline is torn down and rebuilt).
+        """
+        nonlocal stream_pipe, stream_src, stream_bus
+        print(f'\n[REC] Stream connection lost ({reason}) — reconnecting …', flush=True)
+        try:
+            stream_pipe.set_state(Gst.State.NULL)
+        except Exception:
+            pass
+        if args.stream_host:
+            stream_pipe = _build_stream_pipeline(
+                args.stream_host, args.stream_port, args.stream_bitrate)
+        else:
+            stream_pipe = _build_server_pipeline(
+                args.stream_server, args.stream_rtsp_path, args.stream_bitrate)
+        stream_src = stream_pipe.get_by_name('stream')
+        stream_pipe.set_state(Gst.State.PLAYING)
+        stream_bus = stream_pipe.get_bus()
+
+    def _reconnect_openhd(reason: str):
+        nonlocal openhd_pipe, openhd_src, openhd_bus
+        print(f'\n[REC] OpenHD connection lost ({reason}) — reconnecting …', flush=True)
+        try:
+            openhd_pipe.set_state(Gst.State.NULL)
+        except Exception:
+            pass
+        openhd_pipe = _build_openhd_pipeline(
+            args.stream_openhd, args.openhd_port, args.openhd_bitrate)
+        openhd_src = openhd_pipe.get_by_name('openhd')
+        openhd_pipe.set_state(Gst.State.PLAYING)
+        openhd_bus = openhd_pipe.get_bus()
 
     # ── Print header ───────────────────────────────────────────────────────────
     print(f'[REC] Output  → {out}/')
@@ -565,14 +632,62 @@ def main():
                 break
 
             # Push the same overlay view (telemetry bar + IMU rate + clock)
-            # to every active stream sink.
+            # to every active stream sink. Each sink's appsrc feeds straight
+            # into its own leaky queue, so a stalled network write can't
+            # block this loop — but the pipeline still needs an explicit
+            # rebuild once it errors out, or it stays dark for the rest of
+            # the flight.
+            if stream_bus is not None:
+                msg = stream_bus.timed_pop_filtered(
+                    0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if msg is not None:
+                    reason = ('EOS' if msg.type == Gst.MessageType.EOS
+                              else msg.parse_error()[0].message)
+                    stream_consec_fail += 1
+                    stream_ok_count = 0
+                    time.sleep(min(RECONNECT_BACKOFF_S * (2 ** (stream_consec_fail - 1)),
+                                   RECONNECT_BACKOFF_MAX_S))
+                    _reconnect_stream(reason)
+
+            if openhd_bus is not None:
+                msg = openhd_bus.timed_pop_filtered(
+                    0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if msg is not None:
+                    reason = ('EOS' if msg.type == Gst.MessageType.EOS
+                              else msg.parse_error()[0].message)
+                    openhd_consec_fail += 1
+                    openhd_ok_count = 0
+                    time.sleep(min(RECONNECT_BACKOFF_S * (2 ** (openhd_consec_fail - 1)),
+                                   RECONNECT_BACKOFF_MAX_S))
+                    _reconnect_openhd(reason)
+
             if stream_src is not None or openhd_src is not None:
                 view = _crop_resize_stream(frame)
                 _make_stream_frame(view, logger.snapshot(), imu_hz_cached)
                 if openhd_src is not None:
-                    _push(openhd_src, view, frame_idx)
+                    flow = _push(openhd_src, view, frame_idx)
+                    if flow != Gst.FlowReturn.OK:
+                        openhd_consec_fail += 1
+                        openhd_ok_count = 0
+                        time.sleep(min(RECONNECT_BACKOFF_S * (2 ** (openhd_consec_fail - 1)),
+                                       RECONNECT_BACKOFF_MAX_S))
+                        _reconnect_openhd(f'push-buffer returned {flow}')
+                    else:
+                        openhd_ok_count += 1
+                        if openhd_consec_fail and openhd_ok_count >= FPS * 15:
+                            openhd_consec_fail = 0
                 if stream_src is not None:
-                    _push(stream_src, view, frame_idx)
+                    flow = _push(stream_src, view, frame_idx)
+                    if flow != Gst.FlowReturn.OK:
+                        stream_consec_fail += 1
+                        stream_ok_count = 0
+                        time.sleep(min(RECONNECT_BACKOFF_S * (2 ** (stream_consec_fail - 1)),
+                                       RECONNECT_BACKOFF_MAX_S))
+                        _reconnect_stream(f'push-buffer returned {flow}')
+                    else:
+                        stream_ok_count += 1
+                        if stream_consec_fail and stream_ok_count >= FPS * 15:
+                            stream_consec_fail = 0
 
             frame_idx += 1
 
