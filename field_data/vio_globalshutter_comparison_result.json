@@ -1,0 +1,54 @@
+{
+  "STATUS": "INVALID - filter diverged catastrophically, numbers are NOT meaningful VIO accuracy figures",
+  "see": "field_data/vio_globalshutter_test_README.md for full diagnosis",
+  "results": [
+    {
+      "name": "survey38",
+      "agl": "~10m AGL",
+      "window": [
+        194.0,
+        313.0
+      ],
+      "dur_s": 119.0,
+      "n": 1725,
+      "path_len_m": 368.7209596104129,
+      "mean_speed_mps": 3.0984954589110325,
+      "rmse_m": 20324.925401074073,
+      "mean_err_m": 15451.98102940763,
+      "max_err_m": 45412.03743266594,
+      "max_err_pct_path": 12316.09873239858
+    },
+    {
+      "name": "survey41",
+      "agl": "~65m AGL",
+      "window": [
+        79.4,
+        189.2
+      ],
+      "dur_s": 109.79999999999998,
+      "n": 1361,
+      "path_len_m": 666.1926584435205,
+      "mean_speed_mps": 6.06732840112496,
+      "rmse_m": 20990.032719274746,
+      "mean_err_m": 16416.89657596002,
+      "max_err_m": 42043.61458583785,
+      "max_err_pct_path": 6311.0294076292785
+    },
+    {
+      "name": "survey42",
+      "agl": "~100m AGL",
+      "window": [
+        112.0,
+        229.4
+      ],
+      "dur_s": 117.4,
+      "n": 1688,
+      "path_len_m": 687.9624915933937,
+      "mean_speed_mps": 5.859987151562127,
+      "rmse_m": 1752.7172696962928,
+      "mean_err_m": 1259.921421214868,
+      "max_err_m": 4061.1460208216445,
+      "max_err_pct_path": 590.3150346780683
+    }
+  ]
+}

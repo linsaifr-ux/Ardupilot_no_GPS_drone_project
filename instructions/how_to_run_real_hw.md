@@ -157,6 +157,10 @@ python3 tools/record_field.py --output field_data/survey1 --stream-host <GS_IP> 
 python3 tools/record_field.py --output field_data/survey1 --stream-server 118.232.160.227 --imu-hz 333
 # Optionally add --stream-openhd to also feed the OpenHD ground station
 # (H.264 RTP → 192.168.2.2:5601, same overlay view, coexists with the relay stream)
+# Optionally add --imx219 to also record the IMX219 CSI camera concurrently
+# (independent HW-encode pipeline, degrades to primary-only if it's not
+# connected/available; Desktop field_data_collection.sh passes this by default
+# since 2026-08-13) → writes video_imx219.mkv + frame_times_imx219.csv
 # → writes field_data/survey1/video.mkv  telemetry.csv  meta.json  frame_times.csv
 #   + imu.csv (FC IMU via the auto-spawned tools/imu_logger.py sidecar; --imu-hz 333
 #     is the field standard since 2026-07-23 → ~346 Hz actual, removes stream-decimation

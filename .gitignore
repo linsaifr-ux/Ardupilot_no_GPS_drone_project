@@ -148,11 +148,13 @@ field_data/**/imu.csv
 field_data/**/attitude.csv
 field_data/**/imu_rates.json
 field_data/**/video.mkv
+field_data/**/video_imx219.mkv
 field_data/**/frames/
 field_data/**/frames.csv
 field_data/**/telemetry.csv
 field_data/**/meta.json
 field_data/**/frame_times.csv
+field_data/**/frame_times_imx219.csv
 
 # OpenVINS offline eval (field_data/**/vio_eval/): trajectory CSVs and run
 # logs are derived from the raw recording (which is not in git) — keep

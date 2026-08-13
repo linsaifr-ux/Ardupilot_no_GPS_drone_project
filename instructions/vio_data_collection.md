@@ -116,12 +116,21 @@ MP 的 HUD 用的是 10 Hz ATTITUDE(msg 30),完全不受影響。
 
 ## 4. 標定(Calibration)——每次相機重新安裝後做一次
 
-> ✅ **本機構型已完成 2026-07-23**:session `field_data/calib_20260723_001209`
-> (第 5 次錄製通過)→ PC Kalibr → 結果在該資料夾 `kalibr_output/`
-> (內參 fx/fy 1339.3/1335.9、radtan 畸變、外參 |t|=0.358 m 已實機確認、
-> 時間偏移 −56 ms),已寫入 `~/openvins_ws/config/survey17_kalibr[_dyn]`。
-> 完整驗收表:vpe_jump_runaway_diagnosis.md §14-1。
-> 下面程序留給**下次相機重裝後**重做用。
+> ⚠️ **舊機身(IMX219)已完成 2026-07-23,但已失效**:session
+> `field_data/calib_20260723_001209`(第 5 次錄製通過)→ PC Kalibr → 結果
+> 在該資料夾 `kalibr_output/`(內參 fx/fy 1339.3/1335.9、radtan 畸變、外參
+> |t|=0.358 m 已實機確認、時間偏移 −56 ms),曾寫入
+> `~/openvins_ws/config/survey17_kalibr[_dyn]`。完整驗收表:
+> vpe_jump_runaway_diagnosis.md §14-1。**2026-08-09 相機改回 AP-IMX900
+> (USB3,新 4mm CS-mount 鏡頭)後這份標定不再適用**(不同感光元件/鏡頭,
+> 內參/畸變全變,外參平移也可能因鏡頭殼體變大而偏移)。
+>
+> **現在進行中(2026-08-11 晚)**:錄影已完成(`field_data/
+> calib_20260811_232301` 為主要 session,122s、trim-head 需設 23s 而非腳本
+> 預設的 12.5s;`calib_20260811_232621` 86s 留作備援)、session 專屬
+> `KALIBR_PC_README.md` 已寫入該資料夾。下一步是 Frank 拿去 PC 端跑 Kalibr
+> Docker(§Phase 3-6,見 memory `ap-imx900-kalibr-calibration-plan`)。
+> 下面是**通用程序**,留給這次和之後每次相機重裝後參考用。
 
 OpenVINS 需要:相機內參、相機-IMU 外參(旋轉+平移)、時間偏移。
 全部用 Kalibr 從一段標定錄影算出:
@@ -224,11 +233,24 @@ OpenVINS 需要:相機內參、相機-IMU 外參(旋轉+平移)、時間偏移�
 
 - ~~IMX219 是 rolling shutter~~——2026-08-09 相機改回 AP-IMX900(USB3,
   4mm CS-mount 鏡頭),Sony/Appropho 規格確認為 **global shutter**
-  (Pregius S 系列),與 OpenVINS 的假設一致,此風險已不適用。
+  (Pregius S 系列)。
   (歷史記錄:IMX219 使用期間,2026-07-25 直接驗證(§14-16)發現轉彎失敗的
   實際訊號特徵(與轉彎「持續時間」相關,而非「尖峰角速度」)**不符合**
   rolling shutter 的機制特徵——真正主因是 KLT 追蹤器搜尋窗無運動
   預測(§14-17,已修),rolling shutter 本身當時也未證實是主要瓶頸。)
+  **2026-08-11 實測嘗試(§14-45)未能驗證這個假設**:survey38/41/42 用
+  復原後的 AP-IMX900 實飛,但這個機身+新鏡頭組合從未做過 Kalibr 標定,
+  臨時湊的 computed-FOV+沿用舊機身 extrinsics 種子讓 OpenVINS 三趟全部
+  災難性發散(RMSE 差 3-4 個數量級,凍結線上細修後更糟)——不是「global
+  shutter 沒用」,是這組克難標定不夠格拿來測。**這個假設目前仍是懸而未決,
+  不是已排除**;需要先幫這個機身+鏡頭做一次真正的 Kalibr 標定才能重測。
+  同日後續追問(§14-46)已排除旋轉觸發、排除掉幀/資料損毀兩個替代解釋,
+  嫌疑縮小到沿用的外參平移(lever arm)或內參本身量測不準。標定分階段
+  計畫已寫好,Phase 0-2(PC 端操作說明 + 擷取腳本)已備妥、**Phase 1 錄影
+  已完成**(2026-08-11 晚,`field_data/calib_20260811_232301` 為主要
+  session)、session 專屬 `KALIBR_PC_README.md` 已寫入該資料夾——下一步是
+  Frank 拿去 PC 端跑 Kalibr Docker(Phase 3-6),詳見 memory
+  `ap-imx900-kalibr-calibration-plan` 與本文件第 4 節。
 - **無硬體同步**:相機時間戳來自 Jetson appsink 讀取時刻
   (含 ISP 管線固定延遲 ~數十 ms),IMU 時間戳經 mavros timesync
   (毫秒級抖動)。固定偏移 Kalibr 能吸收,抖動吸收不了——

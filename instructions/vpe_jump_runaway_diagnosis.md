@@ -1,6 +1,6 @@
 # VPE 位置跳動導致飛機暴衝 — 問題診斷報告
 
-> 日期:2026-07-17(診斷)/ 2026-07-18(6-1 已實作並離線驗證,實飛驗證待做)/ 2026-07-22(第 11 節:真實 OpenVINS 首次離線結果;第 12 節:路線建議、氣壓計尺度修正、標定 FAQ;第 13 節:Kalibr 逐步操作)/ 2026-07-23(第 14 節:Kalibr 結果 + 標定後重跑判決——標定不是瓶頸,IMU 震動混疊已實證,解法排序;14-6 實機量測:333 Hz 串流驗證、batch logging 已上機;14-7 外場飛行計畫;14-8 外場飛行完成 + FFT 找到 134.3 Hz 震動線 + Stage 2 notch 已填;14-9 notch 已上機驗證 + survey25 OpenVINS 評估——爬升不再發散,巡航尺度仍塌縮;14-10 問答:巡航尺度解法不是 notch,是 AGL 景深先驗/物理減震)/ 2026-07-24(14-11 巡航尺度診斷:病灶在轉彎時的視覺端,非泛用 IMU 故障,accel bias 凍結+航向殘差實測佐證;14-12 陀螺閘門實作——硬閘門大勝、軟閘門修 cache 地雷後仍不如硬閘門,rolling shutter 判斷再獲強化,兩者最終仍頂不住多轉彎巡航;14-13 AGL 景深先驗修好了(4 次失敗是建置系統沒真的重編,不是幾何算錯)+ 與陀螺閘門合併評估——合併不是贏家,AGL 先驗單獨最強但仍在 ~470s 前發散;14-14 換路線:輸出端因果尺度修正(baro+AnyLoc-proxy 弧長)+ 錨點拉回——全程 170-472s rmse 76m/max 130m,第一個全程有界的結果,含誠實 caveat(理想錨點單獨 14m、跨轉彎斷訊時橋接失效);14-19 真的接上 AnyLoc(非模擬)——DB 重建 zoom20 是真上限(620→286m mean 大幅進步)、value facet 修正對此場地不成立(mini-ablation 輸給預設特徵)、端到端 231m 反而比模擬錨點差,域差距在確認過的解析度上限仍是主導瓶頸,離 FoundLoc 16.4m 還很遠;14-20 對照實驗實證域差距是主因——同域(drone vs drone)資料庫誤差只有 8.6m,比 zoom-20 衛星結果低 33 倍,AnyLoc/VLAD pipeline 本身沒問題,瓶頸 100% 在衛星影像來源;14-15 FoundLoc(CMU AirLab,同 AnyLoc-DINO VPR)兩機制移植——DBSCAN 假陽性過濾+陀螺輔助 degeneracy-aware 鎖定,用真實雜訊等級錨點誠實測試 rmse 137m;追問「為何不是 FoundLoc 的 20m」查出 pull 增益太弱太慢(掃描後 0.60 取代 0.30),乾淨錨點 76→35.3m 逼近 FoundLoc、雜訊錨點 137→93.8m;14-16 追問「真的是 rolling shutter 嗎」——直接測試結論不成立,損傷跟累積轉彎時間/角度(r=0.82)而非峰值角速度(r=0.35)相關,病灶更像追蹤累積失能;14-17 對症下藥:陀螺輔助 KLT 追蹤(15px 窗口零運動預測是真凶)——原始 VIO rmse 7703→2722m,峰值角速度相關性歸零,但下游融合層打平;14-18 重調融合層(eps 300→200)+ 上線前驗證(回歸測試逐位元組通過、機制結論獨立複現、12-seed 穩健性)——最終 rmse 77.9m/max 164m,今晚最佳且唯一經完整驗證的版本,下降段發散+殘餘 duration 相關性仍是已知未解限制;14-21 100m AGL 限定重測是乾淨的 null result,互動圖尾端漂移查出是懸停期間 frame extractor 沒取樣造成,加 `--max-time-gap` 修好)/ 2026-07-25(14-22 SITL AUTO 模式接上完整 pipeline 飛 survey25 航線——raw VPE 真實重現 EKF 暴衝(單 tick 跳 341.8m,觸發 GLITCH_RAD),slew limiter 消除跳動但飛出 11.5km 繞路、任務逾時未完成,證明 slew 只解決急性暴衝不解決精度問題;14-23 覆蓋範圍假說架構上測不出因果(先列為待辦)、照抄 AnyLoc 論文 Nardo-Air-R 旋轉對齊手法(意外挖出並修正一個方向 sign bug,286.5→228.6m mean)、系統化驗證「衛星圖不夠清楚」假說不成立(清晰度 vs 誤差相關性弱且非單調,r=-0.14~-0.23);14-24 2026-07-26 真正即時依位置查詢的 SITL 閉環+postview——找到並修好方向 bootstrap bug 與 SPEEDUP 配速 bug 後,最終結論:一旦偏離錄製航線,真實 pipeline 閉環不會自我修正(兩輪獨立測試方向一致,一個乾淨暴衝到 7000m+,一個 noisy 有界螺旋穩定在 2500-4250m);14-25 總結:瓶頸是資料庫 domain gap 不是 VIO(33倍對照實驗證據),下一步建議實機建圖飛行,附三個不能跳過的落差(跨飛行未測、需涵蓋整個任務區非單一航線、需獨立驗證飛行))/ 2026-07-27(14-26 建圖+驗證飛行真的飛了(survey33/survey32),跨飛行同域誤差 24.1m,符合預測;14-27 OpenVINS 執行檔過期地雷發現+修復(執行檔與 library 沒同步重連結,heap corruption);14-28 survey32 真實 AUTO 模式 SITL 閉環測試——第一個零暴衝結果,因航線全程在資料庫涵蓋範圍內;14-29 確認本專案人工起降、pipeline 只管巡航,任務改用 LOITER 取代 LAND;14-30 `--stride 1` 全影格率實測反而讓 raw VIO 更差,維持 stride=2 預設)
+> 日期:2026-07-17(診斷)/ 2026-07-18(6-1 已實作並離線驗證,實飛驗證待做)/ 2026-07-22(第 11 節:真實 OpenVINS 首次離線結果;第 12 節:路線建議、氣壓計尺度修正、標定 FAQ;第 13 節:Kalibr 逐步操作)/ 2026-07-23(第 14 節:Kalibr 結果 + 標定後重跑判決——標定不是瓶頸,IMU 震動混疊已實證,解法排序;14-6 實機量測:333 Hz 串流驗證、batch logging 已上機;14-7 外場飛行計畫;14-8 外場飛行完成 + FFT 找到 134.3 Hz 震動線 + Stage 2 notch 已填;14-9 notch 已上機驗證 + survey25 OpenVINS 評估——爬升不再發散,巡航尺度仍塌縮;14-10 問答:巡航尺度解法不是 notch,是 AGL 景深先驗/物理減震)/ 2026-07-24(14-11 巡航尺度診斷:病灶在轉彎時的視覺端,非泛用 IMU 故障,accel bias 凍結+航向殘差實測佐證;14-12 陀螺閘門實作——硬閘門大勝、軟閘門修 cache 地雷後仍不如硬閘門,rolling shutter 判斷再獲強化,兩者最終仍頂不住多轉彎巡航;14-13 AGL 景深先驗修好了(4 次失敗是建置系統沒真的重編,不是幾何算錯)+ 與陀螺閘門合併評估——合併不是贏家,AGL 先驗單獨最強但仍在 ~470s 前發散;14-14 換路線:輸出端因果尺度修正(baro+AnyLoc-proxy 弧長)+ 錨點拉回——全程 170-472s rmse 76m/max 130m,第一個全程有界的結果,含誠實 caveat(理想錨點單獨 14m、跨轉彎斷訊時橋接失效);14-19 真的接上 AnyLoc(非模擬)——DB 重建 zoom20 是真上限(620→286m mean 大幅進步)、value facet 修正對此場地不成立(mini-ablation 輸給預設特徵)、端到端 231m 反而比模擬錨點差,域差距在確認過的解析度上限仍是主導瓶頸,離 FoundLoc 16.4m 還很遠;14-20 對照實驗實證域差距是主因——同域(drone vs drone)資料庫誤差只有 8.6m,比 zoom-20 衛星結果低 33 倍,AnyLoc/VLAD pipeline 本身沒問題,瓶頸 100% 在衛星影像來源;14-15 FoundLoc(CMU AirLab,同 AnyLoc-DINO VPR)兩機制移植——DBSCAN 假陽性過濾+陀螺輔助 degeneracy-aware 鎖定,用真實雜訊等級錨點誠實測試 rmse 137m;追問「為何不是 FoundLoc 的 20m」查出 pull 增益太弱太慢(掃描後 0.60 取代 0.30),乾淨錨點 76→35.3m 逼近 FoundLoc、雜訊錨點 137→93.8m;14-16 追問「真的是 rolling shutter 嗎」——直接測試結論不成立,損傷跟累積轉彎時間/角度(r=0.82)而非峰值角速度(r=0.35)相關,病灶更像追蹤累積失能;14-17 對症下藥:陀螺輔助 KLT 追蹤(15px 窗口零運動預測是真凶)——原始 VIO rmse 7703→2722m,峰值角速度相關性歸零,但下游融合層打平;14-18 重調融合層(eps 300→200)+ 上線前驗證(回歸測試逐位元組通過、機制結論獨立複現、12-seed 穩健性)——最終 rmse 77.9m/max 164m,今晚最佳且唯一經完整驗證的版本,下降段發散+殘餘 duration 相關性仍是已知未解限制;14-21 100m AGL 限定重測是乾淨的 null result,互動圖尾端漂移查出是懸停期間 frame extractor 沒取樣造成,加 `--max-time-gap` 修好)/ 2026-07-25(14-22 SITL AUTO 模式接上完整 pipeline 飛 survey25 航線——raw VPE 真實重現 EKF 暴衝(單 tick 跳 341.8m,觸發 GLITCH_RAD),slew limiter 消除跳動但飛出 11.5km 繞路、任務逾時未完成,證明 slew 只解決急性暴衝不解決精度問題;14-23 覆蓋範圍假說架構上測不出因果(先列為待辦)、照抄 AnyLoc 論文 Nardo-Air-R 旋轉對齊手法(意外挖出並修正一個方向 sign bug,286.5→228.6m mean)、系統化驗證「衛星圖不夠清楚」假說不成立(清晰度 vs 誤差相關性弱且非單調,r=-0.14~-0.23);14-24 2026-07-26 真正即時依位置查詢的 SITL 閉環+postview——找到並修好方向 bootstrap bug 與 SPEEDUP 配速 bug 後,最終結論:一旦偏離錄製航線,真實 pipeline 閉環不會自我修正(兩輪獨立測試方向一致,一個乾淨暴衝到 7000m+,一個 noisy 有界螺旋穩定在 2500-4250m);14-25 總結:瓶頸是資料庫 domain gap 不是 VIO(33倍對照實驗證據),下一步建議實機建圖飛行,附三個不能跳過的落差(跨飛行未測、需涵蓋整個任務區非單一航線、需獨立驗證飛行))/ 2026-07-27(14-26 建圖+驗證飛行真的飛了(survey33/survey32),跨飛行同域誤差 24.1m,符合預測;14-27 OpenVINS 執行檔過期地雷發現+修復(執行檔與 library 沒同步重連結,heap corruption);14-28 survey32 真實 AUTO 模式 SITL 閉環測試——第一個零暴衝結果,因航線全程在資料庫涵蓋範圍內;14-29 確認本專案人工起降、pipeline 只管巡航,任務改用 LOITER 取代 LAND;14-30 `--stride 1` 全影格率實測反而讓 raw VIO 更差,維持 stride=2 預設)/ 2026-08-11(14-45 相機改回 AP-IMX900 global shutter 後實測 survey38/41/42——三趟全部災難性發散,診斷為這個機身+新鏡頭從未做過 Kalibr 標定,不是 shutter 類型問題,結論目前答不了;14-46 後續追問排除旋轉觸發、排除掉幀/資料損毀,把嫌疑縮小到外參平移(lever arm)或內參,標定分階段計畫已寫好、Phase 2 工具已備妥待 Frank 錄影;14-47 Phase 1 錄影完成(calib_20260811_232301 為主要 session)+ 發現 `--trim-head` 預設值 12.5s 過期地雷(這兩趟實際約 23-26.5s),session 專屬 KALIBR_PC_README.md 已備妥,下一步待 Frank 在 PC 上跑 Kalibr Docker)/ 2026-08-12(14-48 Kalibr Phase 4-6 完成:PC 端標定結果 reprojection error 略高於驗收線,但外參平移 |t|=0.259m 經 Frank 現場尺量確認完全吻合,接回 OpenVINS 新 config(ap_imx900_kalibr)重跑 survey38/41/42——過程中另外發現一個評測方法地雷(把 `run_video_msckf` 的擷取範圍直接設成 RMSE 評測窗會跳過起飛前靜置段,靜態初始化永遠觸發不了)並修正;結果:10m/65m 仍然災難性發散(rmse 26320m/9445m,速度暴衝模式與近似標定時幾乎一樣只是稍晚出現),100m 大幅改善(1753m→301.9m,5.8 倍進步,速度不再暴衝),但仍比舊 IMX219 相機同高度基準(75.8m)差約 4 倍——真標定是必要但不充分,結論收斂到「AGL 才是主因」呼應 §14-35/14-41,shutter 類型這個原始問題目前仍無法乾淨隔離驗證)/ 2026-08-12 稍晚(14-49 用新相機建同域 AnyLoc 資料庫(survey40→survey42,跨飛行 ~49 分鐘)實測完整 VPE 融合管線——同域檢索本身只有 ~159m 平均誤差、信心分數不分好壞,比 2026-07-27 舊相機的 24-25m 差很多;production anchor-chain(161.6m)、FoundLoc 風格 DBSCAN+陀螺鎖定 corrector(123.8-130.1m)都測了,結論意外:任何一種融合都打不贏乾脆只用 VO(36.5m)——錨點太爛時,融合邏輯越聰明反而讓壞錨點滲入越深;根因未定案,49 分鐘的光影落差是頭號嫌疑)
 > 狀態:**6-1 slew limiter 已實作**(`control/vpe_slew.py` + commander 接線,離線驗證見第 8 節);其餘方案未做
 > 相關檔案:`control/ardupilot_commander.py`、`control/vpe_slew.py`、`anyloc/ros2_node_vo_primary.py`、`control/real_hw.parm`
 
@@ -2425,3 +2425,292 @@ mean=-1.40° std=4.68°(範圍 -19.9°至 6.4°,大致貼平但轉彎時有真�
 **尚未量化這個誤差實際影響多大**,只是在補文件的過程中順便發現、記錄下來——
 留給未來一次專門的分析(例如檢查 pitch 大小是否與已知的 retrieval/VIO 誤差
 相關)。完整程式碼與數字寫在 `field_data/attitude_format.md` 文末。
+
+### 14-45. Global shutter 相機實測——結果:無法判讀,卡在沒有真標定(2026-08-11)
+
+Frank 用復原後的 AP-IMX900(4mm CS-mount 鏡頭,global shutter)新飛了五趟
+(survey38~42),問「global shutter 相機有沒有解決 VIO 問題」。用跟 §14-35
+完全相同的方法論(同一個 `run_video_msckf`、固定 4DOF 對齊、AGL 曲線抓
+巡航窗)在 survey38(~10m,對比 survey31)、survey41(~65m,無舊機身對照)、
+survey42(~100m,對比 survey32)上跑——survey39/40 是建圖用途,本次未跑。
+
+**卡關:`~/openvins_ws/config/` 只有 IMX219 那次(2026-07-23)的真 Kalibr 標定,
+復原回來的 AP-IMX900+4mm 新鏡頭組合從未做過 AprilGrid/Kalibr。** 臨時湊了一份
+「computed-FOV pinhole intrinsics(HFOV 59.9°/VFOV 46.7°,本身就是算出來、非
+實測)+ 沿用 IMX219 那次 Kalibr 的 extrinsics 當種子(理由:機身掛載位置理論
+上沒變,|t|=0.358m 是量過的物理事實)+ 三個 calib_cam_* 全開線上細修」的克難
+config(`survey38_ap_imx900_globalshutter/`),仿照當年 survey17 未標定首跑
+的作法。
+
+**結果:三趟全部災難性發散**,不是「比舊機身差一點」,是差 3-4 個數量級——
+survey38 RMSE 20325m(對比 survey31 的 3.0m)、survey42 RMSE 1753m(對比
+survey32 的 75.8m),起飛後幾秒內水平速度就衝到 8+ m/s(實際只是緩慢爬升到
+10m),典型 filter 發散,不是真實運動。
+
+**診斷:把 survey42 的 `calib_cam_extrinsics/intrinsics/timeoffset` 三個全部
+關掉(凍結種子值,不讓線上細修)重跑一次(`survey38_frozen_calib_diag/`)
+——結果更糟(229s 內飄到離原點 44.6km),排除「線上細修在搞破壞」這個解釋,
+指向種子本身(intrinsics 和/或 extrinsics)離真實幾何太遠,不是細修沒調好。
+computed-FOV intrinsics(未實測)和沿用自不同機身的 extrinsics 兩者都是可疑
+對象,這次測試無法區分是哪一個(或兩者都是)造成的。
+
+**結論:這個問題目前答不了。** rolling vs global shutter 的比較,前提是兩邊
+VIO 都要先收斂到物理上合理的軌跡,新機身這邊做不到——不是「global shutter
+沒有比較好」,是「這組克難標定不夠格拿來比」。要往下走,唯一路徑是先幫
+現在這組 AP-IMX900+4mm 鏡頭做一次真正的 Kalibr 標定(AprilGrid 錄影 + PC
+Docker,程序見 §13 / `KALIBR_PC_README.md`,這次沒做——現有的 calib_2026072*
+資料夾全部是 IMX219 那次的,對新鏡頭無效),標定完再重跑這次完全相同的
+比較。§14-16/14-17 當年在 IMX219 上得出的「主因是 KLT 追蹤無運動預測,不是
+快門類型」這個判讀維持不變(那是獨立的、跟這次標定缺口無關的證據),只是
+「換 global shutter 有沒有實測改善」這個獨立問題,目前仍是未知數。
+
+**檔案**:`field_data/vio_globalshutter_test_README.md`(完整記錄)、
+`field_data/vio_globalshutter_comparison_result.json`(數字已標註 INVALID)、
+`field_data/survey38(41,42)/vio_eval/vio_full_surveyXX.csv`(發散軌跡,留供
+標定補上後重新分析用)、`~/openvins_ws/config/survey38_ap_imx900_globalshutter/`
++ `survey38_frozen_calib_diag/`(兩份 config)。
+
+### 14-46. §14-45 後續追問三連——排除旋轉、排除掉幀、釐清「不只是尺度」,並把標定排上計畫(2026-08-11 同日稍晚)
+
+Frank 對 §14-45 的結果連續追問了幾個方向,逐一直接查證(不是理論推測):
+
+**(1) 是不是轉彎/旋轉造成的?**——把 attitude.csv 的真實姿態(四元數→yaw)
+跟 VIO 自己的速度爆走時間點對齊畫圖(`field_data/vio_globalshutter_
+rotation_check.png`)。結果**跟旋轉沒有關聯,甚至方向相反**:survey38/41
+在 yaw 完全平的時候就已經爆到數百 m/s(旋轉都還沒發生,發散已經在先);
+survey42 在一段真實 ~40° 的 yaw 轉彎中(t=18-33s)速度反而穩定維持 2.5m/s,
+轉完之後才開始發散。同時額外驗證:VIO 自己內部的姿態估計(qx,qy,qz,qw
+換算 yaw)跟真實姿態在這段真轉彎中相關係數 **0.9941**(誤差多數 <2°)——
+代表陀螺積分出來的姿態本身沒有嚴重跑掉,問題不在姿態/旋轉外參,排除
+「旋轉揭露了錯的旋轉外參」這條解釋。
+
+**(2) Frank 自己看影片覺得偶爾有 frame jump,是掉幀嗎?**——寫了逐幀
+灰階差異掃描(整支影片,`field_data/vio_globalshutter_framejump_check.png`),
+交叉比對每個視覺跳動是否對得上 frame_times.csv 的時間戳缺口。結果:
+survey38 全片 648 個視覺跳動、survey42 全片 58 個,但兩者合計 706 個裡
+**只有 9 個對應到真的時間異常(且都 <60ms,頂多漏一幀),其餘 98.7% 發生
+在完全正常的 ~33ms 間隔上**——是真實的鏡頭/場景運動(起降前後手持搬動、
+飛行中真轉彎),不是掉幀或資料損毀,也跟前面的發散無因果關係(集中在
+测試窗口之外,或發散早就已經發生之後)。
+
+**(3) 路徑形狀整個歪掉,不是應該「標定只影響尺度」嗎?**——這個直覺不對:
+相機-IMU 標定有四個獨立未知數,只有內參(焦距)主要對應尺度;外參
+**旋轉**錯了會讓視覺修正量套用到錯的軸向(直接污染姿態估計,但(1)已經
+排除這條);外參**平移**(lever arm,這次沿用的是不同機身的 0.358m 舊值)
+錯了的話,任何真實角速度(轉彎、甚至震動)都會透過 `v = v_imu + ω×r`
+耦合項誤讀成額外平移速度——這會扭曲路徑**形狀**而非只是縮放;時間偏移
+錯了同樣是形狀/相位問題。用同一組數據驗證:survey42 真轉彎期間 VIO 自己
+的 yaw 精準跟隨真實 yaw(見上),代表問題不在旋轉外參,**更可能是沿用
+的平移外參(lever arm)或內參/尺度耦合造成的 runaway feedback,而非旋轉
+外參錯誤**——把嫌疑範圍縮小到「這個機身真的需要重新量測」的那幾個參數,
+不是全盤都錯。
+
+**(4) 順手查了相機硬體本身的極限**:`v4l2-ctl --list-formats-ext` 確認
+2048x1536 MJPG 原生支援 30/60/80fps 三檔;直接繞過 record_field.py 的
+encode/串流管線、純 OpenCV 讀取這台相機量到穩定 29.64fps(median dt
+33.71ms,無停滯)——**相機硬體本身不是先前 survey39/40/41 fps 偏低
+(25.5-26.4fps)的原因**,那是已修的串流阻塞地雷(見 memory
+`record-field-stream-stall-fix`)造成的,不是相機能力問題。也重新確認了
+這個專案自己 2026-07-27 的 stride A/B 測試結論(§14-30):15Hz(stride=2)
+仍是目前實測最好的 VIO 餵料頻率,更高 fps(30Hz/stride=1)已證實讓 raw
+VIO 更差,相機原生 60-80fps 能力目前沒有直接用途(除非做動態 stride,
+尚未嘗試)。
+
+**這一輪的淨結果**:排除了旋轉、排除了資料損毀/掉幀,把嫌疑更精準地
+指向「這組克難標定的外參平移(或內參)量測不準」,而非某種全新的機制。
+**下一步已經是唯一路徑**:幫這個 AP-IMX900+4mm 鏡頭機身做一次真正的
+Kalibr 標定。完整分階段計畫已經寫好並著手準備第 2 階段(Frank 稍後
+會執行錄影,詳見 memory `ap-imx900-kalibr-calibration-plan`):
+
+- `tools/prepare_kalibr_input.py`(從舊標定 session 資料夾裡的一次性腳本
+  升格為可重用工具,本身其實已經跟相機無關,不需改動)
+- `instructions/KALIBR_PC_README_ap_imx900_globalshutter.md`(新相機專用
+  PC 端 Kalibr 操作說明模板,含這台相機的 sanity anchor:
+  fx≈1777/fy≈1779/cx≈1024/cy≈768、沿用的旋轉外參錨點、|t|≈0.358m 僅供
+  參考待重新量測)
+
+錄影+PC 端 Kalibr 跑完後,把結果接回 OpenVINS config、重跑跟這次完全
+相同的 survey38/41/42 評測,才能真正回答「global shutter 有沒有解決
+VIO」這個問題。
+
+**檔案**:`field_data/vio_globalshutter_rotation_check.png`、
+`field_data/vio_globalshutter_framejump_check.png`。
+
+### 14-47. Kalibr Phase 1 錄影完成 + trim-head 預設值過期地雷(2026-08-11 深夜)
+
+Frank 錄了兩趟 `record_field.py --calib`(FC 上電、串流到 MediaMTX relay 供
+即時確認取景)：`calib_20260811_232301`(122.4s,3656 幀)與
+`calib_20260811_232621`(86.2s,2546 幀)。
+
+**驗收(Jetson 端,兩趟都做)**:IMU 都乾淨——332.0 Hz 實測(對應
+`--imu-hz 333`),間隔標準差極小、**零 >14ms 缺口**;`meta.json` 的
+`frame_rotation_deg: 180`、`purpose: calibration` 都確認正確。
+
+**過程中發現的地雷**:一開始用稀疏抽樣(每 10 秒看一張)肉眼檢查,兩趟看起來
+差異很大(一趟像是清晰對焦、一趟像是嚴重失焦特寫)——但這只是抽樣運氣問題。
+換成程式化逐幀掃描(`cv2.aruco.detectMarkers`,`DICT_APRILTAG_36h11` +
+`markerBorderBits=2`,配合 Laplacian 變異數當清晰度指標,這台 OpenCV 是
+4.5.4、用的是舊版 `Dictionary_get`/`DetectorParameters_create` API 而非新版
+`ArucoDetector`)後才發現:**兩趟一開始都有一段清晰度/tag 偵測數趨近於零的
+「暗場/失焦」前導片段**——不是黑幀,是攝影機被撿起來對準標靶之前的過渡畫面
+——`calib_20260811_232301` 約持續到 t≈22.3-23.8s,`calib_20260811_232621`
+約持續到 t≈26.3-26.8s(兩者之後清晰度與 tag 數都跳升,例如前者從
+sharp≈7.9/tags≈1 跳到 sharp≈34-47/tags≈22-30)。
+
+`prepare_kalibr_input.py` 的 `--trim-head` 預設值是 **12.5s**,是照搬
+IMX219 那次(2026-07-23)錄影量出來的數字,對這兩趟新錄影**完全不適用**
+——如果照預設值跑,會把 10 秒左右的暗場/失焦幀混進 Kalibr 標定輸入。腳本
+docstring 本身已經提醒要「自行核對」,這次正是活生生的案例:稀疏肉眼抽樣
+會漏看,程式化掃描才抓到。已把這個提醒寫進 `tools/README.md` 的
+`prepare_kalibr_input.py` 條目,供以後任何新錄影重複使用同一套掃描方法,
+而不是直接信任預設值或抽幾張圖看看。
+
+**去除前導片段後的 tag 偵測掃描**(2Hz 取樣):`calib_20260811_232301`
+平均 12.8 tags/幀、中位數 6、39.2% 幀 ≥15 tags、41.8% 幀有 tag 貼近畫面
+邊緣(12% 邊界內,corner/edge 覆蓋度尚可);`calib_20260811_232621` 平均
+16.8、中位數 17、51.5% 幀 ≥15 tags,但邊緣覆蓋只有 30.3%、去除前導後可用
+長度只剩 ~60s(比前者的 ~99s 短)。
+
+**選定 `calib_20260811_232301` 為主要 session**(可用時長較長、邊緣覆蓋
+較好),`calib_20260811_232621` 留作備援(若主要 session 標定不收斂或
+驗收不過再用)。已把 `tools/prepare_kalibr_input.py` 複製進主要 session
+資料夾,並寫入一份填好真實數字(含正確 `--trim-head 23`)的
+`KALIBR_PC_README.md`,取代通用模板
+`instructions/KALIBR_PC_README_ap_imx900_globalshutter.md` 裡的
+`<TODO>` 佔位符。
+
+**下一步(Phase 3-6,Frank 手動)**:量測 AprilGrid 實際列印尺寸填入
+`target.yaml`、量測相機到 FC IMU 的實際距離、把 session 資料夾搬到有
+Docker 的 PC 上跑 `prepare_kalibr_input.py` + Kalibr 兩階段標定、把結果
+接回 OpenVINS config 後重跑 §14-45/14-46 完全相同的 survey38/41/42 評測。
+
+**檔案**:`field_data/calib_20260811_232301/KALIBR_PC_README.md`(填好的
+操作說明)、同資料夾 `prepare_kalibr_input.py`(複製自 `tools/`)。
+
+### 14-48. Phase 4-6 完成:真標定接回 OpenVINS——高 AGL 大幅改善,低/中 AGL 仍發散(2026-08-12)
+
+**Kalibr 結果(PC 端跑完,結果搬回 `field_data/calib_20260811_232301/kalibr_output/`)**:
+內參合理(fx=1891.3/fy=1890.4,與 FOV 推算的 sanity anchor 1777/1779 相差 ~6%,
+在 ±10-15% 容許內);外參旋轉與 nadir 掛載錨點相差僅 ~1.3°。但兩階段
+reprojection error 都**高於驗收線**——cam-only std 0.94-1.18px(線是 <0.5px)、
+imu-cam mean 1.36px(線是 <1px,IMX219 那次是 0.65px 過關)。外參平移
+|t|=0.259m 原本與舊機身量測值(0.358m,不同鏡頭)有落差,**Frank 現場拿尺量
+了目前機身的相機到 FC IMU 距離,結果正是 0.259m,完全吻合**——解除了
+§14-46 留下的平移不確定性,這是這次標定最強的正面訊號(即使 reprojection
+error 略高於線)。
+
+**接回 OpenVINS**:新建 `~/openvins_ws/config/ap_imx900_kalibr/`(鏡像
+`survey17_kalibr/` 結構),`kalibr_imucam_chain.yaml`/`kalibr_imu_chain.yaml`
+直接抄 Kalibr 輸出(注意 Kalibr 給的是 T_cam_imu,OpenVINS 要的 T_imu_cam 是
+其反矩陣,用 `calib_full-results-imucam.txt` 的 T_ic 或自己反矩陣皆可);
+`estimator_config.yaml` 把 `up_msckf_sigma_px`/`up_slam_sigma_px` 從 1 調到
+1.5,理由是這次量到的 reprojection error 比舊 sigma=1 所依據的 0.65px 高
+一倍,若仍用 sigma=1 會讓濾波器對視覺量測過度自信。
+
+**評測方法地雷(這次新發現,與標定本身無關)**:第一次嘗試直接把
+`run_video_msckf` 的 `[start_off] [end_off]` 設成 RMSE 評測窗本身(例如
+survey38 設 194-313s),結果整段都印
+`failed static init: no accel jerk detected, platform moving too much`,
+輸出 CSV 只有表頭、零筆資料。查了 `InertialInitializer.cpp` 源碼才確認:
+靜態初始化需要看到「先靜止、後有感測到 jerk」的真實過渡(`has_jerk`
+邏輯,基於視覺 disparity 判定——兩個半窗都高視為一直在動,判不了),而
+`init_dyn_use: false`(繼承自 IMX219 那次的設定,兩份 config 完全沒改到
+這條)代表沒有備援的動態初始化路徑。三趟飛行的 RMSE 評測窗本身都在起飛
+之後的巡航段,不含真正的起飛前靜置——舊的(近似標定)那次能成功,是因為
+`run_video_msckf` 當時餵的區間其實從起飛前靜置段就開始跑(比對舊
+`vio_full_surveyXX.csv` 最早一筆時間戳,三趟分別落在各自起飛/jerk 時刻
+附近:survey38≈182.4s、survey41≈54.0s、survey42≈73.4s),RMSE 評測窗只是
+事後用時間戳篩選出來的子集,不是 `run_video_msckf` 實際餵的範圍。修法:
+這次三趟都改成從起飛前靜置段(留一點餘裕)開始餵,例如 survey38 用
+`170 313`(起飛 jerk 在 ~183s)、survey41 用 `40 143`、survey42 用
+`55 229.4`,讓濾波器在真實靜置轉動的那一刻自然初始化,RMSE 才用
+`vio_globalshutter_kalibr_comparison.py`(仿 `vio_agl_comparison.py`
+的 fixed-4DOF 對齊法)事後篩選評測窗。**這條「擷取範圍要涵蓋真實靜置段,
+評測窗只在事後篩選」的教訓對任何未來的 `run_video_msckf` 呼叫都適用。**
+
+**結果**(`field_data/vio_globalshutter_kalibr_comparison_result.json`):
+
+| flight | AGL | 舊 IMX219 基準 | 近似標定(無效) | 真標定(這次) |
+|---|---|---|---|---|
+| survey38 | ~10m | 3.0m(survey31) | 20325m | **26320m**——仍災難性發散 |
+| survey41 | ~65m | n/a | 20990m | **9445m**(較短、避開 stall gap 的窗,仍災難性發散) |
+| survey42 | ~100m | 75.8m(survey32) | 1753m | **301.9m**——進步 5.8 倍,速度曲線不再暴衝(全程 0.5-22 m/s) |
+
+survey38/41 速度曲線與近似標定那次幾乎同一種模式(EKF 正回饋暴衝、每 ~15-20s
+倍增),只是這次晚幾秒才開始——真標定沒有解決低/中 AGL 的發散,只是稍微
+延後了發生時間。survey42(100m)則是質變:不再暴衝,但比同高度的舊 IMX219
+基準仍差約 4 倍。
+
+**結論**:真標定是必要條件但不是充分條件。這個結果收斂回 §14-35/14-41 已
+建立的「AGL 才是主因」("AGL is the dominant VIO error driver")——低 AGL
+下視差變化快、單目三角測量條件差,不管標定多準、shutter 是哪種,濾波器在
+低/中 AGL 的可觀測性都不夠。原始問題「global shutter 相機能不能修好 VIO」
+目前仍無法乾淨回答:100m 這裡雖然終於是有效比較,但新相機(global
+shutter+4mm CS-mount 鏡頭)在唯一可比的高度上反而比舊相機(rolling
+shutter+M12 鏡頭)差,不支持「换 shutter 類型解決問題」的假說;10m/65m
+則因兩者都發散,連比較的基礎都沒有。若要真正回答這個問題,下一步可能要:
+(a) 針對低 AGL 發散做進一步診斷(是否同 §14-11/14-16 那次 rolling-shutter
+病灶類似的機制,還是純粹 AGL 帶來的視差/尺度問題),或 (b) 接受現有證據,
+把资源转向已经在做的下游修正(AnyLoc 融合層/AGL 先驗)而非追求原始 VIO
+本身收斂。
+
+**檔案**:`~/openvins_ws/config/ap_imx900_kalibr/`(新 config)、
+`field_data/survey{38,41,42}/vio_eval/vio_full_surveyXX_kalibr.csv`(新軌跡)、
+`field_data/vio_globalshutter_kalibr_comparison.py`(評測腳本)、
+`field_data/vio_globalshutter_kalibr_comparison_result.json`(結果)。
+
+### 14-49. 新相機的完整 VPE 融合管線實測——同域資料庫檢索太弱,任何融合都打不贏純 VO(2026-08-12 稍晚)
+
+承接 §14-48(真標定後 100m raw VIO 進步到 301.9m,10m/65m 仍發散),Frank 接著問
+「完整 VPE 管線(不只是 raw VIO)在同域資料庫下表現如何」。同域資料庫的價值
+在 §14-19/14-20/14-26(舊 IMX219 相機)已經證實比衛星資料庫好 12-33 倍——這次
+是幫新相機(AP-IMX900 global shutter)重做同一套驗證。
+
+**建資料庫**:survey40(2026-08-11 錄的「建圖用」飛行之一,~100m AGL 巡航
+200s、乾淨無斷訊)用 `tools/extract_frames.py --rotate --min-dist 15 --min-agl
+90` 抽出 102 張影格(密度確認良好,鄰近影格間距中位數 15.5m、無大洞),
+`anyloc/build_database_real.py` 建出 `anyloc/database_survey40_samedomain_vits14`。
+用來查詢的 survey42 與 survey40 是**同一天、同一區域、同一台相機的兩趟不同
+飛行**,錄影起始時間相差 **~49 分鐘**。
+
+**結果——比舊相機的跨飛行同域測試差很多**:即使是最寬鬆的全庫(非受限)
+查詢,平均誤差也有 **~159m**(`anyloc/logs/survey42_samedomain_vo_fusion.json`),
+信心分數普遍偏低(平均 0.22-0.24)且**不分辨對錯**(err<50m 的匹配平均分數
+0.203,err≥50m 的平均分數反而略高於 0.223)——跟 2026-07-27 §14-26 那次
+24.1m、分數能正確標記壞匹配的結果性質完全不同。密度確認過不是資料庫覆蓋
+不足的問題,49 分鐘的光影/陰影落差(比 §14-26 的 15 分鐘長得多)是頭號嫌疑,
+但未定案。
+
+**接著測試三種融合方案,全部輸給「乾脆不用 AnyLoc」**:
+
+| 方案 | mean err |
+|---|---|
+| Raw VIO only(無 AnyLoc) | 217.9m |
+| Production anchor-chain(`ros2_node.py` 對應邏輯,`test_vo_fusion_compare.py` 方案 A,永遠信任最新一次匹配) | 161.6m |
+| FoundLoc 風格 corrector(DBSCAN 過濾+陀螺輔助鎖定,真實錨點非模擬) | 130.1m |
+| FoundLoc-NF(關掉 DBSCAN 過濾的對照組) | 123.8m |
+| **VO-primary + 信心分數閘門(`ros2_node_vo_primary.py` 對應邏輯,方案 B)/純 VO** | **36.5m** |
+
+方案 B 在所有測試的 threshold(0.4-0.8)下幾乎完全等同純 VO(接受率
+0-1/324)——因為這個資料庫的匹配分數太低,閘門幾乎全部正確拒絕。production
+anchor-chain 沒有閘門,直接繼承壞匹配的誤差。FoundLoc corrector 用
+DBSCAN 過濾+反覆核對後選擇性接受 41 個錨點中的 24-31 個,但接受的錨點還是
+拉歪了 scale 估計(推到 2.2-2.5 倍)——DBSCAN 這次沒有像 §14-19 模擬雜訊
+測試那樣「賺回它的價值」(過濾版 130.1m 反而比不過濾版 123.8m 差一點),
+因為這裡的問題不是少數離群的假陽性,是**普遍性偏弱**的匹配品質,不是
+DBSCAN 設計要抓的那種病灶。
+
+**結論**:錨點品質是這一整條鏈的決定性瓶頸。錨點夠爛時,融合邏輯設計得
+再精巧(FoundLoc 的兩個機制、production 的閘門)都無法把雜訊轉成訊號——
+唯一穩贏的策略反而是最簡單的(閘門正確識別出「這批錨點不值得信任」然後
+退回純 VO)。100m AGL 上單純 VO(36.5m,~108s 窗口)表現不錯,呼應
+§14-35/14-48 的「高 AGL 對 VIO/VO 較有利」發現。**下一步(尚未做)**:
+若要讓這台新相機的同域資料庫恢復到舊相機的水準,最值得先查的是重新用
+「同一天、間隔更短」的建圖飛行建庫(排除 49 分鐘光影落差這個變因),
+而不是急著調 FoundLoc 的參數。
+
+**檔案**:`anyloc/database_survey40_samedomain_vits14/`(新資料庫)、
+`anyloc/logs/survey42_samedomain_vo_fusion.json`(方案 A/B/VO 比較)、
+`field_data/survey42/vio_eval/foundloc_corrector_survey42.py`(真實錨點版
+FoundLoc corrector,仿 `field_data/survey32/vio_eval/foundloc_corrector_survey32.py`)、
+`field_data/survey42/vio_eval/vio_full_survey42_foundloc.csv`(修正後軌跡)。

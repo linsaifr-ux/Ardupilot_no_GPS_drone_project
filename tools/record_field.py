@@ -10,6 +10,14 @@ Video and stream share a single OpenCV capture of /dev/video0
 (AP-IMX900-Mini-USB3-I5, USB3/v4l2, YUYV).
 Do NOT run launch_camera.sh or any AnyLoc/YOLO node at the same time.
 
+Optionally (--imx219) also records the IMX219 CSI camera concurrently, as a
+second, fully independent GStreamer pipeline (nvarguscamerasrc → HW H.265
+encode → its own file) — it never touches the Python frame loop above, so it
+can't stall the primary recording. The two cameras sit on separate buses
+(USB3 vs CSI/MIPI) and separate HW encode sessions; bench-tested 2026-08-13
+running both concurrently at full res/fps for 20s: 0 dropped frames on
+either side, CPU <25%, GPU 0-27%, no thermal throttling.
+
 Requires MAVROS only — reads GPS/AGL/heading directly from /mavros/global_position/*,
 and RC input from /mavros/rc/in (to log which EKF source switch position was active).
 hw_bridge.py is not needed.
@@ -21,6 +29,11 @@ Usage:
     --output DIR           output directory  (default: field_data/<timestamp>)
     --bitrate BPS          H.265 record bitrate (default: 8000000)
     --duration SECS        stop after N s    (default: 0 = Ctrl+C)
+
+  Second camera (IMX219, CSI) — independent GStreamer pipeline, runs alongside:
+    --imx219                   also record the IMX219 CSI camera → video_imx219.mkv
+    --imx219-sensor-id N       Argus sensor index (default: 0)
+    --imx219-bitrate BPS       H.265 bitrate       (default: 8000000)
 
   Stream mode A — direct UDP to ground station:
     --stream-host IP       stream preview to this ground station IP
@@ -64,6 +77,11 @@ Output files in DIR/:
     attitude.csv       stamp_ros, recv_unix, qw, qx, qy, qz — fused FC attitude
                        (/mavros/imu/data), for VIO initialization/sanity checks.
     imu_rates.json     live 2 s rate report from the sidecar (imu_hz, att_hz).
+    video_imx219.mkv         (--imx219 only) H.265, 1640×1232 30fps, IMX219 CSI camera
+    frame_times_imx219.csv   (--imx219 only) frame_idx, unix_time — same as frame_times.csv
+                              but for the IMX219 stream. Shares telemetry.csv/imu.csv/
+                              attitude.csv with the primary (IMX900) recording — those are
+                              per-flight, not per-camera.
 
 Stream mode A receiver (ground station):
     gst-launch-1.0 udpsrc port=5000 ! \\
@@ -111,6 +129,10 @@ Gst.init(None)
 REC_W,    REC_H,    FPS  = 2048, 1536, 30
 STREAM_W, STREAM_H       = 1280,  720
 OVERLAY_H                = 44     # height of black telemetry bar at bottom of stream
+
+# IMX219 (CSI) second-camera recording — full-FOV 2x2-binned mode, matches
+# csi_camera_node.py's default (62.2°x48.8° HFOV/VFOV spec used for GSD math).
+IMX219_W, IMX219_H = 1640, 1232
 
 # Reconnect backoff for the network stream sinks (RTSP relay / OpenHD) when
 # their pipeline errors out (e.g. an LTE drop) — doubles per consecutive
@@ -326,6 +348,29 @@ def _build_rec_pipeline(video_path, bitrate):
     )
 
 
+def _build_imx219_pipeline(video_path, bitrate, sensor_id):
+    """IMX219 CSI camera → HW H.265 encode → file, entirely self-contained
+    (nvarguscamerasrc drives its own streaming thread — no appsrc, no Python
+    in the per-frame path). flip-method=2 matches the 180° mount-orientation
+    correction applied to the primary camera's frames before encode, and to
+    every other IMX219 consumer in this codebase (csi_camera_node.py).
+
+    'ts' is an identity element used only to timestamp frames as they pass
+    (via its handoff signal) for frame_times_imx219.csv — it does not touch
+    the buffer contents, so it costs nothing in the encode path.
+    """
+    return Gst.parse_launch(
+        f'nvarguscamerasrc sensor-id={sensor_id} ! '
+        f'video/x-raw(memory:NVMM),width={IMX219_W},height={IMX219_H},'
+        f'framerate={FPS}/1,format=NV12 ! '
+        f'nvvidconv flip-method=2 ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'identity name=ts signal-handoffs=true ! '
+        f'nvv4l2h265enc bitrate={bitrate} idrinterval={FPS} iframeinterval={FPS} ! '
+        f'h265parse ! matroskamux ! '
+        f'filesink location={video_path}'
+    )
+
+
 # Bound end-to-end latency AND decouple appsrc from downstream stalls: if the
 # network sink (UDP/TCP over LTE) can't keep up or hangs entirely (e.g. a
 # dropped RTSP TCP connection), drop stale frames here instead of blocking the
@@ -415,6 +460,13 @@ def main():
                     help='tag this recording as a camera-IMU calibration '
                          'session (AprilGrid/checkerboard footage for Kalibr; '
                          'see instructions/vio_data_collection.md)')
+    # Second camera — IMX219 (CSI), independent pipeline, runs alongside
+    ap.add_argument('--imx219', action='store_true',
+                    help='also record the IMX219 CSI camera → video_imx219.mkv '
+                         '(separate HW encode session, bench-verified no '
+                         'contention with the primary IMX900 recording)')
+    ap.add_argument('--imx219-sensor-id', type=int, default=0, metavar='N')
+    ap.add_argument('--imx219-bitrate',   type=int, default=8_000_000)
     # Stream mode A — direct UDP to ground station
     ap.add_argument('--stream-host',      default='',    metavar='IP')
     ap.add_argument('--stream-port',      type=int, default=5000)
@@ -443,6 +495,8 @@ def main():
     meta_path        = os.path.join(out, 'meta.json')
     frame_times_path = os.path.join(out, 'frame_times.csv')
     # imu.csv + attitude.csv are written by the imu_logger.py sidecar
+    imx219_video_path       = os.path.join(out, 'video_imx219.mkv')
+    imx219_frame_times_path = os.path.join(out, 'frame_times_imx219.csv')
 
     # ── ROS2 telemetry ─────────────────────────────────────────────────────────
     rclpy.init()
@@ -484,6 +538,74 @@ def main():
     rec_pipe = _build_rec_pipeline(video_path, args.bitrate)
     rec_src  = rec_pipe.get_by_name('rec')
     rec_pipe.set_state(Gst.State.PLAYING)
+
+    # ── Second camera (IMX219, CSI) — independent pipeline, its own frame
+    # timestamps via the 'ts' identity element's handoff signal (fires on
+    # that pipeline's own streaming thread, so it can't block the primary
+    # camera loop below).
+    imx219_pipe             = None
+    imx219_frame_times_file = None
+    imx219_frame_idx        = [0]   # mutable cell, mutated from the handoff callback
+    if args.imx219:
+        imx219_pipe = _build_imx219_pipeline(
+            imx219_video_path, args.imx219_bitrate, args.imx219_sensor_id)
+
+        # Wire up frame-time logging BEFORE set_state(PLAYING) — buffers
+        # start flowing through 'identity' the moment the pipeline goes
+        # PLAYING (well before the error-check wait below returns), and a
+        # GObject signal connected later simply misses every handoff that
+        # already fired. Connecting late here silently truncated the CSV to
+        # ~3s short of the actual encoded frame count (347 rows logged vs
+        # 428 real frames in a 14s clip, bench-caught 2026-08-13).
+        imx219_frame_times_file = open(imx219_frame_times_path, 'w', newline='')
+        imx219_frame_times_writer = csv.writer(imx219_frame_times_file)
+        imx219_frame_times_writer.writerow(['frame_idx', 'unix_time'])
+
+        def _on_imx219_frame(_identity, _buf):
+            imx219_frame_times_writer.writerow(
+                [imx219_frame_idx[0], f'{time.time():.6f}'])
+            imx219_frame_times_file.flush()
+            imx219_frame_idx[0] += 1
+
+        imx219_pipe.get_by_name('ts').connect('handoff', _on_imx219_frame)
+        imx219_pipe.set_state(Gst.State.PLAYING)
+
+        # nvarguscamerasrc reports a bad sensor-id / already-in-use CSI
+        # link as an ERROR shortly after PLAYING, not as a failed state
+        # change — give it a moment and check the bus before committing to
+        # recording it, so a missing/busy second camera degrades to
+        # primary-only instead of taking the whole recording down.
+        imx219_bus = imx219_pipe.get_bus()
+        imx219_startup_msg = imx219_bus.timed_pop_filtered(
+            3 * Gst.SECOND, Gst.MessageType.ERROR)
+        imx219_failed = imx219_startup_msg is not None
+        if not imx219_failed:
+            # No ERROR message doesn't guarantee frames are actually
+            # flowing — a second concurrent nvarguscamerasrc session on an
+            # already-open CSI sensor (e.g. csi_camera_node.py left
+            # running) was bench-observed 2026-08-13 to sit PLAYING
+            # indefinitely with zero buffers and no error, silently
+            # producing a corrupt .mkv. Confirm at least one real frame
+            # arrives before trusting it.
+            deadline = time.time() + 2.0
+            while imx219_frame_idx[0] == 0 and time.time() < deadline:
+                time.sleep(0.1)
+            imx219_failed = imx219_frame_idx[0] == 0
+
+        if imx219_failed:
+            err = (imx219_startup_msg.parse_error()[0].message
+                   if imx219_startup_msg is not None else
+                   'no frames received — CSI camera busy or not responding '
+                   '(check nothing else, e.g. csi_camera_node.py, holds it)')
+            print(f'[REC] WARNING: IMX219 camera failed to start ({err}) — '
+                  'continuing with primary (IMX900) recording only.')
+            imx219_pipe.set_state(Gst.State.NULL)
+            imx219_pipe = None
+            imx219_frame_times_file.close()
+            imx219_frame_times_file = None
+            for p in (imx219_frame_times_path, imx219_video_path):
+                if os.path.exists(p):
+                    os.remove(p)
 
     stream_pipe = None
     stream_src  = None
@@ -564,6 +686,8 @@ def main():
         print(f'[REC] Watch   → http://{args.stream_server}:8889{args.stream_rtsp_path}  (WebRTC browser)')
     if args.stream_openhd:
         print(f'[REC] OpenHD  → {args.stream_openhd}:{args.openhd_port}  (H.264 RTP/UDP)')
+    if imx219_pipe is not None:
+        print(f'[REC] IMX219  → {imx219_video_path}  ({IMX219_W}x{IMX219_H} H.265)')
     print('[REC] Press Ctrl+C to stop\n')
 
     video_start = time.time()
@@ -576,7 +700,18 @@ def main():
         'frame_rotation_deg': 180,
         'purpose': 'calibration' if args.calib else 'survey',
         'imu_requested_hz': args.imu_hz,
+        'imx219_enabled': imx219_pipe is not None,
     }
+    if imx219_pipe is not None:
+        meta['imx219_video']     = os.path.basename(imx219_video_path)
+        meta['imx219_width']     = IMX219_W
+        meta['imx219_height']    = IMX219_H
+        meta['imx219_fps']       = FPS
+        meta['imx219_bitrate']   = args.imx219_bitrate
+        meta['imx219_sensor_id'] = args.imx219_sensor_id
+        # Same 180° correction as the primary camera — applied in-pipeline
+        # via nvvidconv flip-method=2 rather than post-hoc.
+        meta['imx219_frame_rotation_deg'] = 180
     with open(meta_path, 'w') as f:
         json.dump(meta, f, indent=2)
 
@@ -661,6 +796,24 @@ def main():
                                    RECONNECT_BACKOFF_MAX_S))
                     _reconnect_openhd(reason)
 
+            # Unlike the streams above, a dead IMX219 pipeline isn't rebuilt —
+            # nvarguscamerasrc/ISP faults aren't the transient network drops
+            # the reconnect logic above is designed for, and restarting mid-
+            # flight would just fragment the footage across multiple files.
+            # Drop it and keep the primary recording going.
+            if imx219_pipe is not None:
+                msg = imx219_bus.timed_pop_filtered(
+                    0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if msg is not None:
+                    reason = ('EOS' if msg.type == Gst.MessageType.EOS
+                              else msg.parse_error()[0].message)
+                    print(f'\n[REC] IMX219 pipeline died ({reason}) — dropping '
+                          f'it, primary recording continues.', flush=True)
+                    imx219_pipe.set_state(Gst.State.NULL)
+                    imx219_pipe = None
+                    imx219_frame_times_file.close()
+                    imx219_frame_times_file = None
+
             if stream_src is not None or openhd_src is not None:
                 view = _crop_resize_stream(frame)
                 _make_stream_frame(view, logger.snapshot(), imu_hz_cached)
@@ -726,6 +879,20 @@ def main():
             openhd_pipe.get_bus().timed_pop_filtered(
                 5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
             openhd_pipe.set_state(Gst.State.NULL)
+        if imx219_pipe:
+            # No appsrc here — nvarguscamerasrc is a live source, so EOS has
+            # to be injected into the pipeline itself rather than emitted by
+            # the source element (mirrors the standard GStreamer pattern for
+            # stopping a live-source-to-file pipeline cleanly).
+            imx219_pipe.send_event(Gst.Event.new_eos())
+            imx219_msg = imx219_pipe.get_bus().timed_pop_filtered(
+                10 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+            if imx219_msg is None or imx219_msg.type != Gst.MessageType.EOS:
+                print('[REC] WARNING: IMX219 pipeline did not reach EOS cleanly — '
+                      'video_imx219.mkv may be missing its seek index (Cues)/duration.')
+            imx219_pipe.set_state(Gst.State.NULL)
+        if imx219_frame_times_file is not None:
+            imx219_frame_times_file.close()
         _, rates = _imu_status()
         imu_proc.send_signal(signal.SIGINT)     # sidecar flushes and exits
         try:
@@ -744,6 +911,9 @@ def main():
     print()
     size_mb = os.path.getsize(video_path) / 1e6 if os.path.exists(video_path) else 0
     print(f'[REC] Done — {size_mb:.1f} MB  ({out}/)')
+    if meta.get('imx219_enabled') and os.path.exists(imx219_video_path):
+        imx219_size_mb = os.path.getsize(imx219_video_path) / 1e6
+        print(f'[REC] IMX219 — {imx219_size_mb:.1f} MB  ({imx219_video_path})')
     if imu_rate < imu_ok_hz:
         print(f'[REC] WARNING: IMU rate at stop was {imu_rate:.0f} Hz '
               f'(< {imu_ok_hz:.0f} Hz) — insufficient for OpenVINS-grade VIO. '

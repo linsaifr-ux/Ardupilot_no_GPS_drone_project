@@ -39,6 +39,8 @@ Video goes **directly through V4L2, not through ROS**. This means:
 - AnyLoc and YOLO nodes must also be stopped for the same reason
 - Only MAVROS is needed (it doesn't touch the camera)
 
+**Optional second camera (`--imx219`, added 2026-08-13):** also records the IMX219 CSI camera concurrently, as a fully independent GStreamer pipeline (`nvarguscamerasrc` → HW H.265 encode → `video_imx219.mkv`) that never touches the primary capture/encode loop, so it can't stall the main recording. The two cameras sit on separate buses (USB3 vs CSI/MIPI) with separate HW encode sessions — bench-tested running both concurrently at full res/fps for 20s with 0 dropped frames on either side and CPU/GPU/thermal headroom to spare. If the IMX219 isn't connected or another process (e.g. `csi_camera_node.py`) already holds it, it degrades to primary-only recording with a warning instead of failing the whole flight capture. The Desktop launcher (below) passes `--imx219` by default.
+
 ---
 
 ## Camera FOV at 65 m AGL
@@ -125,9 +127,11 @@ over the internet during the flight — see `streaming/mavlink_relay_setup.md`
 (the relay client filters MP's stream-rate stomps and the outbound
 high-rate IMU mirror, so neither the IMU recording nor the video stream's
 LTE bandwidth is affected by MP being connected). Since 2026-07-23 the
-launcher also passes `--imu-hz 333` to the recorder. Close the launcher window
-(press Enter at its final prompt) when done; the launcher also reaps any
-stale relay client from a previous session at startup.
+launcher also passes `--imu-hz 333` to the recorder, and since 2026-08-13
+also `--imx219` (records the IMX219 CSI camera alongside the primary
+AP-IMX900, see above). Close the launcher window (press Enter at its final
+prompt) when done; the launcher also reaps any stale relay client from a
+previous session at startup.
 
 Do **not** run `launch_camera.sh`, `anyloc/ros2_node.py`, or `detection/ros2_node.py` — they all compete for the same camera device.
 
@@ -230,6 +234,15 @@ attitude.csv      stamp_ros, recv_unix, qw, qx, qy, qz — fused FC attitude, 50
                   (column meanings, quaternion math, roll/pitch/yaw conversion:
                   field_data/attitude_format.md)
 imu_rates.json    live 2 s rate report from the sidecar
+```
+
+With `--imx219` (Desktop launcher default since 2026-08-13), also:
+```
+video_imx219.mkv         H.265, 1640×1232 30fps — IMX219 CSI camera
+frame_times_imx219.csv   frame_idx, unix_time — same convention as frame_times.csv,
+                          for the IMX219 stream. telemetry.csv/imu.csv/attitude.csv
+                          are per-flight, not per-camera — shared with the primary
+                          recording above.
 ```
 
 ---

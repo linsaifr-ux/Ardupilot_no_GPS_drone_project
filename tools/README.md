@@ -8,6 +8,8 @@ Standalone tools for monitoring, streaming, and analysing drone flights.
 
 Records 2048×1536 30fps H.265 video (H.264→H.265 2026-07-07) from the AP-IMX900 USB3 camera directly (via OpenCV V4L2/MJPG capture, then GStreamer `appsrc` for H.265 encode) alongside a telemetry CSV (lat/lon/AGL/heading/RC-channels at 5 Hz via ROS2) and a per-frame capture-timestamp CSV. Frames are rotated 180° after capture. Auto-spawns the `imu_logger.py` sidecar (FC IMU + attitude at 50 Hz for VIO — its own process, never in-process; see `instructions/vio_data_collection.md`). IMU rate is `--imu-hz` (default 200; field standard since 2026-07-23 is `--imu-hz 333` → ~346 Hz actual, the firmware's grantable max — removes the RAW_IMU stream-decimation vibration aliasing, `instructions/vpe_jump_runaway_diagnosis.md` §14-6; the Desktop launcher passes it). Optionally streams a 1280×720 H.265 preview with a telemetry overlay bar to a ground station or a MediaMTX relay server, and/or H.264 RTP to an OpenHD ground station.
 
+**Second camera (`--imx219`, added 2026-08-13):** also records the IMX219 CSI camera concurrently as `video_imx219.mkv` — a fully independent GStreamer pipeline (`nvarguscamerasrc` → HW H.265 encode → file) that never touches the Python capture/encode loop above, so it can't stall the primary recording. The two cameras sit on separate buses (USB3 vs CSI/MIPI) with separate HW encode sessions; bench-tested running both concurrently at full res/fps for 20s: 0 dropped frames on either side, CPU <25%, GPU 0-27%, no thermal throttling. Degrades to primary-only (with a warning) if the IMX219 isn't connected or is already held by another process (e.g. `csi_camera_node.py` left running) — verified both for an explicit GStreamer error and for the more insidious case where a second `nvarguscamerasrc` session on an already-open sensor sits `PLAYING` producing zero frames with no error at all. The Desktop `field_data_collection.sh` launcher passes `--imx219` by default.
+
 **Do NOT run `launch_camera.sh` at the same time** — both open the camera device and only one process can hold it at a time.  
 Requires **MAVROS only** — reads GPS/AGL/heading directly from `/mavros/global_position/*` and RC input from `/mavros/rc/in`. `hw_bridge.py` is not needed.
 
@@ -62,11 +64,14 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 | `--bitrate N` | 8000000 | H.265 recording bitrate (bps) |
 | `--duration N` | 0 | Stop after N seconds (0 = Ctrl+C) |
 | `--calib` | off | Tag as camera-IMU calibration session (`field_data/calib_<ts>/`) |
+| `--imx219` | off | Also record the IMX219 CSI camera → `video_imx219.mkv` (independent HW encode session) |
+| `--imx219-sensor-id N` | 0 | Argus sensor index for the IMX219 |
+| `--imx219-bitrate N` | 8000000 | H.265 bitrate (bps) for the IMX219 recording |
 
 `--stream-host` and `--stream-server` are mutually exclusive.
 
-**Output:** `video.mkv`, `telemetry.csv` (now includes an `rc_channels` column — raw `/mavros/rc/in` PWM list, useful for confirming the EKF-source switch stayed on GPS for the whole recording), `meta.json`, `frame_times.csv` (`frame_idx, unix_time` — real per-frame capture time, more reliable than `meta.json`'s `video_start_unix + frame_idx/fps` across camera dropouts), and the sidecar's `imu.csv` (200 Hz), `attitude.csv` (50 Hz), `imu_rates.json` in the output directory.  
-**Storage:** ~60 MB/min at default bitrate.
+**Output:** `video.mkv`, `telemetry.csv` (now includes an `rc_channels` column — raw `/mavros/rc/in` PWM list, useful for confirming the EKF-source switch stayed on GPS for the whole recording), `meta.json`, `frame_times.csv` (`frame_idx, unix_time` — real per-frame capture time, more reliable than `meta.json`'s `video_start_unix + frame_idx/fps` across camera dropouts), and the sidecar's `imu.csv` (200 Hz), `attitude.csv` (50 Hz), `imu_rates.json` in the output directory. With `--imx219`: also `video_imx219.mkv` (1640×1232 H.265) and `frame_times_imx219.csv` — shares the same `telemetry.csv`/`imu.csv`/`attitude.csv` (one flight, two cameras).  
+**Storage:** ~60 MB/min at default bitrate (~90 MB/min with `--imx219`).
 
 **Stream stall fix (2026-08-11):** the `--stream-host`/`--stream-server`/`--stream-openhd` sinks used a `block=true` `appsrc` with no queue after it, on the same thread as camera capture and local recording. When the network sink stalled (e.g. an LTE drop breaking the RTSP TCP connection to the relay — same `GLib-GIO-CRITICAL g_socket_set_timeout` signature as the `ground_view_stream.py` landmine below), the blocking push hung indefinitely and froze the *entire* loop, silently pausing local recording too (survey43 lost ~4.5 min mid-flight; `imu.csv`/`telemetry.csv`, on separate processes, kept going the whole time — that mismatch is the tell if it recurs). Fixed the same way as `ground_view_stream.py`: a `leaky=downstream max-size-buffers=2` queue right after each network appsrc decouples capture from network stalls, plus per-sink bus-error polling that tears down and rebuilds the pipeline with exponential backoff (2 s → 30 s cap, reset after 15 s clean). Local recording (`rec_src`) is unaffected by this fix — it still hard-stops the loop on its own pipeline error, since that's a genuinely fatal (disk) condition, not a network one.
 
@@ -355,6 +360,44 @@ source /opt/ros/humble/setup.bash
 source control/ros2_env.sh
 python3 tools/anyloc_gps_compare.py
 ```
+
+---
+
+## prepare_kalibr_input.py — Kalibr calibration input builder
+
+Converts a `record_field.py --calib` recording (in `field_data/calib_<timestamp>/`)
+into Kalibr's expected input layout — run from inside the session directory, on the
+PC that will run Kalibr (needs `ffmpeg`, stdlib-only otherwise):
+
+```bash
+cd field_data/calib_<timestamp>
+python3 /path/to/tools/prepare_kalibr_input.py --trim-head <seconds>
+```
+
+Extracts every video frame (verifies count matches `frame_times.csv`), writes
+`kalibr_input_full/` (all frames @ recording fps, for the imu-camera stage) and
+`kalibr_input_4hz/` (every 8th frame, for the intrinsics-only stage), plus
+`imu0.csv`/`target.yaml`/`imu.yaml` templates. Camera/session-agnostic (no hardcoded
+resolution or path) — works for any camera body this project has recorded a
+`--calib` session with. Full step-by-step procedure (Docker/Kalibr commands,
+acceptance criteria, per-camera sanity-check numbers) lives in a
+`KALIBR_PC_README.md` copied into each session's own folder — see
+`instructions/KALIBR_PC_README_ap_imx900_globalshutter.md` for the current
+camera's template, `field_data/calib_20260811_232301/KALIBR_PC_README.md` for
+the current camera's real (not yet Kalibr-run) session, or
+`field_data/calib_20260723_001209/KALIBR_PC_README.md` for the completed
+IMX219-era example.
+
+**`--trim-head`'s default (12.5 s) is stale** — it was measured for one past
+recording and is not calibrated to any other. Always re-derive it per-recording
+before trusting it: sparse-sampling a handful of frames by eye can accidentally
+land only on good (or only on bad) frames and give a false read, so prefer a
+programmatic sweep — decode frames at a fixed stride, run
+`cv2.aruco.detectMarkers` (AprilGrid dict `DICT_APRILTAG_36h11`,
+`markerBorderBits=2`; this project's OpenCV is 4.5.4, pre-`ArucoDetector`, so
+use `Dictionary_get`/`DetectorParameters_create`) plus a Laplacian-variance
+sharpness check, and find where tag count/sharpness jump from near-zero to
+real values.
 
 ---
 
