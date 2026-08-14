@@ -132,6 +132,12 @@ Validated on this Jetson, on real hardware, this session:
   cycles. Vehicle confirmed unarmed throughout every run.
   `/mavros/vision_pose/pose_cov` confirmed **0 publishers** via
   `ros2 topic info` — direct proof nothing in the stack ever touches the FC.
+- **Ground-crew video feed, under the full stack's real CPU load**: found and
+  fixed three real bugs (OpenHD blocking the primary stream, unbounded
+  drift from nominal-rate PTS timestamps, an over-long reconnect backoff) —
+  see "Ground view streaming" below. Confirmed converged: the same load that
+  produced 60 s of growing, non-recovering drift with the pre-fix code
+  measured under 1 s and *shrinking* after.
 
 **Not yet shown:**
 - Live VIO velocity actually improving the fused estimate over VPE-alone, in
@@ -155,6 +161,57 @@ below that, expect it to spend 1–4 s of GPU time per query mostly returning
 rate at 9 m query vs. 65 m map). Adding a `--min-agl` gate (mirroring
 `imx900_frame_map.py`'s own `--min-agl 25` convention used to build the map)
 would be the natural fix if this needs addressing later.
+
+---
+
+## Ground view streaming
+
+`launch_shadow_mode.sh` runs `tools/ground_view_stream.py` alongside the
+localization stack, streaming to the RTSP relay **and** OpenHD by default
+(this launcher is the one place in the project where both are on with zero
+flags — every other launcher treats streaming as opt-in). Under this stack's
+real combined load (camera + MAVROS + VIO + VPE + YOLO + dual H.265/H.264
+encode) `uptime` measured a load average of ~9 on the Orin NX's 8 cores —
+enough to expose three real bugs in the streamer that a lighter load never
+would have hit. All three are fixed in `tools/ground_view_stream.py`; full
+technical detail lives in `tools/README.md`'s ground-view-stream section, this
+is the shadow-mode-specific summary of why each one mattered here:
+
+1. **OpenHD blocked the primary RTSP stream.** Both modes shared one loop, and
+   `appsrc.emit('push-buffer', ...)` blocks — a slow OpenHD push stalled the
+   RTSP feed too. Symptom the user caught live: the ground-crew video would
+   freeze, then jump forward all at once the moment the process was
+   Ctrl+C'd. Fixed by moving OpenHD onto its own thread (`_openhd_thread`)
+   with a lock-protected drop-old handoff (`_LatestFrame`), fully decoupled
+   from the primary loop's pacing.
+2. **PTS was derived from a nominal frame counter, not the wall clock** —
+   `frame_count * Gst.SECOND // FPS` has no relationship to real elapsed time,
+   so any overrun (inevitable under load avg ~9) permanently added to a
+   deficit that never recovered. Measured live: 60 s of growing,
+   non-recovering lag. Fixed by deriving PTS from `time.monotonic()` instead;
+   re-measured under the same load after the fix: under 1 s and *shrinking*
+   over time, not just capped.
+3. **Reconnect backoff was too aggressive for this stack's real network
+   conditions** — base 2 s, cap 30 s, and `ffprobe` gap analysis on the tee'd
+   local recording showed reconnect events producing freezes up to 48 s.
+   Reduced to base 1 s / cap 5 s.
+
+**A CPU-oversubscription tradeoff was deliberately not "fixed" further** — the
+user explicitly kept both YOLO (confirmed via live profiling that its ~83%
+CPU figure is legitimate pipelined preprocessing work, not GPU-hidden waste)
+and OpenHD ("actively using it") on after seeing the load-avg-9 numbers,
+accepting residual multi-second stutter under full load as a known limitation
+of running the whole stack at once on this hardware, rather than trading away
+either feature. A `--fps` flag was added to `ground_view_stream.py` as the
+adjustable lever instead; the launcher currently defaults to the original 30
+fps.
+
+**A separate live-debugging episode was a real network outage, not a code
+bug**: both the RTSP relay and the OpenHD target route through the same
+tethered interface, which was fully unreachable at the time (confirmed via
+`ping`/`nc -zv`/`curl` directly on that interface) — worth checking network
+reachability before assuming a "stuck stream" report is a regression in this
+code.
 
 ---
 

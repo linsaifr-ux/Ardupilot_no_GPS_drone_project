@@ -59,6 +59,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 
 _ROS2_SITE = "/opt/ros/humble/lib/python3.10/site-packages"
 if os.path.isdir(_ROS2_SITE) and _ROS2_SITE not in sys.path:
@@ -86,8 +87,20 @@ FPS       = 30
 
 # Reconnect backoff when the pipeline errors out (e.g. rtspclientsink losing
 # the TCP connection on an LTE drop) — doubles per consecutive failure, capped.
-RECONNECT_BACKOFF_S     = 2.0
-RECONNECT_BACKOFF_MAX_S = 30.0
+# The backoff SLEEP sits directly in the compositing loop (main() for the
+# primary stream, its own loop in _openhd_thread for mode C), so it isn't
+# just "wait before retrying the network" -- it fully freezes that leg
+# (composite generation, local recording, since they're tee'd off the same
+# pipeline as the primary stream) for its entire duration. The old 30s cap
+# was tuned to be polite to a struggling connection, but for a live
+# monitoring stream that's the wrong tradeoff -- found live (2026-08-14):
+# repeated RTSP reconnects under heavy system load produced single freezes
+# up to 48s (backoff climbing to the 30s cap plus reconnect/handshake
+# overhead on top). This relay is privately controlled (not a rate-limited
+# public API), so there's little cost to retrying fast; 5s bounds the worst
+# case to something a live viewer can actually tolerate.
+RECONNECT_BACKOFF_S     = 1.0
+RECONNECT_BACKOFF_MAX_S = 5.0
 
 STREAM_W  = 1280
 STREAM_H  = 720
@@ -122,20 +135,30 @@ _SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 
 # ── GStreamer pipelines ───────────────────────────────────────────────────────
 
-_ENC = (
-    f'videoconvert ! '
-    f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
-    f'nvv4l2h265enc preset-level=UltraFastPreset '
-    f'idrinterval={FPS} iframeinterval={FPS} '
-)
-_APPSRC = (
-    f'appsrc name=src format=time is-live=true block=true '
-    f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
-    # Bound end-to-end latency: if the network sink (TCP push over LTE) can't
-    # keep up, drop stale frames here instead of blocking appsrc and letting
-    # delay grow unbounded with no catch-up.
-    f'queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! '
-)
+# _ENC/_APPSRC/_OPENHD_APPSRC are functions, not module-level strings, because
+# they embed FPS -- and FPS is only known once main() parses --fps, which
+# happens after module import. A frozen f-string here would silently keep
+# declaring "framerate=30/1" in the GStreamer caps even after --fps changed
+# the actual push rate, a real mismatch (found while adding --fps, before it
+# ever shipped).
+def _enc():
+    return (
+        f'videoconvert ! '
+        f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+        f'nvv4l2h265enc preset-level=UltraFastPreset '
+        f'idrinterval={FPS} iframeinterval={FPS} '
+    )
+
+
+def _appsrc():
+    return (
+        f'appsrc name=src format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        # Bound end-to-end latency: if the network sink (TCP push over LTE) can't
+        # keep up, drop stale frames here instead of blocking appsrc and letting
+        # delay grow unbounded with no catch-up.
+        f'queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! '
+    )
 
 
 def _rec_branch(record_path: str) -> str:
@@ -154,10 +177,10 @@ def _build_udp_pipeline(host: str, port: int, bitrate: int, record_path: str = '
     net = (f'rtph265pay config-interval=-1 mtu=1200 ! '
            f'udpsink host={host} port={port} sync=false')
     if record_path:
-        desc = (_APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! tee name=t '
+        desc = (_appsrc() + _enc() + f'bitrate={bitrate} vbv-size={bitrate} ! tee name=t '
                 f't. ! queue ! ' + net + _rec_branch(record_path))
     else:
-        desc = _APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
+        desc = _appsrc() + _enc() + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
     pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
 
@@ -172,10 +195,10 @@ def _build_server_pipeline(server: str, rtsp_path: str, bitrate: int,
     net = (f'h265parse ! '
            f'rtspclientsink location=rtsp://{server}:8554{rtsp_path} protocols=tcp')
     if record_path:
-        desc = (_APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! tee name=t '
+        desc = (_appsrc() + _enc() + f'bitrate={bitrate} vbv-size={bitrate} ! tee name=t '
                 f't. ! queue ! ' + net + _rec_branch(record_path))
     else:
-        desc = _APPSRC + _ENC + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
+        desc = _appsrc() + _enc() + f'bitrate={bitrate} vbv-size={bitrate} ! ' + net
     pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('src')
 
@@ -188,11 +211,12 @@ def _build_pipeline(args, record_path: str):
     return _build_udp_pipeline(args.host, args.port, args.bitrate, record_path)
 
 
-_OPENHD_APPSRC = (
-    f'appsrc name=openhd format=time is-live=true block=true '
-    f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
-    f'queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! '
-)
+def _openhd_appsrc():
+    return (
+        f'appsrc name=openhd format=time is-live=true block=true '
+        f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+        f'queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! '
+    )
 
 
 def _build_openhd_pipeline(host: str, port: int, bitrate: int):
@@ -200,9 +224,12 @@ def _build_openhd_pipeline(host: str, port: int, bitrate: int):
     mode A/B. Encoder/payloader settings match tools/record_field.py's
     field-tested OpenHD pipeline (_build_openhd_pipeline there) -- ported
     rather than imported since that one owns the camera device directly and
-    this one subscribes to the topic instead.
+    this one subscribes to the topic instead. idrinterval=15 here is
+    deliberately independent of FPS (OpenHD's own keyframe-cadence
+    convention, matches record_field.py) -- only unlike _enc()'s
+    idrinterval={FPS}, not a bug.
     """
-    desc = (_OPENHD_APPSRC +
+    desc = (_openhd_appsrc() +
             f'videoconvert ! '
             f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
             f'nvv4l2h264enc bitrate={bitrate} control-rate=1 insert-sps-pps=true '
@@ -211,6 +238,120 @@ def _build_openhd_pipeline(host: str, port: int, bitrate: int):
             f'udpsink host={host} port={port} sync=false')
     pipeline = Gst.parse_launch(desc)
     return pipeline, pipeline.get_by_name('openhd')
+
+
+class _LatestFrame:
+    """Single-slot handoff between the main compositing loop and the OpenHD
+    thread. Deliberately drop-old (not a queue) -- OpenHD only ever wants the
+    newest composite, same intent as the leaky queue inside each pipeline."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._frame = None
+
+    def set(self, frame):
+        with self._lock:
+            self._frame = frame
+
+    def get(self):
+        with self._lock:
+            return self._frame
+
+
+def _openhd_thread(host, port, bitrate, latest_frame, stop_event):
+    """Owns the OpenHD pipeline end to end, on its own thread with its own
+    frame pacing, reading only the latest composite via _LatestFrame.
+
+    This exists because appsrc.emit('push-buffer', ...) is a BLOCKING call
+    (block=true) -- an earlier version pushed to this pipeline from inside
+    the main loop, right after the primary stream's own blocking push. Any
+    stall on this leg (OpenHD ground station unreachable, or two simultaneous
+    hardware encode sessions -- H.265 for mode A/B, H.264 here -- contending
+    on the same Jetson) delayed every subsequent primary-stream push too,
+    since they were sequential on one thread: found live as "the stream
+    lags until Ctrl+C, then jumps" -- the jump was the backlog finally
+    flushing on shutdown. Full isolation is the fix, not a tighter timeout:
+    a stall here must be able to persist indefinitely without the primary
+    stream ever noticing.
+    """
+    pipeline, appsrc = _build_openhd_pipeline(host, port, bitrate)
+    pipeline.set_state(Gst.State.PLAYING)
+    bus = pipeline.get_bus()
+    print(f'[stream] OpenHD (mode C) → {host}:{port}  (H.264 RTP/UDP)')
+
+    def reconnect(reason):
+        nonlocal pipeline, appsrc, bus, stream_start_t, last_pts, last_reconnect_t
+        print(f'[stream] OpenHD connection lost ({reason}) — reconnecting …')
+        try:
+            pipeline.set_state(Gst.State.NULL)
+        except Exception:
+            pass
+        pipeline, appsrc = _build_openhd_pipeline(host, port, bitrate)
+        pipeline.set_state(Gst.State.PLAYING)
+        bus = pipeline.get_bus()
+        stream_start_t = time.monotonic()
+        last_pts = 0
+        last_reconnect_t = time.monotonic()
+
+    # Same wall-clock-PTS rationale as the primary loop in main() -- see its
+    # comment. A nominal frame_count*interval PTS here would let this leg's
+    # lag grow independently of and in addition to the primary stream's.
+    stream_start_t = time.monotonic()
+    last_pts = 0
+    frame_interval = 1.0 / FPS
+    next_frame_t = time.monotonic()
+    frame_count = 0
+    consec_fail = 0
+    last_reconnect_t = time.monotonic()
+
+    while not stop_event.is_set():
+        msg = bus.timed_pop_filtered(0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+        if msg is not None:
+            reason = ('EOS' if msg.type == Gst.MessageType.EOS
+                      else msg.parse_error()[0].message)
+            consec_fail += 1
+            backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (consec_fail - 1)),
+                             RECONNECT_BACKOFF_MAX_S)
+            time.sleep(backoff_s)
+            reconnect(reason)
+            frame_count = 0
+            next_frame_t = time.monotonic()
+            continue
+
+        frame = latest_frame.get()
+        if frame is not None:
+            pts = int((time.monotonic() - stream_start_t) * Gst.SECOND)
+            buf = Gst.Buffer.new_wrapped(frame.tobytes())
+            buf.pts = pts
+            buf.duration = max(pts - last_pts, 1)
+            flow = appsrc.emit('push-buffer', buf)
+            if flow != Gst.FlowReturn.OK:
+                consec_fail += 1
+                backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (consec_fail - 1)),
+                                 RECONNECT_BACKOFF_MAX_S)
+                time.sleep(backoff_s)
+                reconnect(f'push-buffer returned {flow}')
+                frame_count = 0
+                next_frame_t = time.monotonic()
+                continue
+            last_pts = pts
+            frame_count += 1
+            if consec_fail and time.monotonic() - last_reconnect_t >= 15.0:
+                consec_fail = 0
+
+        next_frame_t += frame_interval
+        sleep_t = next_frame_t - time.monotonic()
+        if sleep_t > 0:
+            time.sleep(sleep_t)
+        else:
+            next_frame_t = time.monotonic()
+
+    try:
+        appsrc.emit('end-of-stream')
+        bus.timed_pop_filtered(2 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+        pipeline.set_state(Gst.State.NULL)
+    except Exception:
+        pass
 
 
 def _new_record_path(args) -> str:
@@ -438,9 +579,10 @@ class GroundViewNode(rclpy.node.Node):
             yolo_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
         n_det = len(bboxes)
         status = f"YOLO  {n_det} det" if det_fresh else "YOLO  STALE (live view)"
+        clock = datetime.now().strftime('%H:%M:%S')
         _put(yolo_panel, [
             f"{status}   AGL {agl:.0f} m",
-            f"LAT {lat:.5f}   LON {lon:.5f}",
+            f"LAT {lat:.5f}   LON {lon:.5f}   {clock}",
         ], 8, 18, scale=0.5,
              color=(0, 255, 80) if det_fresh else (80, 80, 255))
         cv2.line(yolo_panel, (0, HALF_H - 1), (PANEL_W - 1, HALF_H - 1), (60, 60, 60), 1)
@@ -531,6 +673,7 @@ class GroundViewNode(rclpy.node.Node):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    global FPS
     ap = argparse.ArgumentParser(description="Ground view streamer (YOLO + AnyLoc → H.265)")
     # Mode A — direct UDP
     ap.add_argument('--host',    default='',
@@ -551,6 +694,16 @@ def main():
     ap.add_argument('--openhd-bitrate', type=int, default=4_000_000)
     # Common
     ap.add_argument('--bitrate', type=int, default=1_000_000)
+    ap.add_argument('--fps', type=int, default=FPS, metavar='N',
+                    help=f'Compositing/encode frame rate for BOTH the primary '
+                         f'stream and OpenHD (default {FPS}). Lower this before '
+                         f'reaching for --no-yolo/--no-openhd on a CPU-tight '
+                         f'run (e.g. alongside vio_vpe/) -- build_composite() '
+                         f'runs once per frame at this rate and is real, '
+                         f'measurable CPU cost (found live: 30fps here + YOLO '
+                         f'+ the vio_vpe stack together saturated an 8-core '
+                         f'Orin NX, load avg ~9, stream falling ~50s behind '
+                         f'real time).')
     ap.add_argument('--record-dir', default=os.path.join(PROJECT_DIR, 'recordings'),
                     metavar='DIR',
                     help='Directory for the local MKV copy of the stream '
@@ -564,6 +717,8 @@ def main():
     if not args.host and not args.stream_server:
         args.host = GROUND_IP   # default to direct UDP
 
+    FPS = args.fps
+
     record_path = _new_record_path(args)
 
     Gst.init(None)
@@ -571,12 +726,19 @@ def main():
     pipeline.set_state(Gst.State.PLAYING)
     bus = pipeline.get_bus()
 
-    openhd_pipeline = openhd_appsrc = openhd_bus = None
+    # Mode C runs on its own thread with its own pacing -- see _openhd_thread's
+    # docstring for why sharing the main loop's blocking push caused the
+    # primary stream to lag until the process was killed.
+    openhd_latest_frame = _LatestFrame()
+    openhd_stop = threading.Event()
+    openhd_thread = None
     if args.stream_openhd:
-        openhd_pipeline, openhd_appsrc = _build_openhd_pipeline(
-            args.stream_openhd, args.openhd_port, args.openhd_bitrate)
-        openhd_pipeline.set_state(Gst.State.PLAYING)
-        openhd_bus = openhd_pipeline.get_bus()
+        openhd_thread = threading.Thread(
+            target=_openhd_thread,
+            args=(args.stream_openhd, args.openhd_port, args.openhd_bitrate,
+                  openhd_latest_frame, openhd_stop),
+            daemon=True)
+        openhd_thread.start()
 
     rclpy.init()
     node = GroundViewNode()
@@ -601,8 +763,8 @@ def main():
         print( '      videoconvert ! autovideosink sync=false')
     if record_path:
         print(f'[stream] Recording local copy → {record_path}')
-    if args.stream_openhd:
-        print(f'[stream] OpenHD (mode C) → {args.stream_openhd}:{args.openhd_port}  (H.264 RTP/UDP)')
+    # (mode C's own "OpenHD (mode C) → ..." line prints from its thread,
+    # asynchronously, once that pipeline is actually up)
     print()
     print('[stream] Waiting for /drone/camera/image_raw …')
 
@@ -615,7 +777,7 @@ def main():
         simplest robust fix; the local recording starts a fresh segment
         rather than trying to splice back into the old (now orphaned) file.
         """
-        nonlocal pipeline, appsrc, bus, record_path
+        nonlocal pipeline, appsrc, bus, record_path, stream_start_t, last_pts
         print(f'[stream] Connection lost ({reason}) — reconnecting …')
         try:
             pipeline.set_state(Gst.State.NULL)
@@ -625,30 +787,32 @@ def main():
         pipeline, appsrc = _build_pipeline(args, record_path)
         pipeline.set_state(Gst.State.PLAYING)
         bus = pipeline.get_bus()
+        stream_start_t = time.monotonic()   # fresh pipeline, fresh timeline
+        last_pts = 0
         if record_path:
             print(f'[stream] Recording local copy → {record_path}')
 
-    def _reconnect_openhd(reason: str):
-        """Same rationale as _reconnect(), independent pipeline/backoff --
-        mode C must not go down (or come back up) in lockstep with mode A/B."""
-        nonlocal openhd_pipeline, openhd_appsrc, openhd_bus
-        print(f'[stream] OpenHD connection lost ({reason}) — reconnecting …')
-        try:
-            openhd_pipeline.set_state(Gst.State.NULL)
-        except Exception:
-            pass
-        openhd_pipeline, openhd_appsrc = _build_openhd_pipeline(
-            args.stream_openhd, args.openhd_port, args.openhd_bitrate)
-        openhd_pipeline.set_state(Gst.State.PLAYING)
-        openhd_bus = openhd_pipeline.get_bus()
-
-    frame_interval     = 1.0 / FPS
-    next_frame_t       = time.monotonic()
-    frame_count        = 0
-    openhd_frame_count = 0
-    warned_no_cam      = False
-    consec_fail        = 0
-    openhd_consec_fail = 0
+    # PTS is derived from the wall clock (time.monotonic() - stream_start_t),
+    # NOT from frame_count * frame_interval. That distinction is the actual
+    # fix for lag that grows without bound: a fixed-rate PTS counter has no
+    # way to represent "this iteration ran long" except by falling further
+    # behind real time forever (the pacing loop below resets its OWN schedule
+    # after an overrun so it doesn't spiral into a catch-up burst, but that
+    # only stops things from getting WORSE -- it never reclaims time already
+    # lost, because nothing tied PTS to real elapsed time in the first
+    # place). Deriving PTS from the wall clock instead means an overrun
+    # iteration just produces one frame with a bigger PTS jump than usual --
+    # a momentary framerate dip, not a permanent, accumulating delay. This
+    # is also just the documented-correct way to timestamp a live appsrc
+    # source (is-live=true) in the first place, not a special-case patch.
+    stream_start_t = time.monotonic()
+    last_pts       = 0
+    frame_interval = 1.0 / FPS
+    next_frame_t   = time.monotonic()
+    frame_count    = 0
+    warned_no_cam  = False
+    consec_fail    = 0
+    last_reconnect_t = time.monotonic()
 
     try:
         while True:
@@ -663,22 +827,8 @@ def main():
                 _reconnect(reason)
                 frame_count  = 0
                 next_frame_t = time.monotonic()
+                last_reconnect_t = time.monotonic()
                 continue
-
-            # Mode C's own pipeline/backoff, independent of mode A/B above --
-            # an OpenHD dropout must not stall or reset the primary stream.
-            if openhd_bus is not None:
-                openhd_msg = openhd_bus.timed_pop_filtered(
-                    0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
-                if openhd_msg is not None:
-                    reason = ('EOS' if openhd_msg.type == Gst.MessageType.EOS
-                              else openhd_msg.parse_error()[0].message)
-                    openhd_consec_fail += 1
-                    backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (openhd_consec_fail - 1)),
-                                     RECONNECT_BACKOFF_MAX_S)
-                    time.sleep(backoff_s)
-                    _reconnect_openhd(reason)
-                    openhd_frame_count = 0
 
             composite = node.build_composite()
 
@@ -688,9 +838,10 @@ def main():
                 print('[stream] First camera frame received — streaming.')
                 warned_no_cam = True
 
+            pts = int((time.monotonic() - stream_start_t) * Gst.SECOND)
             buf          = Gst.Buffer.new_wrapped(composite.tobytes())
-            buf.pts      = frame_count * Gst.SECOND // FPS
-            buf.duration = Gst.SECOND // FPS
+            buf.pts      = pts
+            buf.duration = max(pts - last_pts, 1)
             flow = appsrc.emit('push-buffer', buf)
             if flow != Gst.FlowReturn.OK:
                 consec_fail += 1
@@ -700,29 +851,23 @@ def main():
                 _reconnect(f'push-buffer returned {flow}')
                 frame_count  = 0
                 next_frame_t = time.monotonic()
+                last_reconnect_t = time.monotonic()
                 continue
+            last_pts     = pts
             frame_count += 1
 
-            if openhd_appsrc is not None:
-                openhd_buf          = Gst.Buffer.new_wrapped(composite.tobytes())
-                openhd_buf.pts      = openhd_frame_count * Gst.SECOND // FPS
-                openhd_buf.duration = Gst.SECOND // FPS
-                openhd_flow = openhd_appsrc.emit('push-buffer', openhd_buf)
-                if openhd_flow != Gst.FlowReturn.OK:
-                    openhd_consec_fail += 1
-                    backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (openhd_consec_fail - 1)),
-                                     RECONNECT_BACKOFF_MAX_S)
-                    time.sleep(backoff_s)
-                    _reconnect_openhd(f'push-buffer returned {openhd_flow}')
-                    openhd_frame_count = 0
-                else:
-                    openhd_frame_count += 1
-                    if openhd_consec_fail and openhd_frame_count == FPS * 15:
-                        openhd_consec_fail = 0
+            # Hand the OpenHD thread the newest composite -- cheap (a lock +
+            # reference swap), never blocks, and that thread paces/pushes on
+            # its own schedule entirely independent of this loop.
+            if openhd_thread is not None:
+                openhd_latest_frame.set(composite)
 
             # 15s of clean streaming since the last reconnect → forgive past
-            # failures so a later, unrelated blip doesn't inherit a long backoff.
-            if consec_fail and frame_count == FPS * 15:
+            # failures so a later, unrelated blip doesn't inherit a long
+            # backoff. Wall-clock based (not frame_count == FPS*15) since the
+            # actual achieved framerate can vary -- frame_count would no
+            # longer reliably mean "15 real seconds" once it does.
+            if consec_fail and time.monotonic() - last_reconnect_t >= 15.0:
                 consec_fail = 0
 
             next_frame_t += frame_interval
@@ -743,11 +888,9 @@ def main():
         bus.timed_pop_filtered(2 * Gst.SECOND,
                                Gst.MessageType.EOS | Gst.MessageType.ERROR)
         pipeline.set_state(Gst.State.NULL)
-        if openhd_pipeline is not None:
-            openhd_appsrc.emit('end-of-stream')
-            openhd_bus.timed_pop_filtered(2 * Gst.SECOND,
-                                          Gst.MessageType.EOS | Gst.MessageType.ERROR)
-            openhd_pipeline.set_state(Gst.State.NULL)
+        if openhd_thread is not None:
+            openhd_stop.set()
+            openhd_thread.join(timeout=3.0)
         # see vio_vpe/fusion_live_node.py's identical guard: rclpy's own
         # SIGINT handler (spin_thread runs rclpy.spin(node)) may already have
         # shut the context down by the time this runs.

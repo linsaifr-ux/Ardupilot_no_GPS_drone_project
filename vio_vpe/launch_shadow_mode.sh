@@ -21,7 +21,7 @@
 #                                      [--map PATH]
 #                                      [--stream-host IP | --stream-server IP]
 #                                      [--openhd-ip IP] [--no-openhd]
-#                                      [--no-stream] [--no-yolo]
+#                                      [--no-stream] [--no-yolo] [--stream-fps N]
 #
 #   Also starts the YOLO detector (detection/ros2_node.py --headless) by
 #   default, same node/venv as control/launch_real_hw.sh -- purely for the
@@ -45,6 +45,8 @@
 #   --no-openhd           Disable just the OpenHD leg.
 #   --no-stream           Disable ALL streaming (RTSP/UDP AND OpenHD) --
 #                         local logs only.
+#   --stream-fps N        Compositing/encode rate for both stream legs
+#                         (default 30 here, see the STREAM_FPS comment below).
 # --stream-host and --stream-server are mutually exclusive.
 
 set -e
@@ -59,6 +61,16 @@ STREAM_HOST=""
 STREAM_SERVER="118.232.160.227"   # project's standard relay -- see streaming/
 OPENHD_IP="192.168.2.2"           # record_field.py's own OpenHD default
 YOLO_ENABLED="1"
+# Back to tools/ground_view_stream.py's own 30fps default (2026-08-14: was
+# temporarily lowered to 15 while diagnosing lag on this launcher, which adds
+# VIO+VPE on top of the camera+MAVROS+dual-encode+YOLO load launch_real_hw.sh
+# already carries -- an 8-core Orin NX running all of it hit load avg ~9).
+# That's still true, but the actual growing-lag bug turned out to be
+# ground_view_stream.py's PTS timestamps being nominal-rate rather than
+# wall-clock-derived (fixed the same day) -- with that fixed, lag no longer
+# accumulates regardless of fps, it just means less CPU headroom under load.
+# Override with --stream-fps if 30 turns out to reintroduce visible stutter.
+STREAM_FPS="30"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --sigma-vio)     SIGMA_VIO="$2";     shift 2 ;;
@@ -70,6 +82,7 @@ while [[ $# -gt 0 ]]; do
         --no-openhd)     OPENHD_IP="";       shift ;;
         --no-stream)     STREAM_HOST=""; STREAM_SERVER=""; OPENHD_IP=""; shift ;;
         --no-yolo)       YOLO_ENABLED="";    shift ;;
+        --stream-fps)    STREAM_FPS="$2";    shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
     esac
 done
@@ -85,10 +98,10 @@ source "$CONTROL_DIR/ros2_env.sh"
 echo "=== VIO+VPE Shadow-Mode Launch (no FC publish) ==="
 echo "Project: $PROJECT_DIR"
 echo "sigma_vio=$SIGMA_VIO m/s  sigma_vpe=$SIGMA_VPE m  map=$MAP_PATH"
-[[ -n "$STREAM_HOST"   ]] && echo "Ground view: UDP  -> $STREAM_HOST:5000"
-[[ -n "$STREAM_SERVER" ]] && echo "Ground view: RTSP -> rtsp://$STREAM_SERVER:8554/drone"
+[[ -n "$STREAM_HOST"   ]] && echo "Ground view: UDP  -> $STREAM_HOST:5000 @ ${STREAM_FPS}fps"
+[[ -n "$STREAM_SERVER" ]] && echo "Ground view: RTSP -> rtsp://$STREAM_SERVER:8554/drone @ ${STREAM_FPS}fps"
 [[ -z "$STREAM_HOST$STREAM_SERVER" ]] && echo "Ground view (mode A/B): NOT streamed"
-[[ -n "$OPENHD_IP" ]] && echo "Ground view: OpenHD -> $OPENHD_IP:5601"
+[[ -n "$OPENHD_IP" ]] && echo "Ground view: OpenHD -> $OPENHD_IP:5601 @ ${STREAM_FPS}fps"
 [[ -z "$OPENHD_IP" ]] && echo "Ground view (mode C / OpenHD): NOT streamed"
 [[ -n "$YOLO_ENABLED" ]] && echo "YOLO detector: enabled (headless)"
 [[ -z "$YOLO_ENABLED" ]] && echo "YOLO detector: disabled (--no-yolo)"
@@ -164,7 +177,7 @@ sleep 3
 #    vio_vpe/latest_estimate.json once that node starts (step 8) -- see
 #    tools/ground_view_stream.py's _read_shadow_estimate(). Mode C (OpenHD)
 #    runs alongside mode A/B, not instead of it -- both passed in one process.
-STREAM_ARGS=()
+STREAM_ARGS=(--fps "$STREAM_FPS")
 [[ -n "$STREAM_HOST"   ]] && STREAM_ARGS+=(--host "$STREAM_HOST")
 [[ -n "$STREAM_SERVER" ]] && STREAM_ARGS+=(--stream-server "$STREAM_SERVER")
 [[ -n "$OPENHD_IP"     ]] && STREAM_ARGS+=(--stream-openhd "$OPENHD_IP")
