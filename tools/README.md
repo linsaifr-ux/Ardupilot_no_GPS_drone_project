@@ -216,7 +216,7 @@ and confirm `POS_ABS` appears in the active list with `pos_h` variance < 0.5.
 
 ## ground_view_stream.py — Composite ground view stream (YOLO + AnyLoc)
 
-Subscribes to `/drone/camera/image_raw` (`launch_camera.sh` must already be running — this script doesn't open the camera) and streams a 1280×720 composite viewport. Two stream modes: direct UDP to a ground station, or RTSP push to the MediaMTX relay server (no GStreamer needed on the receiver).
+Subscribes to `/drone/camera/image_raw` (`launch_camera.sh` must already be running — this script doesn't open the camera) and streams a 1280×720 composite viewport. Three stream modes, and mode C runs alongside A or B: direct UDP to a ground station, RTSP push to the MediaMTX relay server (no GStreamer needed on the receiver), and/or H.264 RTP/UDP to an OpenHD ground station.
 
 **Local recording (default-on, added 2026-07-06):** every run also saves the exact streamed composite to `recordings/ground_view_<timestamp>.mkv` — a tee of the same H.265 encode (no extra GPU load), streamable MKV so it stays playable after power loss mid-flight, new timestamped file per run, gitignored. `--no-record` disables; `--record-dir DIR` relocates. This is the overlay-burned 720p stream view — for clean full-res camera footage (database building, offline replay) use `record_field.py`; both can run together.
 
@@ -224,7 +224,17 @@ Subscribes to `/drone/camera/image_raw` (`launch_camera.sh` must already be runn
 Left  (640×720)
   ├─ Top    (640×360): camera with YOLO bounding boxes + drone lat/lon/AGL
   │                    (frame is stamp-matched to the boxes — see below)
-  └─ Bottom (640×360): AnyLoc latest match satellite tile + localizer telemetry
+  └─ Bottom (640×360): mode-aware localizer panel (2026-08-14) — shows
+                        whichever of AnyLoc or the vio_vpe/ shadow-mode
+                        observer is actually producing fixes right now
+                        (checked by freshness, 5 s staleness threshold each
+                        already uses); a neutral "waiting" placeholder if
+                        neither is running. Never shows AnyLoc's match crop
+                        during a shadow-mode flight (control/launch_real_hw.sh
+                        and vio_vpe/launch_shadow_mode.sh never run both
+                        localizers at once, so showing AnyLoc's image
+                        unconditionally would mean displaying a stale crop
+                        left over from a past run).
 Right (640×720)
   ├─ Slot 0 (640×240): most recent YOLO detection crop ─┐
   ├─ Slot 1 (640×240): 2nd most recent                  ├ class / conf / lat / lon / age
@@ -243,6 +253,12 @@ python3 tools/ground_view_stream.py --host 10.181.156.237
 source /opt/ros/humble/setup.bash
 source control/ros2_env.sh
 python3 tools/ground_view_stream.py --stream-server 118.232.160.227
+
+# Mode C — also stream to an OpenHD ground station, runs ALONGSIDE A or B
+# (same overlay composite, H.264 instead of H.265 — mirrors record_field.py's
+# own mode C, ported here rather than shared since that script owns the
+# camera device directly and this one only subscribes to the topic)
+python3 tools/ground_view_stream.py --stream-server 118.232.160.227 --stream-openhd
 ```
 
 **Mode A — receive on ground station:**
@@ -266,7 +282,10 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 | `--port N` | 5000 | UDP port (mode A only) |
 | `--stream-server IP` | off | MediaMTX relay server IP — RTSP push (mode B) |
 | `--rtsp-path P` | `/drone` | RTSP stream path (mode B only) |
-| `--bitrate N` | 1000000 | H.265 bitrate (bits/s) |
+| `--bitrate N` | 1000000 | H.265 bitrate (bits/s), modes A/B |
+| `--stream-openhd [IP]` | off | Mode C: H.264 RTP/UDP to an OpenHD ground station (default `192.168.2.2` when the flag is given without a value), coexists with A/B, independent reconnect/backoff |
+| `--openhd-port N` | 5601 | OpenHD UDP port |
+| `--openhd-bitrate N` | 4000000 | OpenHD H.264 bitrate (bps) |
 
 `--host` and `--stream-server` are mutually exclusive. Without either, defaults to direct UDP using `GROUND_IP` env var.
 
@@ -281,6 +300,11 @@ Browser: http://118.232.160.227:8888/drone  (HLS, ~5 s, mobile-friendly)
 bash control/launch_real_hw.sh --stream-host 10.181.156.237       # mode A
 bash control/launch_real_hw.sh --stream-server 118.232.160.227    # mode B
 ```
+
+`vio_vpe/launch_shadow_mode.sh` (the VIO+VPE shadow-mode observer, see
+`vio_vpe/README.md`) also launches this script, streaming mode B + mode C
+(OpenHD) **by default with no flags** — the only launcher in this project
+where that's the default rather than opt-in.
 
 **Requires:** nvidia-l4t-gstreamer, python3-gi, ROS2 Humble with vision_msgs
 

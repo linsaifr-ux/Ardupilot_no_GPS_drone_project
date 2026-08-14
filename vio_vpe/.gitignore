@@ -1,0 +1,4 @@
+vio/build/
+__pycache__/
+logs/*.csv
+latest_estimate.json

@@ -34,6 +34,16 @@ Stream mode B — RTSP push to MediaMTX relay server (LTE / internet):
         Browser: http://118.232.160.227:8889/drone  (WebRTC ~200 ms)
         Browser: http://118.232.160.227:8888/drone  (HLS ~5 s, very reliable)
 
+Stream mode C — OpenHD (H.264 RTP/UDP, runs ALONGSIDE mode A or B):
+    python3 tools/ground_view_stream.py --stream-server 118.232.160.227 \\
+        --stream-openhd [IP]
+
+    Streams the same composite as mode A/B to an OpenHD ground station
+    (default IP 192.168.2.2 when the flag is given without a value). This is
+    the same mode C tools/record_field.py already has -- ported here rather
+    than shared, since this tool subscribes to the live camera topic instead
+    of owning the device, so it can run this alongside anything.
+
 --host and --stream-server are mutually exclusive.
 
 A local copy of the streamed composite is always recorded to
@@ -101,6 +111,11 @@ DET_STALE_S = 2.0
 PROJECT_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ESTIMATE_JSON = os.path.join(PROJECT_DIR, "anyloc", "latest_estimate.json")
 MATCH_JPG     = os.path.join(PROJECT_DIR, "anyloc", "latest_match.jpg")
+# Written by vio_vpe/fusion_live_node.py -- the shadow-mode VIO+VPE observer
+# (see ~/.claude/plans/robust-squishing-forest.md). That stack never publishes
+# to the flight controller; this is read-only, display-only, same as the
+# AnyLoc estimate above.
+SHADOW_ESTIMATE_JSON = os.path.join(PROJECT_DIR, "vio_vpe", "latest_estimate.json")
 
 _SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                           durability=DurabilityPolicy.VOLATILE, depth=1)
@@ -173,6 +188,31 @@ def _build_pipeline(args, record_path: str):
     return _build_udp_pipeline(args.host, args.port, args.bitrate, record_path)
 
 
+_OPENHD_APPSRC = (
+    f'appsrc name=openhd format=time is-live=true block=true '
+    f'caps=video/x-raw,format=BGR,width={STREAM_W},height={STREAM_H},framerate={FPS}/1 ! '
+    f'queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! '
+)
+
+
+def _build_openhd_pipeline(host: str, port: int, bitrate: int):
+    """Mode C — H.264 RTP/UDP to an OpenHD ground station, runs ALONGSIDE
+    mode A/B. Encoder/payloader settings match tools/record_field.py's
+    field-tested OpenHD pipeline (_build_openhd_pipeline there) -- ported
+    rather than imported since that one owns the camera device directly and
+    this one subscribes to the topic instead.
+    """
+    desc = (_OPENHD_APPSRC +
+            f'videoconvert ! '
+            f'nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! '
+            f'nvv4l2h264enc bitrate={bitrate} control-rate=1 insert-sps-pps=true '
+            f'idrinterval=15 ! '
+            f'h264parse ! rtph264pay config-interval=1 pt=96 mtu=1024 ! '
+            f'udpsink host={host} port={port} sync=false')
+    pipeline = Gst.parse_launch(desc)
+    return pipeline, pipeline.get_by_name('openhd')
+
+
 def _new_record_path(args) -> str:
     """Fresh timestamped MKV path, or '' if recording is disabled."""
     if args.no_record:
@@ -196,6 +236,8 @@ def _put(img, lines, x, y, scale=0.5, thickness=1, color=(0, 255, 80)):
 
 _est_cache: dict   = {}
 _est_cache_t: float = 0.0
+_shadow_cache: dict   = {}
+_shadow_cache_t: float = 0.0
 _match_img: np.ndarray | None = None
 _match_mtime: float = 0.0
 
@@ -211,6 +253,21 @@ def _read_estimate() -> dict:
     except Exception:
         pass
     return _est_cache
+
+
+def _read_shadow_estimate() -> dict:
+    """Same poll-a-JSON-file pattern as _read_estimate(), for the VIO+VPE
+    shadow-mode observer instead of AnyLoc."""
+    global _shadow_cache, _shadow_cache_t
+    if time.time() - _shadow_cache_t < 0.5:
+        return _shadow_cache
+    try:
+        with open(SHADOW_ESTIMATE_JSON) as f:
+            _shadow_cache = json.load(f)
+        _shadow_cache_t = time.time()
+    except Exception:
+        pass
+    return _shadow_cache
 
 
 def _read_match() -> np.ndarray | None:
@@ -388,24 +445,50 @@ class GroundViewNode(rclpy.node.Node):
              color=(0, 255, 80) if det_fresh else (80, 80, 255))
         cv2.line(yolo_panel, (0, HALF_H - 1), (PANEL_W - 1, HALF_H - 1), (60, 60, 60), 1)
 
-        # ── Left-bottom: AnyLoc match tile ───────────────────────────────────
-        match_src = _read_match()
-        if match_src is not None:
-            anyloc_panel = cv2.resize(match_src, (PANEL_W, HALF_H))
+        # ── Left-bottom: localizer panel -- AnyLoc match tile OR the
+        # shadow-mode VIO+VPE observer, whichever is actually producing
+        # fresh data right now. These two never run together
+        # (control/launch_real_hw.sh starts anyloc/ros2_node.py;
+        # vio_vpe/launch_shadow_mode.sh starts fusion_live_node.py instead
+        # and never touches anyloc/ at all), so showing AnyLoc's match crop
+        # unconditionally would mean displaying a stale image left over from
+        # a past AnyLoc run during a shadow-mode flight -- actively
+        # misleading, not just an empty panel. Pick whichever source has a
+        # fix newer than 5s (matches the STALE threshold each source already
+        # uses for its own age color-coding).
+        est = _read_estimate()
+        anyloc_age = (time.time() - est.get("timestamp", 0)) if est else 1e9
+        sh = _read_shadow_estimate()
+        shadow_age = (time.time() - sh.get("t", 0)) if sh else 1e9
+
+        if anyloc_age <= 5.0:
+            match_src = _read_match()
+            anyloc_panel = (cv2.resize(match_src, (PANEL_W, HALF_H)) if match_src is not None
+                            else np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8))
+            _put(anyloc_panel, [
+                f"ANYLOC  score {est.get('score', 0.0):.3f}",
+                f"LAT {est.get('est_lat', 0.0):.5f}   LON {est.get('est_lon', 0.0):.5f}",
+                f"ERR {est.get('error_m', 0.0):.0f} m   age {anyloc_age:.1f} s",
+            ], 8, 18, scale=0.5, color=(80, 255, 80))
+        elif shadow_age <= 5.0:
+            anyloc_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
+            yaw = sh.get("yaw_deg")
+            yaw_txt = (f"{yaw:.0f} deg" if sh.get("yaw_resolved") and yaw is not None
+                      else "unresolved")
+
+            def _fmt_err(v):
+                return f"{v:.0f} m" if v is not None else "--"
+
+            _put(anyloc_panel, [
+                f"SHADOW (VIO+VPE, not published to FC)   age {shadow_age:.1f}s",
+                f"yaw {yaw_txt}   vpe fix age {sh.get('vpe_age_s', 0.0) or 0.0:.1f}s",
+                f"err vio    {_fmt_err(sh.get('err_vio_m'))}",
+                f"err vpe    {_fmt_err(sh.get('err_vpe_m'))}",
+                f"err fused  {_fmt_err(sh.get('err_fused_m'))}",
+            ], 8, 22, scale=0.55, color=(80, 255, 80))
         else:
             anyloc_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
-        est = _read_estimate()
-        if est:
-            age   = time.time() - est.get("timestamp", 0)
-            color = (80, 255, 80) if age <= 5.0 else (80, 80, 255)
-            stale = "  STALE" if age > 5.0 else ""
-            _put(anyloc_panel, [
-                f"ANYLOC  score {est.get('score', 0.0):.3f}{stale}",
-                f"LAT {est.get('est_lat', 0.0):.5f}   LON {est.get('est_lon', 0.0):.5f}",
-                f"ERR {est.get('error_m', 0.0):.0f} m   age {age:.1f} s",
-            ], 8, 18, scale=0.5, color=color)
-        else:
-            _put(anyloc_panel, ["AnyLoc: waiting for first estimate …"],
+            _put(anyloc_panel, ["waiting for AnyLoc or shadow-mode estimate …"],
                  8, HALF_H // 2, scale=0.5, color=(120, 120, 120))
 
         left = np.vstack([yolo_panel, anyloc_panel])
@@ -458,6 +541,14 @@ def main():
                     help='MediaMTX relay server IP for RTSP push (mode B)')
     ap.add_argument('--rtsp-path',     default='/drone', metavar='PATH',
                     help='RTSP stream path on server (default: /drone)')
+    # Mode C — OpenHD, runs alongside mode A or B
+    ap.add_argument('--stream-openhd', nargs='?', const='192.168.2.2',
+                    default='', metavar='IP',
+                    help='Also stream (mode C) to an OpenHD ground station, '
+                         'default IP 192.168.2.2 when given without a value '
+                         '-- same convention as record_field.py')
+    ap.add_argument('--openhd-port',    type=int, default=5601)
+    ap.add_argument('--openhd-bitrate', type=int, default=4_000_000)
     # Common
     ap.add_argument('--bitrate', type=int, default=1_000_000)
     ap.add_argument('--record-dir', default=os.path.join(PROJECT_DIR, 'recordings'),
@@ -479,6 +570,13 @@ def main():
     pipeline, appsrc = _build_pipeline(args, record_path)
     pipeline.set_state(Gst.State.PLAYING)
     bus = pipeline.get_bus()
+
+    openhd_pipeline = openhd_appsrc = openhd_bus = None
+    if args.stream_openhd:
+        openhd_pipeline, openhd_appsrc = _build_openhd_pipeline(
+            args.stream_openhd, args.openhd_port, args.openhd_bitrate)
+        openhd_pipeline.set_state(Gst.State.PLAYING)
+        openhd_bus = openhd_pipeline.get_bus()
 
     rclpy.init()
     node = GroundViewNode()
@@ -503,6 +601,8 @@ def main():
         print( '      videoconvert ! autovideosink sync=false')
     if record_path:
         print(f'[stream] Recording local copy → {record_path}')
+    if args.stream_openhd:
+        print(f'[stream] OpenHD (mode C) → {args.stream_openhd}:{args.openhd_port}  (H.264 RTP/UDP)')
     print()
     print('[stream] Waiting for /drone/camera/image_raw …')
 
@@ -528,11 +628,27 @@ def main():
         if record_path:
             print(f'[stream] Recording local copy → {record_path}')
 
-    frame_interval = 1.0 / FPS
-    next_frame_t   = time.monotonic()
-    frame_count    = 0
-    warned_no_cam  = False
-    consec_fail    = 0
+    def _reconnect_openhd(reason: str):
+        """Same rationale as _reconnect(), independent pipeline/backoff --
+        mode C must not go down (or come back up) in lockstep with mode A/B."""
+        nonlocal openhd_pipeline, openhd_appsrc, openhd_bus
+        print(f'[stream] OpenHD connection lost ({reason}) — reconnecting …')
+        try:
+            openhd_pipeline.set_state(Gst.State.NULL)
+        except Exception:
+            pass
+        openhd_pipeline, openhd_appsrc = _build_openhd_pipeline(
+            args.stream_openhd, args.openhd_port, args.openhd_bitrate)
+        openhd_pipeline.set_state(Gst.State.PLAYING)
+        openhd_bus = openhd_pipeline.get_bus()
+
+    frame_interval     = 1.0 / FPS
+    next_frame_t       = time.monotonic()
+    frame_count        = 0
+    openhd_frame_count = 0
+    warned_no_cam      = False
+    consec_fail        = 0
+    openhd_consec_fail = 0
 
     try:
         while True:
@@ -548,6 +664,21 @@ def main():
                 frame_count  = 0
                 next_frame_t = time.monotonic()
                 continue
+
+            # Mode C's own pipeline/backoff, independent of mode A/B above --
+            # an OpenHD dropout must not stall or reset the primary stream.
+            if openhd_bus is not None:
+                openhd_msg = openhd_bus.timed_pop_filtered(
+                    0, Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if openhd_msg is not None:
+                    reason = ('EOS' if openhd_msg.type == Gst.MessageType.EOS
+                              else openhd_msg.parse_error()[0].message)
+                    openhd_consec_fail += 1
+                    backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (openhd_consec_fail - 1)),
+                                     RECONNECT_BACKOFF_MAX_S)
+                    time.sleep(backoff_s)
+                    _reconnect_openhd(reason)
+                    openhd_frame_count = 0
 
             composite = node.build_composite()
 
@@ -572,6 +703,23 @@ def main():
                 continue
             frame_count += 1
 
+            if openhd_appsrc is not None:
+                openhd_buf          = Gst.Buffer.new_wrapped(composite.tobytes())
+                openhd_buf.pts      = openhd_frame_count * Gst.SECOND // FPS
+                openhd_buf.duration = Gst.SECOND // FPS
+                openhd_flow = openhd_appsrc.emit('push-buffer', openhd_buf)
+                if openhd_flow != Gst.FlowReturn.OK:
+                    openhd_consec_fail += 1
+                    backoff_s = min(RECONNECT_BACKOFF_S * (2 ** (openhd_consec_fail - 1)),
+                                     RECONNECT_BACKOFF_MAX_S)
+                    time.sleep(backoff_s)
+                    _reconnect_openhd(f'push-buffer returned {openhd_flow}')
+                    openhd_frame_count = 0
+                else:
+                    openhd_frame_count += 1
+                    if openhd_consec_fail and openhd_frame_count == FPS * 15:
+                        openhd_consec_fail = 0
+
             # 15s of clean streaming since the last reconnect → forgive past
             # failures so a later, unrelated blip doesn't inherit a long backoff.
             if consec_fail and frame_count == FPS * 15:
@@ -595,7 +743,16 @@ def main():
         bus.timed_pop_filtered(2 * Gst.SECOND,
                                Gst.MessageType.EOS | Gst.MessageType.ERROR)
         pipeline.set_state(Gst.State.NULL)
-        rclpy.shutdown()
+        if openhd_pipeline is not None:
+            openhd_appsrc.emit('end-of-stream')
+            openhd_bus.timed_pop_filtered(2 * Gst.SECOND,
+                                          Gst.MessageType.EOS | Gst.MessageType.ERROR)
+            openhd_pipeline.set_state(Gst.State.NULL)
+        # see vio_vpe/fusion_live_node.py's identical guard: rclpy's own
+        # SIGINT handler (spin_thread runs rclpy.spin(node)) may already have
+        # shut the context down by the time this runs.
+        if rclpy.ok():
+            rclpy.shutdown()
         if record_path:
             print(f'[stream] Local recording saved → {record_path}')
         print('[stream] Done.')

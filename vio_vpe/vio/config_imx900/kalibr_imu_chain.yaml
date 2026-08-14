@@ -1,0 +1,50 @@
+%YAML:1.0
+# IMU noise for the survey43/44/45 flight controller stream (~340 Hz).
+#
+# Measured from survey44's genuinely static window (60-120 s, props OFF):
+#   gyro  2.5e-05 rad/s/sqrt(Hz)
+#   accel 3.0e-04 m/s^2/sqrt(Hz)
+# That is the bare sensor noise floor and is far too optimistic for flight.
+# With props spinning (survey45 20-60 s, still on the ground) the same
+# measurement gives:
+#   gyro  ~7.0e-03 rad/s/sqrt(Hz)   (280x the floor)
+#   accel ~3.0e-02 m/s^2/sqrt(Hz)   (100x the floor)
+# The props-on figures are used, because vibration is what the filter actually
+# has to survive -- feeding it the props-off floor makes it over-trust the
+# accelerometer, which is exactly the failure that collapses monocular scale.
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 3.0e-02
+  accelerometer_random_walk: 1.0e-03
+  gyroscope_noise_density: 7.0e-03
+  gyroscope_random_walk: 1.0e-05
+  model: kalibr
+  rostopic: /imu0
+  time_offset: 0.0
+  update_rate: 340.0
+  # identity IMU intrinsics -- the parser requires these nodes to exist even
+  # when calib_imu_intrinsics is off
+  Tw:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Ta:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Tg:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+  R_IMUtoACC:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoGYRO:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]

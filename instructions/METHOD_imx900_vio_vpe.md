@@ -1,12 +1,23 @@
 # Method: GPS-denied localization on the imx900 rig (VIO + VPE + fusion)
 
 Complete, self-contained description of the pipeline as it stands on
-2026-08-13, written so it can be reproduced or ported to the Jetson without
-reading the session logs. Every constant here was measured from flight data;
+2026-08-13 (revised after the survey47/48 flights and the SITL wiring),
+written so it can be reproduced or ported to the Jetson without reading the
+session logs. Every constant here was measured from flight data;
 where a number is uncertain or second-hand that is stated.
 
 Results and the experiments that produced them are in
 `session_2026-08-12_imx900_vio.md`. This file is the *method*.
+
+**Live on the Jetson (2026-08-14):** this method now has a running
+implementation at `vio_vpe/` (git-tracked, ported from the desktop deploy
+package at `instructions/jetson_deploy/` — see that folder's README) — a
+shadow-mode observer that runs this exact pipeline live during a flight,
+publishing nothing to the flight controller. See `vio_vpe/README.md` for
+architecture, what's been validated on real hardware, and what hasn't
+(notably: no real flight yet, only bench/replay testing). §11 below describes
+the porting plan as it stood before that work; treat `vio_vpe/README.md` as
+the current status over this section where they disagree.
 
 ---
 
@@ -15,20 +26,36 @@ Results and the experiments that produced them are in
 ```
 video.mkv ─┬─> [VIO]  OpenVINS MSCKF ──────> relative pose, 15 Hz, drifts
 imu.csv  ──┘                                        │
-                                                    ├─> [FUSION] 4-state KF ─> position
-video.mkv ───> [VPE]  SuperPoint+LightGlue ──> absolute fix, ~1 Hz
-               against a frame map built                │
-               from an earlier flight ──────────────────┘
+                                                    ├─> [FUSION] 4-state KF
+video.mkv ───> [VPE]  SuperPoint+LightGlue ──> absolute fix, ~1 Hz    │
+               against a frame map built                │             │
+               from an earlier flight ──────────────────┘             │
+                                                                      v
+                                              [PUBLISH GATE] output(dt)
+                                        slew limit + staleness withhold
+                                                                      │
+                                                                      v
+                                        ONE VISION_POSITION_ESTIMATE stream
 ```
 
 VIO is smooth but drifts and has a scale error. VPE is absolute but sparse and
-heavy-tailed. The fusion filter reconciles them and is the only thing the
-autopilot would ever see.
+heavy-tailed. The fusion filter reconciles them; the **publish gate** is what
+the autopilot actually sees, and it is a separate concern from accuracy (§8.2).
 
-**Current honest status:** VIO is usable at 10 m AGL (3.9 m rmse) and unusable
-at 65 m (diverges). VPE is excellent at 65 m (4.4 m, 100% fix rate) and
-mediocre at 10 m against a 65 m map (63% fix rate). Fusion is bounded in both
-regimes but does not beat the better source in either. See §10.
+**The VPE method is ngps** — SuperPoint + LightGlue. AnyLoc/foundloc has never
+been run on this rig, so nothing here claims one VPR method beats the other.
+
+**Current honest status**, by regime:
+
+| | VIO | VPE | fusion vs causal baseline |
+|---|---|---|---|
+| 10 m AGL (survey43) | 1.1 m rmse (0.5% of path) | 63% fix rate cross-altitude | 2.6x better than ZOH |
+| ~55 m, moving (survey48) | 14.7 m (1.7% of path) | 100%, 10.0 m mean | 1.1x better than ZOH |
+| ~50 m, stop-start (survey45) | **diverges** (scale 0.217) | 100%, 4.6 m mean | worse than ZOH |
+
+VIO quality is the whole story, and it is not a function of altitude alone --
+survey45 and survey48 flew within 5 m of the same height with opposite results.
+See §12.
 
 ---
 
@@ -45,6 +72,20 @@ all on one clock (unix seconds):
 | `attitude.csv` | `stamp_ros,recv_unix,qw,qx,qy,qz` | 50 Hz |
 | `telemetry.csv` | `unix_time,lat,lon,alt_amsl,alt_agl,heading_deg,rc_channels` | ~5 Hz |
 | `meta.json` | `video_start_unix`, `fps`, `width`, `height`, ... | once |
+
+### Flights available
+
+| flight | AGL | airborne | GPS path | extent | median speed | role |
+|---|---|---|---|---|---|---|
+| `survey43` | 9 m | 80 s | 212 m | 57 x 28 m | 2.3 m/s | low-altitude test |
+| `survey44` | 55 m | 249 s | 717 m | 112 x 104 m | 2.5 m/s | map |
+| `survey45` | 48 m | 167 s | 348 m | 89 x 68 m | 0.1 m/s | test (VIO diverges) |
+| `survey47` | 56 m | 274 s | — | 329 x 203 m | 6.4 m/s | **map, best coverage** |
+| `survey48` | 51 m | 221 s | 869 m | 234 x 115 m | 2.8 m/s | **test, best VIO** |
+
+All at the same site (22.5747-22.5749 N). survey47/48 additionally carry an
+**imx219** second camera (`video_imx219.mkv`, 1640x1232) — unused here, the
+Kalibr calibration covers only the imx900 in `video.mkv`.
 
 `frame_times.csv` must have exactly one row per decoded video frame — the map
 builder and the VIO runner both index frames positionally against it.
@@ -325,8 +366,9 @@ north = tile.north - (p[1] - tile_h/2) * COMMON_GSD    # image y is south
 ```
 
 ```bash
-python3 vpe_localize_imx900.py --db-survey survey44 --q-survey survey45 \
-    --q-every 1.0 --out vio_out/vpe_s44db_s45q_1hz.json
+# current best pair
+python3 vpe_localize_imx900.py --db-survey survey47 --q-survey survey48 \
+    --q-every 1.0 --out vio_out/vpe_s47db_s48q.json
 ```
 
 `--search-radius <m>` restricts candidates to tiles near a prior. Omitted, it
@@ -340,35 +382,100 @@ then independent, but see §11: onboard it is mandatory.
 `fusion_filter.py` (shared with the sim) driven by `fuse_vio_vpe_imx900.py`.
 
 4-state horizontal Kalman filter, `x = [n, e, vn, ve]` in NED, constant-velocity
-dynamics with piecewise-constant acceleration process noise (`q_a = 1.5`).
-Horizontal only — ArduPilot's own EKF does attitude and altitude better than a
-bolt-on filter should attempt.
+dynamics. Horizontal only — ArduPilot's own EKF does attitude and altitude
+better than a bolt-on filter should attempt.
 
-- **Absolute fix** (`update_position`) — Mahalanobis-gated at χ² = 9.21 (2 DOF,
-  99%), then bled in over 10 predict steps rather than applied as a jump.
-  Bootstraps the filter on the first fix, so **VIO is never required to start**.
+### 8.1 Estimation
+
+| parameter | value | why this value |
+|---|---|---|
+| `accel_process_noise` | **5.0** | a tight model lags 1 Hz fixes. survey45 rmse: q=0.1 -> 21.3 m, 1.5 -> 12.5, **5 -> 9.0**, 50 -> 12.1 |
+| `VPS_CHI2_THRESHOLD` | **23.0** (99.999%) | at 9.21 (99%) the gate rejected fixes worse than average but far better than the drifting state replacing them, then triggered resets: 12.25 m with 6 rejections vs 9.17 m with none |
+| `VPS_SOFT_FRAMES` | **1** in the state | smoothing belongs on the published output (§8.2), not in the state; leave at 5 if publishing `state()` directly |
+| `MAX_CONSEC_POS_REJECTS` | **3** | see below |
+| `MIN_VEL_ACCEPT_RATE` | **0.70** | see below |
+
+- **Absolute fix** (`update_position`) — Mahalanobis-gated, then bled in rather
+  than applied as a jump. Bootstraps on the first fix, so **VIO is never
+  required to start**.
 - **Velocity** (`update_velocity`) — gated on a speed envelope (`V_MAX_MS =
   12.0`, WPNAV_SPEED) and a scale ratio clamp `[0.2, 5.0]`.
-- **Reject-run escape hatch** (`MAX_CONSEC_POS_REJECTS = 3`) — a Mahalanobis
-  gate protects against a bad *fix* but cannot distinguish that from a bad
-  *state*. Diverging VIO once got 35 of 43 correct fixes gated out permanently,
-  scoring 635 m. After 3 consecutive rejections the state is treated as the
-  thing at fault and re-bootstrapped from the rejected fix (635 m → 37 m). Set
-  to 0 for the old behaviour.
+- **Reject-run escape hatch** (`MAX_CONSEC_POS_REJECTS`) — a Mahalanobis gate
+  protects against a bad *fix* but cannot tell that from a bad *state*.
+  Diverging VIO once got 35 of 43 correct fixes gated out permanently, scoring
+  635 m. After 3 consecutive rejections the state is treated as the thing at
+  fault. It **inflates covariance, it does NOT teleport to the fix** — the
+  original teleport produced a 52 m step in a single 100 ms output.
+- **Velocity health** (`MIN_VEL_ACCEPT_RATE`) — the constant-velocity model is
+  only worth having if the velocity input is real. Below a 70% rolling
+  acceptance rate the velocity state is held at zero, degrading the filter to a
+  position random walk. The filter's own gates separate the cases cleanly:
+  survey45 accepts 52%, survey43 89%, survey48 100%.
 
-**The VIO→ENU yaw is fitted from the VPE fixes, never from GPS.** OpenVINS'
-world yaw is arbitrary; a real GPS-denied aircraft has to resolve it from its
-own absolute fixes, and using GPS makes the whole evaluation circular.
-`yaw_from_vpe()` does a robust complex least squares over the first 40 s of
-fixes, constrained to rotation only (never scale).
+### 8.2 The publish gate — `output(dt)`, never `state()`
+
+**This is a flight-safety concern and it is invisible in accuracy statistics.**
+A track can sit at 11 m rmse and contain a 52 m step in one 100 ms sample —
+520 m/s of apparent velocity, which EKF3 fuses and the position controller then
+chases.
+
+`output(dt)` walks the published position toward the state at a bounded total
+speed, and returns `None` when the estimate has nothing behind it:
+
+| parameter | value | notes |
+|---|---|---|
+| `MAX_CORRECTION_MS` | **5.0** m/s | bound is on TOTAL motion (`V_MAX_MS + this`), not on a correction added to a feed-forward term. When velocity is held at zero there IS no feed-forward, and a correction-only budget leaves the output permanently saturated (measured: 45% of samples, path visibly cutting corners). |
+| `MAX_FIX_AGE_S` | **5.0** s offline | withhold once the newest **absolute** fix is older than this. **Must scale with the VPE rate: >= 5x the median inter-fix interval.** 15 s in the sim, where AnyLoc runs at 2 s intervals plus ~2 s per NO FIX. |
+
+Measured slew trade-off on survey45 (max published step vs accuracy):
+
+| limit | max step | implied | rmse | median |
+|---|---|---|---|---|
+| 1.0 m/s | 0.64 m | 6.4 m/s | 40.9 | 21.8 — cannot keep up |
+| **5.0** | **1.07** | **10.7** | 23.3 | 3.5 |
+| none | **59.70** | **597** | 14.6 | 3.4 — unsafe |
+
+**Gate on fix AGE, not on covariance.** Covariance gating was tried first and
+rejected: on survey45 the correlation between `pos_sigma` and true error is
+**0.109**, and the bands are non-monotonic (sigma 0-5 m contains 69.5 m errors
+while sigma 20-50 m tops out at 5.0 m). The filter does not know when it is
+wrong.
+
+**Withholding is only safe if the autopilot has a failsafe for losing its
+vision source.** In SITL the ground-truth geofence was that response. A real
+aircraft needs an EKF failsafe to LAND/RTL; that is not yet configured.
+
+### 8.3 The VIO->ENU yaw — fitted from VPE, never from GPS
+
+OpenVINS' world yaw is arbitrary. A real GPS-denied aircraft has to resolve it
+from its own absolute fixes; using GPS makes the evaluation circular.
+
+**The fit window must contain horizontal MOTION, not just elapsed time.**
+`pick_yaw_window()` extends the window until the fixes span `--yaw-fit-span`
+metres (default 150). Without it, survey48's first 40 s spans **3.8 m** while
+climbing and returns **-139.6 deg against a true +20.4 deg** — a 160 deg error
+that rotates a good VIO velocity backwards:
+
+| yaw window | spatial span | fitted yaw |
+|---|---|---|
+| 40 s (time only) | 3.8 m | **-139.6 deg** |
+| 60 s | 152 m | +21.3 |
+| truth (GPS, reference only) | — | **+20.4** |
+
+Effect on survey48, changing nothing else: VIO-only 183.2 -> **14.7 m**,
+fused 49.7 -> **16.3 m**. Same class of failure as the "scale not identifiable
+during a climb" guard in `eval_vio_vs_gps`; the yaw fit simply never had one.
+
+### 8.4 Sigmas
 
 **Set each sigma to that source's measured error**, not to whatever minimises
-the GPS residual — the latter is tuning on the answer. Measured:
+the GPS residual — the latter is tuning on the answer.
 
 | flight | VIO velocity error | VPE error | sigmas used |
 |---|---|---|---|
-| survey43 @ 10 m | 0.48 m/s mean | 18.9 m mean | 0.5 m/s, 19 m |
-| survey45 @ 65 m | 13–30 m/s | 4.8 m mean | 20 m/s, 5 m |
+| survey43 @ 10 m | 0.48 m/s | 18.9 m | 0.5 m/s, 19 m |
+| survey45 @ 50 m | 35.7 m/s | 4.6 m | 36 m/s, 5 m |
+| survey48 @ 54 m | 1.10 m/s | 10.0 m | 1.1 m/s, 10 m |
 
 ---
 
@@ -387,12 +494,26 @@ Three rules, each learned the hard way.
    — both flights open with a near-vertical climb, where a scale fit returned
    0.005 before that guard existed.
 
-3. **Compare a continuous estimate against interpolated fixes, not against
-   fixes at fix times.** A filter scored at 10 Hz and a fix set scored only at
-   its own timestamps are not comparable. Straight-line interpolation between
-   VPE fixes is the cheapest continuous baseline; anything the filter adds over
-   that is what the odometry and dynamics model are actually worth. On
-   survey45 the filter (13.0 m) *loses* to interpolation (6.2 m).
+3. **The causal baseline is ZERO-ORDER HOLD, not interpolation.** A filter
+   scored at 10 Hz and a fix set scored only at its own timestamps are not
+   comparable, so a continuous baseline is needed — but linear interpolation
+   uses the *next* fix, which in flight has not arrived. Holding the newest
+   fix received is what a real system could actually do. On survey48:
+   interpolation 14.2 m (not causal), ZOH 17.2 m (causal), fused 15.4 m. Quote
+   both, and say which is which.
+
+4. **Measure the per-sample STEP, not only the error.** Accuracy statistics
+   hide the publish-path failure mode entirely — an 11 m rmse track contained a
+   52 m instantaneous step. `analyze_fusion_jumps.py` reports it; run it on any
+   config before flying it.
+
+5. **Separate contiguous steps from gap-resumes.** After the staleness gate
+   withholds for >= `MAX_FIX_AGE_S`, resuming re-anchors the output. That is a
+   source re-acquisition the autopilot handles, not an in-stream jump, but a
+   naive diff of consecutive published samples counts it as a 38 m step.
+
+6. **Normalise VIO drift by path length.** 14.7 m rmse sounds worse than 1.1 m
+   until you note the flights were 869 m and 212 m: 1.7% versus 0.5%.
 
 Cross-flight, never same-flight. Cross-altitude is a separate and harder
 problem — say which you measured.
@@ -414,7 +535,33 @@ Desktop: RTX 2080 Ti, 12 cores, `num_opencv_threads: 4`.
 | tile images | — | 162 MB (71 tiles) |
 | SuperPoint descriptors | — | 74 MB |
 
-Accuracy, from `session_2026-08-12_imx900_vio.md`:
+### VIO drift, normalised by distance flown
+
+| flight | AGL | GPS path | VIO rmse | drift |
+|---|---|---|---|---|
+| survey43 | 9 m | 212 m | 1.1 m | **0.51%** |
+| survey48 | 51 m | 869 m | 14.7 m | **1.69%** |
+| survey45 | 48 m | 348 m | 1867 m | diverged (scale 0.217) |
+
+### End-to-end, survey47 map -> survey48 test (the current best case)
+
+| | rmse | median | max | causal? |
+|---|---|---|---|---|
+| VIO only | 14.7 | 9.5 | 62.1 | yes |
+| VPE at fix times | 14.9 | 3.7 | 42.1 | yes |
+| VPE linear interpolation | 14.2 | 3.7 | 42.0 | **no** |
+| VPE zero-order hold | 17.2 | **6.8** | 50.4 | yes |
+| **fused, PUBLISHED** | **15.4** | 9.1 | **45.9** | yes |
+
+Fusion beats the causal baseline on rmse and worst case, **but ZOH still wins
+on median** — a modest win on two of three statistics, not a decisive one.
+
+Publish path on that run: max step 1.13 m (11.3 m/s), **0 slew-limited, 0
+resets**, 99% published. With correct sigmas the state never jumps, so the
+limiter sits idle — that is what a healthy configuration looks like. Contrast
+survey45: 60-72 m raw steps, limiter active 17-44% of samples.
+
+Older results, from `session_2026-08-12_imx900_vio.md`:
 
 | | survey43 @ 10 m | survey45 @ 65 m |
 |---|---|---|
@@ -422,6 +569,29 @@ Accuracy, from `session_2026-08-12_imx900_vio.md`:
 | VPE fixes | 18.9 m mean, 63% fix rate | **4.4–4.8 m mean, 100%** |
 | VPE interpolated 10 Hz | 32.2 m rmse | **6.2 m** rmse |
 | VIO + VPE fused | 13.6 m rmse | 13.0 m rmse |
+
+---
+
+## 10.5 The live path (Gazebo/ArduPilot, and the template for onboard)
+
+`gazebo_mission.py --fused` publishes **`filt.output(dt)`**, skips the send when
+it returns `None`, and counts what it withheld. Flags: `--slew-limit`,
+`--max-fix-age` (15 s in the sim, not the offline 5 s), `--loc-ready-timeout`.
+
+**Build the localizer BEFORE arming the publish path.** AnyLoc spends 60+ s
+loading DINOv2 and building its VLAD codebook. Arming the fused feeder first
+leaves the staleness gate with only the bootstrap to publish, so it correctly
+withholds after `--max-fix-age` and the aircraft loses aiding entirely —
+`[AnyLoc] localizer ready` printed *after* `fused feeder stopped`. The old
+design survived this only by having the staleness bug. `_loc_ready` is now set
+when the localizer object is constructed and the handover waits on it.
+
+SITL status: `output()`, the slew limiter, the staleness gate and the readiness
+handshake all behave as designed (run with fixes: 279 messages, 0 withheld, 98
+slew-limited; run without: 150 messages then withheld, exactly 15 s at 10 Hz).
+**Not yet shown**: that EKF3 tracks the slew-limited stream *better* than the
+raw one. That needs a same-seed A/B of `state()` vs `output()` with a
+well-behaved localizer, and the sim does not currently provide one (§12).
 
 ---
 
@@ -467,36 +637,46 @@ especially if TensorRT or fp16 is introduced.
 
 ### Not yet solved before flying this
 
-- **VIO is unusable at 65 m.** Do not plan an onboard VIO+VPE fusion at survey
-  altitude until §12 item 1 is resolved. At 65 m today, VPE alone is the
-  system.
-- **Distortion is second-hand.** A 20-minute chessboard run would replace the
-  weakest constant in the pipeline.
+- **VIO reliability at survey altitude is not established** (§12.1). survey48
+  works, survey45 does not, at the same height. Do not plan an onboard fusion
+  that assumes VIO is available until that is understood.
+- **No EKF failsafe** for the withheld-vision case. The gate makes "no data"
+  explicit; something has to act on it.
+- **The `state()` vs `output()` benefit is unproven in the loop** (§10.5).
 
 ---
 
 ## 12. Known limits
 
-1. **65 m AGL VIO diverges and the filter breaks down** (negative covariance
-   diagonal at +55 s on survey45, +159 s on survey44) even with distortion
-   corrected. Remaining suspects are the ones 10 m does not exercise:
-   baseline/depth ratio (6.5× worse) and the near-planar scene.
-2. **VIO scale error is 1.163 at 10 m** — 16% over. `scale_corrector.py` exists
-   and has not been applied here.
-3. **VPE errors are heavy-tailed** (median 2.3 m, max 58 m cross-altitude).
-   This tail is what costs the fusion. DBSCAN false-positive filtering, or
-   requiring consistency across consecutive fixes, is the obvious next step.
-4. **Fusion beats neither input** in either regime. It buys robustness, not
-   accuracy. If the altitude regime is known, pick the better source.
-5. **No low-altitude map exists**, so the fusion has never been tested where
-   both sources are good — the only condition under which it should be expected
-   to win.
-6. **Distortion coefficients come from OpenVINS' own online estimate**, not a
-   chessboard.
-7. **Single site, single day, three flights.** Nothing here has been tested
-   across seasons, lighting, or a different site.
-8. **ngps only.** AnyLoc/foundloc has not been run on this rig, so this method
-   makes no claim about which VPR approach is better here.
+1. **VIO failure is not a function of altitude alone.** survey45 (48 m) and
+   survey48 (51 m) flew within 5 m of the same height: one diverged with
+   velocity scale 0.217, the other tracked at 1.7% of path with scale 1.076.
+   survey45 is stop-start (median speed 0.1 m/s) and survey48 is not, which is
+   the leading hypothesis, but it is **not established** — survey45's full path
+   is 348 m, so it is not simply motion-starved. Until this is understood, VIO
+   cannot be relied on at survey altitude.
+2. **Fusion beats the causal baseline only narrowly, and only on 2 of 3
+   statistics** (survey48). Where VIO is bad it is worse than a zero-order hold.
+3. **VPE errors are heavy-tailed** (survey48: median 3.7 m, max 42.1 m). The
+   inlier ratio predicts the error strongly (Spearman -0.858 on survey45) but
+   **gating or per-fix adaptive sigma on it did not help** (14.6 -> 14.6 / 15.0
+   / 15.4 m) — the tail is not what costs the fusion.
+4. **Map tile density matters**: survey47 covers 3x survey44's area at the same
+   3 s spacing, and VPE mean error went 4.6 -> 10.0 m. Sample denser for large
+   maps.
+5. **Distortion coefficients are Kalibr's**, but three of the five calibration
+   sessions have corrupt imu-cam chains (§4.0) — always cross-check before
+   reusing one.
+6. **The sim's ngps localizer returns zero fixes**, cause unknown. Porting the
+   frame map into it and matching GSDs (both real defects, both fixed) did not
+   change it. Untested candidates: the fixed 90 deg `QUERY_ROT` versus a
+   body-fixed camera on a turning aircraft; a rendered-vs-real appearance gap.
+   This is why SITL testing has had to use AnyLoc as a fixture.
+7. **No EKF failsafe is configured** for the vision source being withheld.
+8. **Single site, single day per pair, five flights.** Nothing tested across
+   seasons, lighting, or a different site.
+9. **ngps only.** foundloc/AnyLoc has never been run on this rig, so no claim
+   is made about which VPR method is better here.
 
 ---
 
@@ -517,5 +697,8 @@ especially if TensorRT or fp16 is introduced.
 | `openvins_offline/run_video_msckf.cpp` | offline VIO runner |
 | `openvins_offline/config_imx900/` | estimator + camera + IMU chains |
 | `openvins_offline/{sweep_configs,ablate_calib}.sh` | config sweep / calibration ablation |
+| `analyze_fusion_jumps.py` | **per-sample published step** — run before flying any config |
+| `plot_slew_path.py` | published path vs raw state vs GPS, plus the step trace |
+| `gazebo_mission.py` | live path; `--fused` publishes `output(dt)` |
 | `paper/imx900_vio_vpe_zh.tex` | 繁體中文 report — `xelatex` twice to build |
 | `paper/make_figures_imx900.py` | its figures (reads the result JSONs, so they cannot drift) |

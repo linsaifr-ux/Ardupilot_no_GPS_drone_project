@@ -621,6 +621,29 @@ tail -f detections.csv
 
 ---
 
+## VIO+VPE Shadow-Mode Observer (separate system, optional)
+
+Everything above is the AnyLoc-based contest pipeline
+(`launch_real_hw.sh` + `ardupilot_commander.py`). There's a second, separate
+system at `vio_vpe/` — a live OpenVINS VIO + SuperPoint/LightGlue VPE + fusion
+filter stack that runs **alongside** a normal manually/AUTO-flown flight to
+watch and log its own position estimate, but **never publishes anything to
+the flight controller** (no `ardupilot_commander.py`, no vision-pose
+injection — verified via `ros2 topic info /mavros/vision_pose/pose_cov`
+showing 0 publishers on a real hardware test run). Not a replacement for the
+pipeline above; a passive add-on for the days you want to see how VIO+VPE
+would have done without risking the actual flight on it.
+
+```bash
+bash vio_vpe/launch_shadow_mode.sh
+```
+
+No flags needed — streams to the RTSP relay and OpenHD by default, starts
+YOLO alongside. Full details, architecture, and what's been validated so far
+vs. what hasn't: `vio_vpe/README.md`.
+
+---
+
 ## Contest Day Checklist
 
 ```

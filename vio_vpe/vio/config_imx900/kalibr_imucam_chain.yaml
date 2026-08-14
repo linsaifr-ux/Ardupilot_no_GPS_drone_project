@@ -1,0 +1,43 @@
+%YAML:1.0
+# imx900 nadir survey camera -- KALIBR calibration (adopted 2026-08-13).
+#
+# Replaces the earlier flight-derived + online-self-calibrated values. Measured
+# on survey43 (10 m, full flight, identical window, runs are deterministic):
+#
+#   flight-derived + online self-calib   3.40 m rmse, 6.51 m max, 1.94 m vert
+#   Kalibr calib_20260811_232301 as-is   3.82 m rmse, 6.47 m max, 0.80 m vert
+#   THIS (hybrid)                        1.07 m rmse, 1.97 m max, 0.91 m vert
+#
+# The hybrid differs from "0811 as-is" ONLY in the camera model, so the whole
+# 3.6x improvement comes from using the later cam-only solve.
+#
+# WHY THE PIECES COME FROM DIFFERENT SESSIONS:
+#   intrinsics/distortion <- calib_20260812_124944 cam-only solve. Tightest of
+#     all five sessions (+-4.4 px) and only ~4.5 h before the flights. Camera
+#     model drifts measurably across the day: 1891 (Aug 11 23:23) -> 1883 ->
+#     1868 -> 1874 (Aug 12 12:49).
+#   extrinsic/timeshift <- calib_20260811_232301. It is the ONLY session whose
+#     imu-cam chain is self-consistent. calib_20260812_122311 and _124944 both
+#     have 1626 px in their camchain-imucam.yaml -- the bad camera model from
+#     calib_20260812_112821 was fed into their imu-cam solve, so their
+#     extrinsics and timeshifts are fitted against a 13%-wrong focal and must
+#     not be used.
+#
+# Sanity checks that passed:
+#   - Kalibr's R_CtoI is within 1.51 deg of the mount rotation measured from
+#     the flights themselves (+91.5 deg, 0.98 concentration).
+#   - The timeshift sign is confirmed: flipping it gives 1412 m rmse.
+cam0:
+  T_imu_cam:
+    - [-0.0230315022, -0.9997342048, -0.0010342407, -0.0310682649]
+    - [-0.9996514511,  0.0230429245, -0.0128840994,  0.0672341608]
+    - [ 0.0129045068,  0.0007371401, -0.9999164617, -0.2484423274]
+    - [ 0.0000000000,  0.0000000000,  0.0000000000,  1.0000000000]
+  cam_overlaps: []
+  camera_model: pinhole
+  distortion_coeffs: [-0.48083899, 0.21935635, 0.00137044, -0.00241865]
+  distortion_model: radtan
+  intrinsics: [936.7860, 935.3305, 515.8708, 354.9726]
+  resolution: [1024, 768]
+  rostopic: /cam0/image_raw
+  timeshift_cam_imu: -0.06294554
