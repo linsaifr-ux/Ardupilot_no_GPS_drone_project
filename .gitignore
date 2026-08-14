@@ -116,6 +116,11 @@ third_party
 # source URL recorded in instructions/vpe_jump_runaway_diagnosis.md §13-A
 instructions/april_6x6_80x80cm_A0.pdf
 
+# Desktop-generated "copy this folder" Jetson deploy drop — vio_vpe/ is the
+# git-tracked copy of this same content (see vio_vpe/README.md's Provenance
+# section); this one is intentionally left untracked, not a leftover.
+instructions/jetson_deploy/
+
 # LaTeX build artefacts
 instructions/report/*.aux
 instructions/report/*.log
