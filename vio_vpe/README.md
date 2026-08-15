@@ -28,7 +28,7 @@ relay (`118.232.160.227`) **and** an OpenHD ground station (`192.168.2.2`)
 simultaneously by default, and starts YOLO for ground-crew situational
 awareness alongside the localization stack. See `launch_shadow_mode.sh`'s own
 header comment for every override flag
-(`--stream-server`/`--stream-host`/`--openhd-ip`/`--no-openhd`/`--no-stream`/`--no-yolo`/`--sigma-vio`/`--sigma-vpe`/`--map`).
+(`--stream-server`/`--stream-host`/`--openhd-ip`/`--openhd-bitrate`/`--no-openhd`/`--no-stream`/`--no-yolo`/`--sigma-vio`/`--sigma-vpe`/`--map`).
 
 **Do not also run `tools/record_field.py`** — it opens the camera device
 directly and will fight `usb_camera_node.py` for it, same constraint as every
@@ -59,7 +59,9 @@ cleanly (see "Shutdown" below for why that needed a real fix, not just a
       (raw GPS), never /drone/pose — keeps the number independent of whichever
       source EKF3 currently has active
     - writes logs/shadow_<ts>.csv (every field, every 20 Hz tick) and
-      latest_estimate.json (polled by tools/ground_view_stream.py's overlay)
+      latest_estimate.json (polled by tools/ground_view_stream.py's overlay
+      — including gps_east/gps_north as of 2026-08-15, added so the overlay
+      can plot a live fused-vs-GPS XY track, not just the CSV log)
     - NEVER calls anything MAVROS-vision-facing
 ```
 

@@ -233,6 +233,7 @@ class FusionLiveNode(rclpy.node.Node):
                     t=now, fused_east=fused_e, fused_north=fused_n, err_fused_m=err_fused,
                     vio_east=vio_e, vio_north=vio_n, err_vio_m=err_vio,
                     vpe_east=vpe_e, vpe_north=vpe_n, err_vpe_m=err_vpe, vpe_age_s=vpe_age,
+                    gps_east=gps_e, gps_north=gps_n,
                     yaw_resolved=self.aligner.resolved, yaw_deg=self.aligner.yaw_deg,
                     yaw_span_m=self.aligner.span_m, vel_health=st["vel_health"],
                     initialised=st["initialised"],

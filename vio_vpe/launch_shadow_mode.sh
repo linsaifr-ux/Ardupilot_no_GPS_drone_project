@@ -42,6 +42,8 @@
 #   --stream-server IP   Override the RTSP relay target.
 #   --stream-host IP     Direct UDP instead of the RTSP relay (mode A, not B).
 #   --openhd-ip IP        Override the OpenHD ground-station IP.
+#   --openhd-bitrate N    Override the OpenHD leg's H.264 bitrate in bps
+#                         (default 4000000, ground_view_stream.py's own default).
 #   --no-openhd           Disable just the OpenHD leg.
 #   --no-stream           Disable ALL streaming (RTSP/UDP AND OpenHD) --
 #                         local logs only.
@@ -60,6 +62,7 @@ MAP_PATH="$SCRIPT_DIR/maps/imx900_survey47.vpemap"
 STREAM_HOST=""
 STREAM_SERVER="118.232.160.227"   # project's standard relay -- see streaming/
 OPENHD_IP="192.168.2.2"           # record_field.py's own OpenHD default
+OPENHD_BITRATE=""                 # empty = ground_view_stream.py's own default (4Mbps)
 YOLO_ENABLED="1"
 # Back to tools/ground_view_stream.py's own 30fps default (2026-08-14: was
 # temporarily lowered to 15 while diagnosing lag on this launcher, which adds
@@ -79,6 +82,7 @@ while [[ $# -gt 0 ]]; do
         --stream-host)   STREAM_HOST="$2"; STREAM_SERVER=""; shift 2 ;;
         --stream-server) STREAM_SERVER="$2"; shift 2 ;;
         --openhd-ip)     OPENHD_IP="$2";     shift 2 ;;
+        --openhd-bitrate) OPENHD_BITRATE="$2"; shift 2 ;;
         --no-openhd)     OPENHD_IP="";       shift ;;
         --no-stream)     STREAM_HOST=""; STREAM_SERVER=""; OPENHD_IP=""; shift ;;
         --no-yolo)       YOLO_ENABLED="";    shift ;;
@@ -181,6 +185,7 @@ STREAM_ARGS=(--fps "$STREAM_FPS")
 [[ -n "$STREAM_HOST"   ]] && STREAM_ARGS+=(--host "$STREAM_HOST")
 [[ -n "$STREAM_SERVER" ]] && STREAM_ARGS+=(--stream-server "$STREAM_SERVER")
 [[ -n "$OPENHD_IP"     ]] && STREAM_ARGS+=(--stream-openhd "$OPENHD_IP")
+[[ -n "$OPENHD_BITRATE" ]] && STREAM_ARGS+=(--openhd-bitrate "$OPENHD_BITRATE")
 if [[ -n "$STREAM_HOST$STREAM_SERVER$OPENHD_IP" ]]; then
     echo "[launch] Starting ground view streamer (${STREAM_ARGS[*]}) ..."
     python3 -u "$PROJECT_DIR/tools/ground_view_stream.py" "${STREAM_ARGS[@]}" &

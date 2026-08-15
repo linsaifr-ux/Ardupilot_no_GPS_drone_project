@@ -5,8 +5,9 @@ Ground view streamer — composite debug viewport → GStreamer H.265 → networ
 Layout (1280×720):
   Left  (640×720)
     ├─ Top    (640×360): camera with YOLO bounding boxes + drone position
-    │                    (frame stamp-matched to the boxes — trails live by
-    │                     one inference; falls back to live view if YOLO dies)
+    │                    (always the live frame; boxes are the latest
+    │                     detection, so they can trail by ~1 inference during
+    │                     fast motion; drop out entirely if YOLO dies)
     └─ Bottom (640×360): AnyLoc latest match tile + localizer telemetry
   Right (640×720)
     ├─ Slot 0 (640×240): most recent YOLO detection crop ─┐
@@ -111,6 +112,13 @@ CROP_H    = PANEL_H // 3    # 240  — each right crop slot height
 CROP_IMG_H = CROP_H - 44   # 196  — image area inside each slot
 
 MAX_CROPS = 3
+
+# Shadow-mode fused/GPS XY track history for the bottom-left panel. Sampled
+# at whatever rate _read_shadow_estimate()'s own file-cache actually turns
+# over (2 Hz, see _shadow_cache_t below) rather than fusion_live_node's
+# 20 Hz write rate -- plenty dense for a survey-speed drone. 4000 points at
+# 2 Hz is ~33 min of flight; trivial memory (two floats each).
+TRACK_MAXLEN = 4000
 
 # Recent camera frames kept for stamp-matching against /yolo/detections
 # (whose header is copied from the source image). YOLO inference is ~60 ms,
@@ -286,11 +294,26 @@ def _openhd_thread(host, port, bitrate, latest_frame, stop_event):
             pipeline.set_state(Gst.State.NULL)
         except Exception:
             pass
-        pipeline, appsrc = _build_openhd_pipeline(host, port, bitrate)
-        pipeline.set_state(Gst.State.PLAYING)
-        bus = pipeline.get_bus()
-        stream_start_t = time.monotonic()
-        last_pts = 0
+        # The REBUILD can fail too (e.g. the ground station's port still
+        # refusing right after a reboot, or the NVENC session not fully
+        # released yet from the pipeline just torn down above) -- this must
+        # not escape. This is a daemon thread with no supervisor: an
+        # uncaught exception here silently kills it, and the OpenHD leg
+        # would stay dead until the whole program is restarted, even once
+        # the ground station comes back. Found live: a ground-station
+        # reboot did exactly that. Leaving pipeline/appsrc/bus pointed at
+        # the old (already-NULL) pipeline on failure means the next
+        # push-buffer call fails immediately too, which re-enters
+        # reconnect() on the next loop iteration -- so this keeps retrying
+        # at the same backoff cadence instead of dying outright.
+        try:
+            pipeline, appsrc = _build_openhd_pipeline(host, port, bitrate)
+            pipeline.set_state(Gst.State.PLAYING)
+            bus = pipeline.get_bus()
+            stream_start_t = time.monotonic()
+            last_pts = 0
+        except Exception as e:
+            print(f'[stream] OpenHD pipeline rebuild failed ({e}) — will retry')
         last_reconnect_t = time.monotonic()
 
     # Same wall-clock-PTS rationale as the primary loop in main() -- see its
@@ -411,6 +434,88 @@ def _read_shadow_estimate() -> dict:
     return _shadow_cache
 
 
+_SCALE_BAR_NICE_M = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+
+
+def _draw_track_panel(fused_track, gps_track, sh: dict, age_s) -> np.ndarray:
+    """Bottom-left shadow-mode panel: live 2D XY plot of the fused VIO+VPE
+    path (green) against the GPS ground-truth path (white), both in the same
+    imx900_geo_common site ENU frame fusion_live_node.py computes them in.
+    Equal east/north scale (no distortion) with a plain meter scale bar
+    instead of numeric axes -- this is a shape/drift-at-a-glance panel, not a
+    precision one; the per-source numbers (yaw, vpe fix age, err vio/vpe --
+    previously the whole panel, before this became a graph) are overlaid in
+    the top-right corner instead."""
+    panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
+    pts = list(fused_track) + list(gps_track)
+    if len(pts) < 2:
+        _put(panel, ["collecting VIO+VPE / GPS track ..."],
+             8, HALF_H // 2, scale=0.5, color=(120, 120, 120))
+        return panel
+
+    es = [p[0] for p in pts]
+    ns = [p[1] for p in pts]
+    e_min, e_max = min(es), max(es)
+    n_min, n_max = min(ns), max(ns)
+    e_range = max(e_max - e_min, 1.0)
+    n_range = max(n_max - n_min, 1.0)
+
+    margin_l, margin_r, margin_t, margin_b = 10, 10, 46, 10
+    usable_w = PANEL_W - margin_l - margin_r
+    usable_h = HALF_H - margin_t - margin_b
+    scale = min(usable_w / e_range, usable_h / n_range)
+    plot_w, plot_h = e_range * scale, n_range * scale
+    ox = margin_l + (usable_w - plot_w) / 2
+    oy = margin_t + (usable_h - plot_h) / 2
+
+    def _px(pt):
+        e, n = pt
+        return (int(ox + (e - e_min) * scale), int(oy + (n_max - n) * scale))
+
+    cv2.rectangle(panel, (margin_l, margin_t), (PANEL_W - margin_r, HALF_H - margin_b),
+                  (50, 50, 50), 1)
+
+    if len(gps_track) >= 2:
+        cv2.polylines(panel, [np.array([_px(p) for p in gps_track], dtype=np.int32)],
+                      False, (200, 200, 200), 2, cv2.LINE_AA)
+    if gps_track:
+        cv2.circle(panel, _px(gps_track[-1]), 5, (255, 255, 255), -1)
+
+    if len(fused_track) >= 2:
+        cv2.polylines(panel, [np.array([_px(p) for p in fused_track], dtype=np.int32)],
+                      False, (0, 255, 0), 2, cv2.LINE_AA)
+    if fused_track:
+        cv2.circle(panel, _px(fused_track[-1]), 5, (0, 255, 0), -1)
+
+    # Scale bar: nearest "nice" round meter value to ~1/4 of the plot width.
+    target_m = (usable_w * 0.25) / scale
+    nice_m = min(_SCALE_BAR_NICE_M, key=lambda v: abs(v - target_m))
+    bar_px = max(1, int(nice_m * scale))
+    bx0, by = PANEL_W - margin_r - bar_px - 10, HALF_H - margin_b - 8
+    cv2.line(panel, (bx0, by), (bx0 + bar_px, by), (150, 150, 150), 2)
+    _put(panel, [f"{nice_m} m"], bx0, by - 6, scale=0.4, thickness=1, color=(150, 150, 150))
+
+    def _fmt_err(v):
+        return f"{v:.0f} m" if v is not None else "--"
+
+    # Kept short (<330 px @ this scale) so it can't run into the stats block
+    # on the right -- verified against cv2.getTextSize, not eyeballed.
+    _put(panel, [
+        "SHADOW (not published to FC): fused vs GPS",
+        f"err fused {_fmt_err(sh.get('err_fused_m'))}   age {age_s:.1f}s   n={len(fused_track)}",
+    ], 8, 18, scale=0.45, color=(0, 255, 80))
+
+    yaw = sh.get("yaw_deg")
+    yaw_txt = (f"{yaw:.0f} deg" if sh.get("yaw_resolved") and yaw is not None
+               else "unresolved")
+    _put(panel, [
+        f"yaw {yaw_txt}  vpe age {sh.get('vpe_age_s', 0.0) or 0.0:.1f}s",
+        f"err vio {_fmt_err(sh.get('err_vio_m'))}  err vpe {_fmt_err(sh.get('err_vpe_m'))}",
+    ], PANEL_W - 230, 18, scale=0.4, color=(80, 200, 255))
+
+    return panel
+
+
 def _read_match() -> np.ndarray | None:
     global _match_img, _match_mtime
     try:
@@ -437,12 +542,22 @@ class GroundViewNode(rclpy.node.Node):
         self._latest_bgr: np.ndarray | None = None
         self._latest_bboxes: list[dict]     = []   # from most recent /yolo/detections
         # Recent frames as (stamp_key, bgr) for pairing detections with the
-        # exact frame they were computed on (see _cb_det).
+        # exact frame they were computed on -- used only for the crop
+        # thumbnails (see _cb_det), which are static per-detection snapshots
+        # where source accuracy matters. The main video panel draws boxes on
+        # the live frame instead (see build_composite).
         self._frame_buf: collections.deque = collections.deque(maxlen=FRAME_BUF_LEN)
-        self._det_frame: np.ndarray | None = None  # frame the latest bboxes belong to
         self._det_time: float = 0.0                # wall time of last detections msg
         # Deque of detection crop dicts, newest at index 0
         self._crops: collections.deque = collections.deque(maxlen=MAX_CROPS)
+
+        # Shadow-mode XY track history (see _draw_track_panel) -- built up
+        # here, not in fusion_live_node.py, since it's purely a display
+        # concern; fusion_live_node.py only ever needs to write its latest
+        # single estimate.
+        self._shadow_track_fused: collections.deque = collections.deque(maxlen=TRACK_MAXLEN)
+        self._shadow_track_gps: collections.deque = collections.deque(maxlen=TRACK_MAXLEN)
+        self._shadow_track_last_t: float | None = None
 
         self.create_subscription(Image,           "/drone/camera/image_raw", self._cb_img,  _SENSOR_QOS)
         self.create_subscription(PoseStamped,     "/drone/pose",             self._cb_pose, _SENSOR_QOS)
@@ -539,7 +654,6 @@ class GroundViewNode(rclpy.node.Node):
 
         with self._lock:
             self._latest_bboxes = bboxes
-            self._det_frame = frame
             self._det_time  = time.time()
             for crop in new_crops:
                 self._crops.appendleft(crop)
@@ -554,19 +668,25 @@ class GroundViewNode(rclpy.node.Node):
             agl       = self._agl
             bboxes    = list(self._latest_bboxes)
             crops     = list(self._crops)
-            det_frame = self._det_frame
             det_age   = time.time() - self._det_time
 
         # ── Left-top: YOLO feed with bounding boxes ───────────────────────────
-        # Shown frame is the one the boxes were computed on (stamp-matched in
-        # _cb_det), so they never lag the video. If the detections feed goes
-        # quiet, fall back to the live frame with no boxes instead of freezing.
-        det_fresh = det_frame is not None and det_age <= DET_STALE_S
-        panel_src = det_frame if det_fresh else frame
-        if panel_src is not None:
-            yolo_panel = cv2.resize(panel_src, (PANEL_W, HALF_H))
-            sx = PANEL_W / panel_src.shape[1]
-            sy = HALF_H  / panel_src.shape[0]
+        # Always the live frame -- smooth 30fps video, never freezes/jumps
+        # when a new detection lands. Boxes are the most recent
+        # /yolo/detections result drawn straight onto it, so during fast
+        # motion they can trail the live frame by ~1 YOLO inference (~60ms,
+        # 2-4 frames @30fps). Traded deliberately: this panel is cosmetic
+        # (ground-crew situational awareness only, not the localization
+        # path), so smooth video wins over pixel-perfect box registration.
+        # Was previously stamp-matched to the exact source frame instead
+        # (see ground_view_bbox_sync_fix.md) -- that kept boxes glued to
+        # their objects but made the panel visibly step/freeze between
+        # detections since it only updated at YOLO's inference rate.
+        det_fresh = det_age <= DET_STALE_S
+        if frame is not None:
+            yolo_panel = cv2.resize(frame, (PANEL_W, HALF_H))
+            sx = PANEL_W / frame.shape[1]
+            sy = HALF_H  / frame.shape[0]
             if det_fresh:
                 for b in bboxes:
                     pt1 = (int(b['x1'] * sx), int(b['y1'] * sy))
@@ -578,7 +698,7 @@ class GroundViewNode(rclpy.node.Node):
         else:
             yolo_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
         n_det = len(bboxes)
-        status = f"YOLO  {n_det} det" if det_fresh else "YOLO  STALE (live view)"
+        status = f"YOLO  {n_det} det" if det_fresh else "YOLO  STALE (no boxes)"
         clock = datetime.now().strftime('%H:%M:%S')
         _put(yolo_panel, [
             f"{status}   AGL {agl:.0f} m",
@@ -603,6 +723,26 @@ class GroundViewNode(rclpy.node.Node):
         sh = _read_shadow_estimate()
         shadow_age = (time.time() - sh.get("t", 0)) if sh else 1e9
 
+        # Accumulate the fused/GPS XY track for _draw_track_panel. Runs
+        # whenever a new sample shows up (dedup by fusion_live_node's own
+        # 't'), independent of which panel branch is active below, so the
+        # track survives a brief anyloc_age<=5 blip mid shadow-mode run.
+        # t going backwards (not just repeating) means fusion_live_node.py
+        # restarted -- a fresh flight, not a continuation -- so drop the old
+        # track instead of drawing a line across the gap between them.
+        t = sh.get("t")
+        if t is not None and t != self._shadow_track_last_t:
+            if self._shadow_track_last_t is not None and t < self._shadow_track_last_t - 1.0:
+                self._shadow_track_fused.clear()
+                self._shadow_track_gps.clear()
+            self._shadow_track_last_t = t
+            fe, fn = sh.get("fused_east"), sh.get("fused_north")
+            if fe is not None and fn is not None:
+                self._shadow_track_fused.append((fe, fn))
+            ge, gn = sh.get("gps_east"), sh.get("gps_north")
+            if ge is not None and gn is not None:
+                self._shadow_track_gps.append((ge, gn))
+
         if anyloc_age <= 5.0:
             match_src = _read_match()
             anyloc_panel = (cv2.resize(match_src, (PANEL_W, HALF_H)) if match_src is not None
@@ -613,21 +753,9 @@ class GroundViewNode(rclpy.node.Node):
                 f"ERR {est.get('error_m', 0.0):.0f} m   age {anyloc_age:.1f} s",
             ], 8, 18, scale=0.5, color=(80, 255, 80))
         elif shadow_age <= 5.0:
-            anyloc_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
-            yaw = sh.get("yaw_deg")
-            yaw_txt = (f"{yaw:.0f} deg" if sh.get("yaw_resolved") and yaw is not None
-                      else "unresolved")
-
-            def _fmt_err(v):
-                return f"{v:.0f} m" if v is not None else "--"
-
-            _put(anyloc_panel, [
-                f"SHADOW (VIO+VPE, not published to FC)   age {shadow_age:.1f}s",
-                f"yaw {yaw_txt}   vpe fix age {sh.get('vpe_age_s', 0.0) or 0.0:.1f}s",
-                f"err vio    {_fmt_err(sh.get('err_vio_m'))}",
-                f"err vpe    {_fmt_err(sh.get('err_vpe_m'))}",
-                f"err fused  {_fmt_err(sh.get('err_fused_m'))}",
-            ], 8, 22, scale=0.55, color=(80, 255, 80))
+            anyloc_panel = _draw_track_panel(
+                self._shadow_track_fused, self._shadow_track_gps,
+                sh, shadow_age)
         else:
             anyloc_panel = np.zeros((HALF_H, PANEL_W, 3), dtype=np.uint8)
             _put(anyloc_panel, ["waiting for AnyLoc or shadow-mode estimate …"],
@@ -783,14 +911,28 @@ def main():
             pipeline.set_state(Gst.State.NULL)
         except Exception:
             pass
-        record_path = _new_record_path(args)
-        pipeline, appsrc = _build_pipeline(args, record_path)
-        pipeline.set_state(Gst.State.PLAYING)
-        bus = pipeline.get_bus()
-        stream_start_t = time.monotonic()   # fresh pipeline, fresh timeline
-        last_pts = 0
-        if record_path:
-            print(f'[stream] Recording local copy → {record_path}')
+        # The REBUILD can fail too, not just the teardown above -- e.g. the
+        # relay/ground station's port still refusing right after it reboots.
+        # This runs inside main()'s try/except KeyboardInterrupt block, which
+        # does NOT catch anything else: an uncaught exception here falls
+        # through to the `finally:` cleanup and kills the WHOLE program,
+        # OpenHD leg included, even though that leg was fine. Same live
+        # finding as _openhd_thread's reconnect(). Leaving pipeline/appsrc/
+        # bus pointed at the old (already-NULL) pipeline on failure means
+        # the next push-buffer call fails immediately too, re-entering
+        # _reconnect() on the next loop iteration -- keeps retrying at the
+        # same backoff cadence instead of taking the process down.
+        try:
+            record_path = _new_record_path(args)
+            pipeline, appsrc = _build_pipeline(args, record_path)
+            pipeline.set_state(Gst.State.PLAYING)
+            bus = pipeline.get_bus()
+            stream_start_t = time.monotonic()   # fresh pipeline, fresh timeline
+            last_pts = 0
+            if record_path:
+                print(f'[stream] Recording local copy → {record_path}')
+        except Exception as e:
+            print(f'[stream] Pipeline rebuild failed ({e}) — will retry')
 
     # PTS is derived from the wall clock (time.monotonic() - stream_start_t),
     # NOT from frame_count * frame_interval. That distinction is the actual

@@ -151,7 +151,7 @@ conda run -n isaac_sim_test --no-capture-output python3 detection/ros2_node.py
 
 Inference runs on every frame regardless of altitude — no AGL gate (unlike AnyLoc, which only fuses ≥ 50 m).
 
-**Contract relied on downstream (don't break):** the array's `header` is copied verbatim from the source image, and a message is published for **every** processed frame, even with zero detections. `tools/ground_view_stream.py` (2026-07-09) stamp-matches detections to its frame buffer for a lag-free overlay and treats >2 s of silence as "YOLO down".
+**Contract relied on downstream (don't break):** the array's `header` is copied verbatim from the source image, and a message is published for **every** processed frame, even with zero detections. `tools/ground_view_stream.py` stamp-matches detections to its frame buffer to cut its 3 detection-crop thumbnails from the exact source frame (2026-07-09; its main YOLO panel switched to drawing on the live frame instead, 2026-08-15 — see that file's own header), and treats >2 s of silence as "YOLO down".
 
 **Survey mission integration:** Both `px4_commander.py` and `ardupilot_commander.py` subscribe to `/yolo/detections`. On vehicle detection each commander projects the bounding-box centre to world coordinates via yaw-corrected GSD, deduplicates within 5 m, and appends to `detections.csv` (timestamp, category, confidence, lat, lon, agl_m). The survey route is never interrupted.
 
